@@ -1,0 +1,47 @@
+name: Release
+
+# Push a v* tag (git tag v0.2.0 && git push origin v0.2.0) to publish a package with the browser
+# UI already built, so running it locally needs Python only: no Node.js, no git.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Test the backend and the TUI
+        run: |
+          pip install -r backend/requirements.txt -r tui/requirements.txt pytest==9.1.1
+          (cd backend && pytest -q)
+          (cd tui && pytest -q)
+      - name: Build the browser UI
+        working-directory: frontend
+        run: |
+          npm ci
+          npm test
+          npm run build
+      - name: Package
+        run: python scripts/package-release.py --version "$GITHUB_REF_NAME"
+      # Never publish a package that doesn't start the way the README says.
+      - name: Start the package
+        run: bash scripts/smoke-package.sh "dist/apim-backend-pool-${GITHUB_REF_NAME#v}.zip"
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.zip --title "$GITHUB_REF_NAME" --generate-notes \
+            --notes "Unzip, then run scripts/start-local.cmd (Windows) or scripts/start-local.sh (macOS, Linux, WSL). Needs Python 3.11+; scripts/doctor.py checks the machine first."

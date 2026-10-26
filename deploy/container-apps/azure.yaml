@@ -1,0 +1,34 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/schemas/v1.0/azure.yaml.json
+# The public app: anyone with a work or school account signs in with their own Azure identity and
+# manages the APIM services their roles allow. Run azd from this folder; the App Service
+# deployment for one team and one APIM service is ../../azure.yaml.
+name: apim-backend-pool-public
+hooks:
+  # Creates or updates the multi-tenant app registration, then adds the app's redirect URI and
+  # the federated credential that replaces a client secret (scripts/public-app-registration.py).
+  preprovision:
+    windows:
+      shell: pwsh
+      run: python ../../scripts/public-app-registration.py preprovision
+    posix:
+      shell: sh
+      run: python3 ../../scripts/public-app-registration.py preprovision
+  postprovision:
+    windows:
+      shell: pwsh
+      run: python ../../scripts/public-app-registration.py postprovision
+    posix:
+      shell: sh
+      run: python3 ../../scripts/public-app-registration.py postprovision
+services:
+  web:
+    project: ../..
+    language: docker
+    host: containerapp
+    docker:
+      path: Dockerfile
+      # Built in Azure Container Registry, so neither Docker nor Node.js is needed locally.
+      remoteBuild: true
+infra:
+  provider: bicep
+  path: infra

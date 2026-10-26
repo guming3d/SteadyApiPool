@@ -1,0 +1,5 @@
+# Shell scripts keep LF even in a Windows checkout, or bash in WSL, macOS and Linux fails on
+# them ($'\r': command not found). Batch files want CRLF.
+*.sh text eol=lf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf

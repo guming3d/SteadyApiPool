@@ -1,0 +1,690 @@
+"""FastAPI entry point: JSON API under ``/api`` and the built frontend at ``/``."""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import logging
+import re
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from functools import lru_cache
+from pathlib import Path
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, FastAPI, Query, Request, Response
+from fastapi.responses import FileResponse, JSONResponse
+
+from .access import AccessChecker, user_token
+from .api_test import ApiTester
+from .auth import acting_user, caller_name, current_principal, is_owner, writer
+from .config import Settings, get_settings
+from .cost import CostReader
+from .deps import (
+    User,
+    get_access,
+    get_arm,
+    get_cost,
+    get_discovery,
+    get_monitor,
+    get_request_settings,
+    get_service,
+    get_sessions,
+    get_targets,
+    get_tester,
+    get_user,
+    get_verifier,
+)
+from .discovery import DeploymentDiscovery
+from .entra import API_SCOPE_NAME, ARM_USER_SCOPE
+from .metrics import PoolMonitor
+from .model_deploy import ModelDeployer
+from .models import (
+    ApiBindingWrite,
+    ApimCreate,
+    ApimCreateOptions,
+    ApimServiceView,
+    ApiTestRequest,
+    ApiTestResult,
+    ApiView,
+    BackendView,
+    Capabilities,
+    CleanupConfirm,
+    DeletedServiceView,
+    DeployableModel,
+    DeploymentImport,
+    DeploymentImportResult,
+    DeploymentView,
+    DeviceCodePrompt,
+    DeviceCodeStatus,
+    FoundryAccessRequest,
+    FoundryAccountView,
+    FoundryDeploymentCreate,
+    FoundryDeploymentStatus,
+    MemberBackendWrite,
+    MetricsRange,
+    ModelCapacity,
+    ModelCheck,
+    ModelCheckRequest,
+    PolicyPreview,
+    PolicyView,
+    PoolApiCreate,
+    PoolMetrics,
+    PoolView,
+    PoolWrite,
+    Principal,
+    PublicConfig,
+    RemovalConfirm,
+    RemovalPlan,
+    RemovalResult,
+    ServiceCost,
+    ServiceDelete,
+    ServiceDeleteCheck,
+    ServiceRestore,
+    SetupCheck,
+    SetupProgress,
+    SetupReport,
+    SignInRequest,
+    SubscriptionKeyView,
+    SubscriptionSecret,
+    SubscriptionView,
+    TargetSelect,
+    TargetView,
+    TenantView,
+)
+from .service import PoolManagerService, ServiceError
+from .sessions import Sessions
+from .target import TargetChooser
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+# azure-identity logs every token request and its headers at INFO.
+logging.getLogger("azure").setLevel(logging.WARNING)
+
+STATIC_DIR = Path(__file__).parent / "static"
+
+# Re-exported: tests and tools override these factories through app.dependency_overrides.
+__all__ = [
+    "app",
+    "get_access",
+    "get_arm",
+    "get_discovery",
+    "get_monitor",
+    "get_request_settings",
+    "get_service",
+    "get_sessions",
+    "get_settings",
+    "get_targets",
+    "get_tester",
+    "get_user",
+    "get_verifier",
+]
+
+
+Service = Annotated[PoolManagerService, Depends(get_service)]
+Discovery = Annotated[DeploymentDiscovery, Depends(get_discovery)]
+Access = Annotated[AccessChecker, Depends(get_access)]
+Targets = Annotated[TargetChooser, Depends(get_targets)]
+Tester = Annotated[ApiTester, Depends(get_tester)]
+Monitor = Annotated[PoolMonitor, Depends(get_monitor)]
+Cost = Annotated[CostReader, Depends(get_cost)]
+# In the public app, with the APIM service the caller's browser chose.
+SettingsDep = Annotated[Settings, Depends(get_request_settings)]
+AppSettings = Annotated[Settings, Depends(get_settings)]
+Reader = Annotated[Principal, Depends(current_principal)]
+Writer = Annotated[Principal, Depends(writer)]
+# Setup fixes run with the user's own Azure rights, so they need sign-in but not POOL_OWNERS.
+Actor = Annotated[Principal, Depends(acting_user)]
+# Only the caller's name: no Azure call, so it answers while their other requests wait on ARM.
+Caller = Annotated[str, Depends(caller_name)]
+
+GUID = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+TenantQuery = Annotated[str | None, Query(pattern=GUID)]
+SubscriptionQuery = Annotated[str, Query(pattern=GUID)]
+
+
+def require_target(settings: SettingsDep) -> None:
+    if not settings.has_target:
+        raise ServiceError(409, "No APIM service is chosen yet; choose or create one in setup")
+
+
+api = APIRouter(prefix="/api")
+# Everything that works on the APIM service, which locally may not be chosen yet.
+bound = APIRouter(dependencies=[Depends(require_target)])
+
+
+# Unauthenticated: what the browser needs to sign in (the public app) or that it needn't.
+@api.get("/config")
+def public_config(settings: AppSettings) -> PublicConfig:
+    if not settings.public:
+        return PublicConfig(mode="local" if settings.local else "deployed")
+    client_id = settings.entra_client_id
+    return PublicConfig(
+        mode="public",
+        client_id=client_id,
+        # Any work or school account; the token's tenant is checked on every request.
+        authority=f"{settings.entra_authority.rstrip('/')}/organizations",
+        api_scope=f"api://{client_id}/{API_SCOPE_NAME}",
+        consent_scopes=[ARM_USER_SCOPE],
+        guest=settings.guest_enabled,
+    )
+
+
+@api.get("/me")
+def me(principal: Reader) -> Principal:
+    return principal
+
+
+# The public app: forgets the caller's sessions and Azure tokens. The browser then signs out of
+# Entra too.
+@api.post("/session/sign-out", status_code=204)
+def session_sign_out(
+    user: User,
+    sessions: Annotated[Sessions | None, Depends(get_sessions)],
+    _: Actor,
+) -> Response:
+    if user is None or sessions is None:
+        raise ServiceError(400, "Only the public app has sessions to sign out of")
+    sessions.drop(user.key)
+    return Response(status_code=204)
+
+
+@bound.get("/capabilities")
+def capabilities(service: Service, _: Reader) -> Capabilities:
+    return service.capabilities()
+
+
+@bound.get("/backends")
+def list_backends(service: Service, _: Reader) -> list[BackendView]:
+    return service.list_backends()
+
+
+@bound.get("/backends/{backend_id}")
+def get_backend(backend_id: str, service: Service, _: Reader) -> BackendView:
+    return service.get_backend(backend_id)
+
+
+@bound.put("/backends/{backend_id}")
+def put_backend(
+    backend_id: str, body: MemberBackendWrite, service: Service, principal: Writer
+) -> BackendView:
+    return service.put_backend(backend_id, body, principal.name)
+
+
+@bound.delete("/backends/{backend_id}", status_code=204)
+def delete_backend(
+    backend_id: str, service: Service, principal: Writer, etag: str | None = None
+) -> Response:
+    service.delete_backend(backend_id, etag, principal.name)
+    return Response(status_code=204)
+
+
+@bound.get("/pools")
+def list_pools(service: Service, _: Reader) -> list[PoolView]:
+    return service.list_pools()
+
+
+# Read-only: the same-model check that saving a pool enforces, for the editor to show first.
+@bound.post("/pools/model-check")
+def check_pool_models(body: ModelCheckRequest, service: Service, _: Reader) -> ModelCheck:
+    return service.check_models(body.members)
+
+
+@bound.get("/pools/{pool_id}")
+def get_pool(pool_id: str, service: Service, _: Reader) -> PoolView:
+    return service.get_pool(pool_id)
+
+
+@bound.put("/pools/{pool_id}")
+def put_pool(pool_id: str, body: PoolWrite, service: Service, principal: Writer) -> PoolView:
+    return service.put_pool(pool_id, body, principal.name)
+
+
+# Read-only Azure Monitor metrics for the pool's APIs and its Foundry members.
+@bound.get("/pools/{pool_id}/metrics")
+def pool_metrics(
+    pool_id: str,
+    monitor: Monitor,
+    _: Reader,
+    range: MetricsRange = "1h",  # noqa: A002 - the query parameter's name
+    refresh: bool = False,
+) -> PoolMetrics:
+    return monitor.get(pool_id, range, refresh=refresh)
+
+
+@bound.post("/pools/{pool_id}/api")
+def create_pool_api(
+    pool_id: str, body: PoolApiCreate, service: Service, principal: Writer
+) -> ApiView:
+    return service.create_pool_api(pool_id, body, principal.name)
+
+
+@bound.delete("/pools/{pool_id}", status_code=204)
+def delete_pool(
+    pool_id: str, service: Service, principal: Writer, etag: str | None = None
+) -> Response:
+    service.delete_pool(pool_id, etag, principal.name)
+    return Response(status_code=204)
+
+
+# Read-only: what removing the pool takes with it (its APIs, unused members).
+@bound.get("/pools/{pool_id}/removal")
+def pool_removal_plan(pool_id: str, service: Service, _: Reader) -> RemovalPlan:
+    return service.pool_removal_plan(pool_id)
+
+
+@bound.post("/pools/{pool_id}/remove")
+def remove_pool(
+    pool_id: str, body: RemovalConfirm, service: Service, principal: Writer
+) -> RemovalResult:
+    return service.remove_pool(pool_id, body, principal.name)
+
+
+# Read-only: this month's spend (with the user's own Azure rights) and the tier's list price.
+@bound.get("/cost")
+def service_cost(
+    request: Request, cost: Cost, access: Access, principal: Reader, refresh: bool = False
+) -> ServiceCost:
+    user = access.user_arm(user_token(request.headers))
+    return cost.get(user, principal.name, refresh=refresh)
+
+
+# Read-only: everything this app created in the service, which cleanup would remove.
+@bound.get("/cleanup")
+def cleanup_plan(service: Service, _: Reader) -> RemovalPlan:
+    return service.cleanup_plan()
+
+
+@bound.post("/cleanup")
+def cleanup(body: CleanupConfirm, service: Service, principal: Writer) -> RemovalResult:
+    return service.cleanup(body, principal.name)
+
+
+@bound.get("/apis")
+def list_apis(service: Service, _: Reader) -> list[ApiView]:
+    return service.list_apis()
+
+
+@bound.get("/apis/{api_id}/policy")
+def get_policy(api_id: str, service: Service, _: Reader) -> PolicyView:
+    return service.get_policy(api_id)
+
+
+# Read-only: computes the policy a binding would write so it can be reviewed or exported first.
+@bound.post("/apis/{api_id}/binding/preview")
+def preview_binding(
+    api_id: str, body: ApiBindingWrite, service: Service, _: Reader
+) -> PolicyPreview:
+    return service.preview_binding(api_id, body)
+
+
+@bound.put("/apis/{api_id}/binding")
+def put_binding(api_id: str, body: ApiBindingWrite, service: Service, principal: Writer) -> ApiView:
+    return service.put_binding(api_id, body, principal.name)
+
+
+@bound.delete("/apis/{api_id}/binding", status_code=204)
+def delete_binding(
+    api_id: str, service: Service, principal: Writer, etag: str | None = None
+) -> Response:
+    service.delete_binding(api_id, etag, principal.name)
+    return Response(status_code=204)
+
+
+# -- trying a pool API ---------------------------------------------------------------------
+# Keys are read and created with the user's own Azure rights (Easy Auth's token when deployed).
+
+
+@bound.get("/apis/{api_id}/keys")
+def list_keys(
+    api_id: str, request: Request, access: Access, tester: Tester, _: Reader
+) -> list[SubscriptionKeyView]:
+    return tester.keys(access.require_user(user_token(request.headers)), api_id)
+
+
+@bound.post("/apis/{api_id}/keys")
+def create_key(
+    api_id: str, request: Request, access: Access, tester: Tester, principal: Actor
+) -> SubscriptionKeyView:
+    user = access.require_user(user_token(request.headers))
+    return tester.create_key(user, api_id, principal.name)
+
+
+# POST so the key is never cached or prefetched, and needs the CSRF header.
+@bound.post("/apis/{api_id}/keys/{key_id}/secret")
+def read_key(
+    api_id: str, key_id: str, request: Request, access: Access, tester: Tester, principal: Actor
+) -> SubscriptionSecret:
+    user = access.require_user(user_token(request.headers))
+    return tester.secret(user, api_id, key_id, principal.name)
+
+
+@bound.post("/apis/{api_id}/test")
+def test_api(api_id: str, body: ApiTestRequest, tester: Tester, principal: Actor) -> ApiTestResult:
+    return tester.call(api_id, body, principal.name)
+
+
+@bound.get("/deployments")
+def list_deployments(
+    discovery: Discovery, _: Reader, refresh: bool = False
+) -> list[DeploymentView]:
+    return discovery.list(refresh=refresh)
+
+
+@bound.post("/deployments/import")
+def import_deployments(
+    body: DeploymentImport, discovery: Discovery, principal: Writer
+) -> DeploymentImportResult:
+    return discovery.import_deployments(body, principal.name)
+
+
+# Creating Foundry deployments. Reads and writes go out with the user's own ARM token, so Azure
+# decides what they may do; the app identity stays read-only on Foundry accounts.
+
+
+def _deployer(settings: SettingsDep, discovery: Discovery) -> ModelDeployer:
+    # Built per request from the request's own dependencies, so overriding discovery (tests)
+    # is enough; it keeps no state of its own.
+    return ModelDeployer(settings, discovery)
+
+
+Deployer = Annotated[ModelDeployer, Depends(_deployer)]
+
+
+@bound.get("/foundry/accounts")
+def foundry_accounts(deployer: Deployer, _: Reader) -> list[FoundryAccountView]:
+    return deployer.accounts()
+
+
+@bound.get("/foundry/models")
+def foundry_models(
+    request: Request, account_id: str, deployer: Deployer, access: Access, _: Reader
+) -> list[DeployableModel]:
+    return deployer.models(access.require_user(user_token(request.headers)), account_id)
+
+
+@bound.get("/foundry/capacity")
+def foundry_capacity(
+    request: Request,
+    account_id: str,
+    model: str,
+    version: str,
+    deployer: Deployer,
+    access: Access,
+    _: Reader,
+) -> ModelCapacity:
+    user = access.require_user(user_token(request.headers))
+    return deployer.capacity(user, account_id, model, version)
+
+
+@bound.post("/foundry/deployments")
+def create_foundry_deployment(
+    request: Request,
+    body: FoundryDeploymentCreate,
+    deployer: Deployer,
+    access: Access,
+    principal: Actor,
+) -> FoundryDeploymentStatus:
+    user = access.require_user(user_token(request.headers))
+    return deployer.create(user, body, principal.name)
+
+
+@bound.get("/foundry/deployments/status")
+def foundry_deployment_status(
+    request: Request,
+    account_id: str,
+    deployment: str,
+    deployer: Deployer,
+    access: Access,
+    _: Reader,
+) -> FoundryDeploymentStatus:
+    user = access.require_user(user_token(request.headers))
+    return deployer.status(user, account_id, deployment)
+
+
+@api.get("/setup")
+def setup_report(
+    request: Request,
+    access: Access,
+    settings: SettingsDep,
+    principal: Reader,
+    refresh: bool = False,
+) -> SetupReport:
+    if refresh:
+        access.forget()
+    return access.report(
+        user_token(request.headers),
+        principal=principal.name,
+        owner=is_owner(request, settings),
+    )
+
+
+# Polled while GET /setup runs, which can take a while: each of its steps calls ARM.
+@api.get("/setup/progress")
+def setup_progress(access: Access, caller: Caller) -> SetupProgress:
+    return access.progress(caller)
+
+
+# Local only: for machines without a local browser. Returns the code; the sign-in completes in
+# the background and GET reports when it did.
+@api.post("/setup/sign-in/device-code")
+def setup_device_code(
+    access: Access, _: Actor, body: SignInRequest | None = None
+) -> DeviceCodePrompt:
+    return access.start_device_code(body.tenant_id if body else None)
+
+
+@api.get("/setup/sign-in/device-code")
+def setup_device_code_status(access: Access, targets: Targets, _: Reader) -> DeviceCodeStatus:
+    status = access.device_code_status()
+    if status.state == "done":
+        targets.forget()
+    return status
+
+
+@api.post("/setup/sign-out", status_code=204)
+def setup_sign_out(access: Access, targets: Targets, _: Actor) -> Response:
+    access.sign_out()
+    targets.forget()
+    return Response(status_code=204)
+
+
+@api.post("/setup/sign-in", status_code=204)
+def setup_sign_in(
+    access: Access, targets: Targets, _: Actor, body: SignInRequest | None = None
+) -> Response:
+    access.sign_in(body.tenant_id if body else None)
+    targets.forget()
+    return Response(status_code=204)
+
+
+@bound.post("/setup/apim-identity")
+def setup_apim_identity(request: Request, access: Access, principal: Actor) -> SetupCheck:
+    return access.enable_apim_identity(user_token(request.headers), principal.name)
+
+
+# Read-only: whether the APIM identity can call these accounts, e.g. before importing them.
+@bound.post("/setup/foundry-access")
+def setup_foundry_access(
+    body: FoundryAccessRequest, request: Request, access: Access, _: Reader
+) -> list[SetupCheck]:
+    return access.foundry_checks(user_token(request.headers), body.account_ids)
+
+
+@bound.post("/setup/foundry-access/grant")
+def setup_grant_foundry_access(
+    body: FoundryAccessRequest, request: Request, access: Access, principal: Actor
+) -> list[SetupCheck]:
+    return access.grant_foundry_access(
+        user_token(request.headers), body.account_ids, principal.name
+    )
+
+
+api.include_router(bound)
+
+
+# -- choosing or creating the APIM service (local) --------------------------------------
+
+
+@api.get("/target")
+def get_target(targets: Targets, _: Reader) -> TargetView:
+    return targets.current()
+
+
+@api.put("/target")
+def select_target(body: TargetSelect, targets: Targets, principal: Actor) -> TargetView:
+    return targets.select(body, principal.name)
+
+
+@api.get("/target/tenants")
+def list_tenants(targets: Targets, _: Reader) -> list[TenantView]:
+    return targets.tenants()
+
+
+@api.get("/target/subscriptions")
+def list_subscriptions(
+    targets: Targets, _: Reader, tenant_id: TenantQuery = None
+) -> list[SubscriptionView]:
+    return targets.subscriptions(tenant_id)
+
+
+@api.get("/target/services")
+def list_services(
+    targets: Targets, _: Reader, subscription_id: SubscriptionQuery, tenant_id: TenantQuery = None
+) -> list[ApimServiceView]:
+    return targets.services(tenant_id, subscription_id)
+
+
+@api.get("/target/create-options")
+def create_options(
+    targets: Targets, _: Reader, subscription_id: SubscriptionQuery, tenant_id: TenantQuery = None
+) -> ApimCreateOptions:
+    return targets.create_options(tenant_id, subscription_id)
+
+
+# Creates billable resources with the user's own Azure rights, then selects the new service.
+@api.post("/target/services")
+def create_service(body: ApimCreate, targets: Targets, principal: Actor) -> ApimServiceView:
+    return targets.create(body, principal.name)
+
+
+# Read-only: what deleting a service this app created would remove.
+@api.post("/target/services/delete-check")
+def check_service_delete(body: TargetSelect, targets: Targets, _: Actor) -> ServiceDeleteCheck:
+    return targets.delete_check(body)
+
+
+# Soft-deletes a service this app created (Azure keeps it 48 hours); the name must be retyped.
+@api.post("/target/services/delete", status_code=204)
+def delete_service(body: ServiceDelete, targets: Targets, principal: Actor) -> Response:
+    targets.delete(body, principal.name)
+    return Response(status_code=204)
+
+
+@api.get("/target/deleted")
+def list_deleted_services(
+    targets: Targets, _: Reader, subscription_id: SubscriptionQuery, tenant_id: TenantQuery = None
+) -> list[DeletedServiceView]:
+    return targets.deleted_services(tenant_id, subscription_id)
+
+
+@api.post("/target/deleted/restore")
+def restore_service(body: ServiceRestore, targets: Targets, principal: Actor) -> ApimServiceView:
+    return targets.restore(body, principal.name)
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    settings = get_settings()  # Fail fast on missing or unsafe configuration.
+    if settings.auth_mode == "disabled" and settings.system_trust:
+        # Before any HTTPS client exists: ARM (httpx) and sign-in (requests) both pick it up.
+        import truststore
+
+        truststore.inject_into_ssl()
+    yield
+
+
+app = FastAPI(title="APIM Backend Pool Manager", lifespan=lifespan)
+app.include_router(api)
+
+
+@app.exception_handler(ServiceError)
+async def service_error(_: Request, error: ServiceError) -> JSONResponse:
+    return JSONResponse(status_code=error.status, content={"detail": error.message})
+
+
+# MSAL renews sign-ins in a hidden iframe that lands on this page, so only it may be framed, and
+# only by this origin.
+REDIRECT_PAGE = "/redirect.html"
+
+
+@lru_cache
+def _content_security_policy(authority: str, framed: bool) -> str:
+    """Only this origin's scripts (plus the inline first-paint script, by hash), and Entra for
+    signing in, so an injected script has nowhere to load from or send tokens to."""
+    index = STATIC_DIR / "index.html"
+    inline = (
+        re.findall(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", index.read_text("utf-8"), re.S)
+        if index.is_file()
+        else []
+    )
+    hashes = " ".join(
+        f"'sha256-{base64.b64encode(hashlib.sha256(script.encode()).digest()).decode()}'"
+        for script in inline
+    )
+    login = authority.rstrip("/")
+    ancestors = "'self'" if framed else "'none'"
+    return "; ".join(
+        [
+            "default-src 'self'",
+            f"script-src 'self' {hashes}".strip(),
+            "style-src 'self' 'unsafe-inline'",
+            "img-src 'self' data:",
+            f"connect-src 'self' {login}",
+            f"frame-src 'self' {login}",
+            f"frame-ancestors {ancestors}",
+            "base-uri 'self'",
+            f"form-action 'self' {login}",
+            "object-src 'none'",
+        ]
+    )
+
+
+@app.middleware("http")
+async def no_store(request: Request, call_next):  # type: ignore[no-untyped-def]
+    response = await call_next(request)
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+    framed = request.url.path == REDIRECT_PAGE
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "SAMEORIGIN" if framed else "DENY")
+    # As the routes see it (tests override the factory).
+    settings: Settings = request.app.dependency_overrides.get(get_settings, get_settings)()
+    if settings.public:
+        response.headers.setdefault(
+            "Content-Security-Policy", _content_security_policy(settings.entra_authority, framed)
+        )
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault(
+            "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+        )
+    return response
+
+
+@app.get("/health", include_in_schema=False)
+def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.get("/{path:path}", include_in_schema=False)
+def frontend(path: str) -> Response:
+    if path.startswith("api/"):
+        return JSONResponse(status_code=404, content={"detail": "Not found"})
+    candidate = (STATIC_DIR / path).resolve()
+    if path and candidate.is_file() and STATIC_DIR.resolve() in candidate.parents:
+        return FileResponse(candidate)
+    index = STATIC_DIR / "index.html"
+    if not index.is_file():
+        return JSONResponse(
+            status_code=503, content={"detail": "Frontend not built; run npm run build"}
+        )
+    return FileResponse(index, headers={"Cache-Control": "no-cache"})

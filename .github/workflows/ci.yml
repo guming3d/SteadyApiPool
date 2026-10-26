@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install backend dependencies
+        working-directory: backend
+        run: pip install -r requirements.txt pytest==9.1.1 ruff==0.15.22 mypy==2.3.0
+      - name: Lint, type-check and test backend
+        working-directory: backend
+        run: |
+          ruff check . ../scripts
+          ruff format --check . ../scripts
+          mypy
+          mypy --strict ../scripts/doctor.py ../scripts/package-release.py
+          pytest -q
+      # The TUI tests drive the real backend app, so they share its environment.
+      - name: Lint, type-check and test the TUI
+        working-directory: tui
+        run: |
+          pip install -r requirements.txt
+          ruff check .
+          ruff format --check .
+          mypy
+          pytest -q
+      - name: Test and build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm test
+          npm run build
+      - name: Validate Bicep
+        run: |
+          az bicep build --file infra/main.bicep --stdout > /dev/null
+          az bicep build --file deploy/container-apps/infra/main.bicep --stdout > /dev/null
+
+  # The release package, started the way the README tells people to: unzip, then
+  # scripts/start-local.sh with Python only. It once exited silently on Linux and macOS.
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build the browser UI
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+      - name: Package and start it
+        run: |
+          python scripts/package-release.py --version v0.0.0-ci
+          bash scripts/smoke-package.sh dist/apim-backend-pool-0.0.0-ci.zip
+
+  # The preflight people run before installing anything, on each OS and on a Python too old for
+  # the app (it has to say so, with the install command, rather than crash).
+  doctor:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python scripts/doctor.py --tui
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Python 3.10 is reported, not crashed on
+        run: |
+          status=0
+          python scripts/doctor.py --brief > doctor.txt || status=$?
+          cat doctor.txt
+          test "$status" -eq 1 && grep -q "is too old" doctor.txt

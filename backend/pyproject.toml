@@ -1,0 +1,42 @@
+[project]
+name = "apim-backend-pool"
+version = "0.2.1"
+description = "Standalone manager for Azure API Management native backend pools"
+requires-python = ">=3.11"
+dependencies = [
+    "azure-identity==1.26.0",
+    "fastapi==0.139.2",
+    "httpx==0.28.1",
+    "pydantic==2.13.4",
+    "pydantic-settings==2.14.2",
+    "pyjwt[crypto]==2.15.1",
+    "truststore==0.10.5",
+    "uvicorn==0.51.0",
+]
+
+[dependency-groups]
+dev = [
+    "mypy==2.3.0",
+    "pytest==9.1.1",
+    "ruff==0.15.22",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = ["pool_manager/static"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+packages = ["pool_manager"]

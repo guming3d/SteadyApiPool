@@ -1,0 +1,1005 @@
+"""Setup checks for the first-run wizard, and the fixes the app can make itself.
+
+Three identities matter:
+
+- The *operator* calls ARM for every pool operation: the user's ``az login`` locally, the
+  app's managed identity in the Easy Auth deployment, and in the public app the user again,
+  through the token exchanged for them (entra.py).
+- The *user* acts for fixes (enabling APIM's identity, granting it a role on Foundry) with
+  their own Azure rights. Deployed, that is the ARM token Easy Auth obtained for them; the app
+  identity never gets permission to change role assignments.
+- APIM's own *managed identity* calls the Foundry members and needs a data-plane role on each.
+
+Effective permissions come from ``Microsoft.Authorization/permissions`` (what the caller may do
+at a scope), so a check never needs more than read access. Fixes are limited to one role
+(Cognitive Services OpenAI User), granted to APIM's identity on accounts this app knows about.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import logging
+import re
+import time
+import uuid
+from collections.abc import Callable, Iterable, Mapping
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from datetime import datetime
+from threading import Lock
+from typing import Any, Literal, Protocol
+
+from .arm import ArmClient, ArmError, jwt_claims, segment
+from .config import Settings
+from .models import (
+    AdminRequest,
+    DeviceCodePrompt,
+    DeviceCodeStatus,
+    LocalSignIn,
+    SetupCheck,
+    SetupFix,
+    SetupIdentity,
+    SetupKind,
+    SetupProgress,
+    SetupProgressStep,
+    SetupReport,
+    SetupStatus,
+    SetupStepKind,
+)
+from .service import PoolManagerService, ServiceError
+
+logger = logging.getLogger(__name__)
+
+AUTHORIZATION_API_VERSION = "2022-04-01"
+
+_APIM = "Microsoft.ApiManagement/service"
+# Mirrors infra/modules/apim-rbac.bicep.
+APIM_READ_ACTIONS = (
+    f"{_APIM}/read",
+    f"{_APIM}/backends/read",
+    f"{_APIM}/namedValues/read",
+    f"{_APIM}/apis/read",
+    f"{_APIM}/apis/policies/read",
+)
+APIM_WRITE_ACTIONS = (
+    f"{_APIM}/backends/write",
+    f"{_APIM}/backends/delete",
+    f"{_APIM}/namedValues/write",
+    f"{_APIM}/namedValues/delete",
+    f"{_APIM}/apis/write",
+    # Only APIs this app created, when their pool is removed.
+    f"{_APIM}/apis/delete",
+    f"{_APIM}/apis/operations/write",
+    f"{_APIM}/apis/policies/write",
+)
+APIM_SERVICE_WRITE = f"{_APIM}/write"
+# Mirrors infra/modules/discovery-rbac.bicep.
+DISCOVERY_ACTIONS = (
+    "Microsoft.CognitiveServices/accounts/read",
+    "Microsoft.CognitiveServices/accounts/deployments/read",
+)
+ROLE_ASSIGNMENT_WRITE = "Microsoft.Authorization/roleAssignments/write"
+# What APIM calls on a member. Every inference role (OpenAI User, Cognitive Services User,
+# Azure AI User, ...) allows it, so the check reads role definitions instead of hard-coding them.
+INFERENCE_DATA_ACTION = (
+    "Microsoft.CognitiveServices/accounts/OpenAI/deployments/chat/completions/action"
+)
+OPENAI_USER_ROLE = "Cognitive Services OpenAI User"
+OPENAI_USER_ROLE_ID = "5e0bd9bd-7b93-4f28-af87-19fc36ad61bd"
+APIM_ROLE = "APIM Backend Pool Manager"
+APIM_FALLBACK_ROLE = "API Management Service Contributor"
+DISCOVERY_ROLE = "APIM Backend Pool Deployment Reader"
+DISCOVERY_FALLBACK_ROLE = "Reader"
+ARM_AUDIENCES = frozenset({"https://management.azure.com", "https://management.core.windows.net"})
+
+_CACHE_SECONDS = 300.0
+_WORKERS = 8
+_NOT_READY: frozenset[SetupStatus] = frozenset({"action", "blocked", "pending"})
+# The APIM service's provisioningState after a create or update Azure could not finish.
+_FAILED = "Failed"
+
+Permissions = list[Mapping[str, Any]]
+
+
+@dataclass(frozen=True)
+class UserToken:
+    """The signed-in user's ARM access token, as Easy Auth injected it."""
+
+    token: str
+    expires_on: float
+
+    @property
+    def expired(self) -> bool:
+        return self.expires_on - 60 < time.time()
+
+
+class SignInCredential(Protocol):
+    """credentials.LocalCredential; tests may provide only ``sign_in``."""
+
+    def sign_in(self, tenant_id: str | None, scope: str) -> None: ...
+
+
+def user_token(headers: Mapping[str, str]) -> UserToken | None:
+    token = headers.get("X-MS-TOKEN-AAD-ACCESS-TOKEN", "").strip()
+    if not token:
+        return None
+    # Only the signed-in user's own token: Easy Auth sets the principal ID and clients cannot.
+    principal = headers.get("X-MS-CLIENT-PRINCIPAL-ID", "").strip().casefold()
+    oid = str(jwt_claims(token).get("oid") or "").casefold()
+    if principal and oid != principal:
+        return None
+    expires_on = _iso_timestamp(headers.get("X-MS-TOKEN-AAD-EXPIRES-ON", ""))
+    if expires_on is None:
+        exp = jwt_claims(token).get("exp")
+        expires_on = float(exp) if isinstance(exp, int | float) else time.time() + 300
+    return UserToken(token, expires_on)
+
+
+def _iso_timestamp(value: str) -> float | None:
+    # Easy Auth writes e.g. 2026-10-24T01:28:11.0000000Z; fromisoformat wants 6 fraction digits.
+    match = re.fullmatch(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(\.\d+)?Z?", value.strip())
+    if not match:
+        return None
+    fraction = (match.group(2) or ".0")[:7]
+    return datetime.fromisoformat(f"{match.group(1)}{fraction}+00:00").timestamp()
+
+
+def _matches(pattern: str, action: str) -> bool:
+    regex = ".*".join(re.escape(part) for part in pattern.split("*"))
+    return re.fullmatch(regex, action, re.IGNORECASE) is not None
+
+
+def allows(permissions: Iterable[Mapping[str, Any]], action: str, *, data: bool = False) -> bool:
+    """Whether any permission entry (one per role assignment) allows ``action``."""
+    key, deny = ("dataActions", "notDataActions") if data else ("actions", "notActions")
+    return any(
+        any(_matches(pattern, action) for pattern in entry.get(key) or [])
+        and not any(_matches(pattern, action) for pattern in entry.get(deny) or [])
+        for entry in permissions
+    )
+
+
+def missing(permissions: Permissions, actions: Iterable[str]) -> list[str]:
+    return [action for action in actions if not allows(permissions, action)]
+
+
+def _identity(claims: Mapping[str, Any]) -> SetupIdentity:
+    name = claims.get("upn") or claims.get("preferred_username") or claims.get("unique_name")
+    return SetupIdentity(
+        name=str(name) if name else None,
+        object_id=str(claims["oid"]) if claims.get("oid") else None,
+        tenant_id=str(claims["tid"]) if claims.get("tid") else None,
+    )
+
+
+def _portal(scope: str, blade: str = "overview") -> str:
+    return f"https://portal.azure.com/#resource{scope}/{blade}"
+
+
+def _account_name(account_id: str) -> str:
+    return account_id.rstrip("/").rpartition("/")[2]
+
+
+def _no_tick() -> None:
+    pass
+
+
+class _Tracker:
+    """The steps of one setup report as it runs; each starts when the previous one ends."""
+
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self._steps: list[SetupProgressStep] = []
+        self._running = True
+
+    def step(
+        self, kind: SetupStepKind, *, subject: str | None = None, total: int | None = None
+    ) -> None:
+        with self._lock:
+            for step in self._steps:
+                step.state = "done"
+            self._steps.append(
+                SetupProgressStep(
+                    kind=kind,
+                    state="running",
+                    subject=subject,
+                    done=None if total is None else 0,
+                    total=total,
+                )
+            )
+
+    def tick(self) -> None:
+        """One more of the current step's subscriptions or accounts is done; any thread."""
+        with self._lock:
+            if self._steps:
+                self._steps[-1].done = (self._steps[-1].done or 0) + 1
+
+    def finish(self) -> None:
+        with self._lock:
+            for step in self._steps:
+                step.state = "done"
+            self._running = False
+
+    def view(self) -> SetupProgress:
+        with self._lock:
+            return SetupProgress(
+                running=self._running, steps=[step.model_copy() for step in self._steps]
+            )
+
+
+class AccessChecker:
+    def __init__(
+        self,
+        settings: Settings,
+        arm: ArmClient,
+        service: PoolManagerService,
+        discovered_accounts: Callable[[], Iterable[str]],
+        credential: SignInCredential | None = None,
+    ) -> None:
+        self._settings = settings
+        self._arm = arm
+        self._service = service
+        self._discovered_accounts = discovered_accounts
+        self._credential = credential
+        self._lock = Lock()
+        self._writers: dict[str, tuple[float, bool]] = {}
+        self._roles: dict[str, Permissions] = {}
+        self._role_names: dict[str, str | None] = {}
+        # The report being built for each caller, while it runs.
+        self._reports: dict[str, _Tracker] = {}
+
+    @property
+    def local(self) -> bool:
+        return self._settings.auth_mode == "disabled"
+
+    @property
+    def _mode(self) -> Literal["local", "deployed", "public", "guest"]:
+        settings = self._settings
+        if settings.guest:
+            return "guest"
+        return "local" if settings.local else "public" if settings.public else "deployed"
+
+    @property
+    def _subscription_scope(self) -> str:
+        return f"/subscriptions/{segment(self._settings.subscription_id)}"
+
+    @property
+    def _resource_group_scope(self) -> str:
+        return f"{self._subscription_scope}/resourceGroups/{segment(self._settings.resource_group)}"
+
+    def user_arm(self, token: UserToken | None) -> ArmClient | None:
+        """ARM as the signed-in user: the operator locally and in the public app, Easy Auth's
+        token in the Easy Auth deployment."""
+        if self._settings.operator_is_user:
+            return self._arm
+        if self._settings.guest:
+            return None  # Guests act as nobody; a token header they send means nothing.
+        if token is None or token.expired:
+            return None
+        return self._arm.with_token(token.token, token.expires_on)
+
+    def _permissions(self, arm: ArmClient, scope: str) -> Permissions:
+        return list(
+            arm.list_arm(
+                f"{scope}/providers/Microsoft.Authorization/permissions",
+                api_version=AUTHORIZATION_API_VERSION,
+            )
+        )
+
+    # -- write access for the deployed app ----------------------------------------------
+
+    def user_can_write(self, token: UserToken) -> bool:
+        """Whether the user's own roles allow every APIM read and write the app makes."""
+        # Keyed by the token itself: its claims are not verified here, only ARM verifies them.
+        key = hashlib.sha256(token.token.encode()).hexdigest()
+        with self._lock:
+            cached = self._writers.get(key)
+        if cached and time.monotonic() - cached[0] < _CACHE_SECONDS:
+            return cached[1]
+        arm = self.user_arm(token)
+        allowed = False
+        if arm is not None:
+            try:
+                permissions = self._permissions(arm, self._arm.resource_id)
+                allowed = not missing(permissions, (*APIM_READ_ACTIONS, *APIM_WRITE_ACTIONS))
+            except ArmError as error:
+                logger.info("Cannot read the user's APIM permissions: %s", error.message)
+        with self._lock:
+            self._writers[key] = (time.monotonic(), allowed)
+        return allowed
+
+    def forget(self) -> None:
+        with self._lock:
+            self._writers.clear()
+            self._roles.clear()
+            self._role_names.clear()
+        self._service.forget_service()
+        # "Check again" also retries sign-in tools that were missing a minute ago.
+        forget_misses = getattr(self._credential, "forget_misses", None)
+        if callable(forget_misses):
+            forget_misses()
+
+    # -- report -------------------------------------------------------------------------
+
+    def report(self, token: UserToken | None, *, principal: str | None, owner: bool) -> SetupReport:
+        key = principal or ""
+        tracker = _Tracker()
+        with self._lock:
+            self._reports[key] = tracker
+        try:
+            return self._report(token, principal=principal, owner=owner, tracker=tracker)
+        finally:
+            tracker.finish()
+            with self._lock:
+                if self._reports.get(key) is tracker:
+                    del self._reports[key]
+
+    def progress(self, principal: str | None) -> SetupProgress:
+        """What the caller's report is waiting for; nothing once it has been sent."""
+        with self._lock:
+            tracker = self._reports.get(principal or "")
+        return tracker.view() if tracker else SetupProgress(running=False, steps=[])
+
+    def _report(
+        self, token: UserToken | None, *, principal: str | None, owner: bool, tracker: _Tracker
+    ) -> SetupReport:
+        if self._settings.guest:
+            # Nothing to sign in to or fix: the service is the one the deployment shows guests.
+            tracker.step("apim_target", subject=self._settings.apim_name or None)
+            target = self._target()
+            return self._finish("guest", None, [target], target.status == "ok")
+        checks: list[SetupCheck] = []
+        user = self.user_arm(token)
+        tracker.step("sign_in")
+        if self._settings.operator_is_user:
+            sign_in, identity = self._local_sign_in()
+            checks.append(sign_in)
+            if sign_in.status != "ok":
+                return self._finish(self._mode, identity, checks, can_operate=False)
+        else:
+            checks.append(SetupCheck(id="sign_in", kind="sign_in", status="ok", detail=principal))
+            token_check, identity = self._token_check(token)
+            checks.append(token_check)
+            if token_check.status != "ok":
+                user = None
+
+        tracker.step("apim_target", subject=self._settings.apim_name or None)
+        target = self._target()
+        checks.append(target)
+        # A failed update usually leaves the service running, so let the access checks below
+        # decide whether the app can work with it; a failed create fails those too.
+        if target.status in _NOT_READY and target.detail != _FAILED:
+            return self._finish(self._mode, identity, checks, False)
+
+        tracker.step("apim_access")
+        apim_check, user_permissions = self._user_apim(user, identity, owner)
+        checks.append(apim_check)
+        discovery_total = len(self._settings.discovery_subscription_list)
+        if self._settings.operator_is_user:
+            can_operate = apim_check.status != "blocked"
+            tracker.step("discovery", total=discovery_total)
+            checks.extend(self._discovery(self._arm, identity, kind="discovery", tick=tracker.tick))
+        else:
+            tracker.step("app_apim")
+            app_check, app_identity = self._app_apim()
+            checks.append(app_check)
+            can_operate = app_check.status != "blocked"
+            tracker.step("discovery", total=discovery_total)
+            checks.extend(
+                self._discovery(self._arm, app_identity, kind="app_discovery", tick=tracker.tick)
+            )
+
+        tracker.step("apim_identity")
+        identity_check, principal_id = self._apim_identity(user_permissions)
+        checks.append(identity_check)
+        if can_operate:
+            tracker.step("members")
+            try:
+                accounts = self._service.foundry_accounts()
+            except ServiceError as error:
+                logger.warning("Cannot list member backends: %s", error.message)
+                accounts = []
+            if accounts:
+                tracker.step("foundry_access", total=len(accounts))
+            checks.extend(self._foundry(accounts, principal_id, user, tick=tracker.tick))
+        return self._finish(self._mode, identity, checks, can_operate)
+
+    def _finish(
+        self, mode: Any, identity: SetupIdentity | None, checks: list[SetupCheck], can_operate: bool
+    ) -> SetupReport:
+        return SetupReport(
+            mode=mode,
+            user=identity,
+            checks=checks,
+            ready=not any(check.status in _NOT_READY for check in checks),
+            can_operate=can_operate,
+            local_sign_in=self._local_sign_in_view() if self.local else None,
+        )
+
+    def _local_sign_in_view(self) -> LocalSignIn | None:
+        credential = self._credential
+        if credential is None:
+            return None
+        from .credentials import installed_tools
+
+        return LocalSignIn(
+            source=getattr(credential, "source", None),
+            remembered=bool(getattr(credential, "remembered", False)),
+            persistent=bool(getattr(credential, "persistent", False)),
+            tools=installed_tools(),  # type: ignore[arg-type]
+        )
+
+    def _target(self) -> SetupCheck:
+        """Which APIM service the app manages, and whether it has finished provisioning."""
+        settings = self._settings
+        fix: SetupFix | None = "select_apim" if settings.can_choose_target else None
+        kind: SetupKind = "apim_target"
+        if not settings.has_target:
+            return SetupCheck(id=kind, kind=kind, status="action", fix=fix)
+        subject = settings.apim_name
+        try:
+            found = self._arm.get_json("", api_version=settings.api_version)
+        except ArmError as error:
+            # Missing read access is reported by the APIM access check that follows.
+            return SetupCheck(
+                id=kind, kind=kind, subject=subject, status="unknown", detail=error.message
+            )
+        if found is None:
+            return SetupCheck(
+                id=kind, kind=kind, subject=subject, status="blocked", detail="not_found", fix=fix
+            )
+        # Only a new service is unusable while provisioning (v2 tiers take minutes, Developer
+        # 30-40); an existing one keeps working while it is "Updating".
+        properties = found[0].get("properties") or {}
+        state = str(properties.get("provisioningState") or "")
+        if state.casefold() in {"created", "activating"}:
+            # properties.createdAtUtc stays 0001-01-01 until the service is up; ARM's own
+            # systemData has the real time.
+            started = (found[0].get("systemData") or {}).get("createdAt")
+            return SetupCheck(
+                id=kind,
+                kind=kind,
+                subject=subject,
+                status="pending",
+                detail=state,
+                started_at=str(started) if started else None,
+            )
+        if state.casefold() == "failed":
+            return SetupCheck(
+                id=kind, kind=kind, subject=subject, status="action", detail=_FAILED, fix=fix
+            )
+        return SetupCheck(id=kind, kind=kind, subject=subject, status="ok")
+
+    def _local_sign_in(self) -> tuple[SetupCheck, SetupIdentity | None]:
+        """The operator's own sign-in: locally the developer's, in the public app the user's
+        (signing in again in the browser fixes it, or consenting to Azure access)."""
+        public = self._settings.public
+        fix: SetupFix | None = "sign_in" if self._credential is not None or public else None
+        try:
+            claims = self._arm.token_claims()
+        except ArmError as error:  # The credential could not get a token.
+            detail = error.message
+            if public and error.code == "ConsentRequired":
+                fix = "consent"
+            check = SetupCheck(
+                id="sign_in", kind="sign_in", status="action", detail=detail, fix=fix
+            )
+            return check, None
+        identity = _identity(claims)
+        tenant = self._arm.subscription_tenant()
+        if tenant and identity.tenant_id and tenant.casefold() != identity.tenant_id.casefold():
+            detail = (
+                f"signed in to tenant {identity.tenant_id}; the APIM subscription is in {tenant}"
+            )
+            # The public app signs the browser in again to this tenant.
+            check = SetupCheck(
+                id="sign_in",
+                kind="sign_in",
+                status="action",
+                detail=detail,
+                fix=fix,
+                subject=tenant if public else None,
+            )
+            return check, identity
+        return SetupCheck(id="sign_in", kind="sign_in", status="ok", detail=identity.name), identity
+
+    def _token_check(self, token: UserToken | None) -> tuple[SetupCheck, SetupIdentity | None]:
+        def check(status: SetupStatus, fix: Any = None, detail: str | None = None) -> SetupCheck:
+            return SetupCheck(
+                id="azure_token", kind="azure_token", status=status, fix=fix, detail=detail
+            )
+
+        if token is None:
+            if not self._settings.delegated_access:
+                # Only an administrator can turn this on; see README "Delegated Azure access".
+                request = AdminRequest(
+                    assignee=self._settings.apim_name,
+                    assignee_id=None,
+                    role=None,
+                    scope=None,
+                    command="azd env set ENABLE_DELEGATED_AZURE_ACCESS true\nazd provision",
+                    portal_url=None,
+                )
+                return SetupCheck(
+                    id="azure_token",
+                    kind="azure_token",
+                    status="action",
+                    detail="delegated Azure access is off",
+                    request=request,
+                ), None
+            return check("action", "consent", "Easy Auth provided no Azure token"), None
+        claims = jwt_claims(token.token)
+        identity = _identity(claims)
+        audience = str(claims.get("aud") or "").rstrip("/")
+        if audience and audience not in ARM_AUDIENCES:
+            return check("action", "consent", f"token is for {audience}, not Azure"), identity
+        if token.expired:
+            return check("action", "refresh_token"), identity
+        return check("ok"), identity
+
+    def _user_apim(
+        self, arm: ArmClient | None, identity: SetupIdentity | None, owner: bool
+    ) -> tuple[SetupCheck, Permissions | None]:
+        scope = self._arm.resource_id
+        if arm is None:
+            if owner:
+                check = SetupCheck(
+                    id="apim_access", kind="apim_access", status="ok", granted_by="owners"
+                )
+                return check, None
+            return SetupCheck(id="apim_access", kind="apim_access", status="unknown"), None
+        try:
+            permissions = self._permissions(arm, scope)
+        except ArmError as error:
+            status: SetupStatus = "blocked" if self._settings.operator_is_user else "unknown"
+            return SetupCheck(
+                id="apim_access", kind="apim_access", status=status, detail=error.message
+            ), None
+        read = missing(permissions, APIM_READ_ACTIONS)
+        write = missing(permissions, APIM_WRITE_ACTIONS)
+        request = self._role_request(
+            identity,
+            "User",
+            self._custom_role(APIM_ROLE, self._resource_group_scope) or APIM_FALLBACK_ROLE,
+            scope,
+        )
+        if self._settings.operator_is_user:
+            status = "blocked" if read else "action" if write else "ok"
+            return SetupCheck(
+                id="apim_access",
+                kind="apim_access",
+                status=status,
+                missing=[*read, *write],
+                request=request if status != "ok" else None,
+            ), permissions
+        # Deployed, the app identity does the work; the user only needs leave to change things.
+        granted: Literal["owners", "azure_rbac"] | None = (
+            "owners" if owner else "azure_rbac" if not read and not write else None
+        )
+        return SetupCheck(
+            id="apim_access",
+            kind="apim_access",
+            status="ok" if granted else "action",
+            missing=[] if granted else [*read, *write],
+            request=None if granted else request,
+            granted_by=granted,
+        ), permissions
+
+    def _app_apim(self) -> tuple[SetupCheck, SetupIdentity | None]:
+        try:
+            identity = _identity(self._arm.token_claims())
+            permissions = self._permissions(self._arm, self._arm.resource_id)
+        except ArmError as error:
+            return SetupCheck(
+                id="app_apim", kind="app_apim", status="blocked", detail=error.message
+            ), None
+        read = missing(permissions, APIM_READ_ACTIONS)
+        write = missing(permissions, APIM_WRITE_ACTIONS)
+        status: SetupStatus = "blocked" if read else "action" if write else "ok"
+        request = None
+        if status != "ok":
+            request = self._role_request(
+                identity,
+                "ServicePrincipal",
+                self._custom_role(APIM_ROLE, self._resource_group_scope) or APIM_FALLBACK_ROLE,
+                self._arm.resource_id,
+                command="azd provision",
+            )
+        return SetupCheck(
+            id="app_apim", kind="app_apim", status=status, missing=[*read, *write], request=request
+        ), identity
+
+    def _discovery(
+        self,
+        arm: ArmClient,
+        identity: SetupIdentity | None,
+        *,
+        kind: Any,
+        tick: Callable[[], None] = _no_tick,
+    ) -> list[SetupCheck]:
+        principal_type = "User" if kind == "discovery" else "ServicePrincipal"
+
+        def check(subscription: str) -> SetupCheck:
+            scope = f"/subscriptions/{segment(subscription)}"
+            gaps: list[str] = []
+            try:
+                gaps = missing(self._permissions(arm, scope), DISCOVERY_ACTIONS)
+            except ArmError as error:
+                logger.info("Cannot read permissions on %s: %s", subscription, error.message)
+                gaps = list(DISCOVERY_ACTIONS)
+            if gaps:
+                # Access granted on resource groups only shows up when listing, not at this scope.
+                try:
+                    if any(
+                        arm.list_arm(
+                            f"{scope}/providers/Microsoft.CognitiveServices/accounts",
+                            api_version=self._settings.cognitive_api_version,
+                        )
+                    ):
+                        gaps = []
+                except ArmError:
+                    pass
+            request = None
+            if gaps:
+                role = self._custom_role(DISCOVERY_ROLE, scope) or DISCOVERY_FALLBACK_ROLE
+                request = self._role_request(
+                    identity,
+                    principal_type,
+                    role,
+                    scope,
+                    command="azd provision" if kind == "app_discovery" else None,
+                )
+            return SetupCheck(
+                id=f"{kind}:{subscription}",
+                kind=kind,
+                subject=subscription,
+                status="action" if gaps else "ok",
+                missing=gaps,
+                request=request,
+            )
+
+        def counted(subscription: str) -> SetupCheck:
+            try:
+                return check(subscription)
+            finally:
+                tick()
+
+        subscriptions = self._settings.discovery_subscription_list
+        with ThreadPoolExecutor(max_workers=min(_WORKERS, len(subscriptions))) as executor:
+            return list(executor.map(counted, subscriptions))
+
+    def _apim_identity(self, user_permissions: Permissions | None) -> tuple[SetupCheck, str | None]:
+        try:
+            identity = self._service.apim_identity()
+        except ArmError as error:
+            return SetupCheck(
+                id="apim_identity", kind="apim_identity", status="unknown", detail=error.message
+            ), None
+        principal = str(identity.get("principalId") or "") or None
+        if principal:
+            return SetupCheck(id="apim_identity", kind="apim_identity", status="ok"), principal
+        if str(identity.get("provisioningState") or "").casefold() in {"updating", "activating"}:
+            return SetupCheck(id="apim_identity", kind="apim_identity", status="pending"), None
+        can_enable = user_permissions is not None and allows(user_permissions, APIM_SERVICE_WRITE)
+        scope = self._arm.resource_id
+        return SetupCheck(
+            id="apim_identity",
+            kind="apim_identity",
+            status="action",
+            fix="enable_apim_identity" if can_enable else None,
+            request=AdminRequest(
+                assignee=self._settings.apim_name,
+                assignee_id=None,
+                role=None,
+                scope=scope,
+                command=f"az apim update -g {self._settings.resource_group} "
+                f"-n {self._settings.apim_name} --enable-managed-identity true",
+                portal_url=_portal(scope),
+            ),
+        ), None
+
+    def _foundry(
+        self,
+        accounts: list[str],
+        principal: str | None,
+        user: ArmClient | None,
+        *,
+        tick: Callable[[], None] = _no_tick,
+    ) -> list[SetupCheck]:
+        if not accounts:
+            return []
+
+        def counted(account: str) -> SetupCheck:
+            try:
+                return self._foundry_check(account, principal, user)
+            finally:
+                tick()
+
+        with ThreadPoolExecutor(max_workers=min(_WORKERS, len(accounts))) as executor:
+            return list(executor.map(counted, accounts))
+
+    def _foundry_check(
+        self, account: str, principal: str | None, user: ArmClient | None
+    ) -> SetupCheck:
+        def check(status: SetupStatus, **values: Any) -> SetupCheck:
+            return SetupCheck(
+                id=f"foundry_access:{account.casefold()}",
+                kind="foundry_access",
+                subject=account,
+                status=status,
+                **values,
+            )
+
+        if principal is None:
+            return check("skipped")
+        reader = user or self._arm
+        try:
+            has_role = self._has_inference_role(reader, account, principal)
+        except ArmError as error:
+            return check(
+                "unknown", detail=error.message, request=self._foundry_request(account, principal)
+            )
+        if has_role:
+            return check("ok")
+        can_grant = False
+        if user is not None:
+            try:
+                can_grant = allows(self._permissions(user, account), ROLE_ASSIGNMENT_WRITE)
+            except ArmError as error:
+                logger.info("Cannot read permissions on %s: %s", account, error.message)
+        return check(
+            "action",
+            fix="grant_foundry_access" if can_grant else None,
+            request=self._foundry_request(account, principal),
+        )
+
+    def _has_inference_role(self, arm: ArmClient, account: str, principal: str) -> bool:
+        assignments = arm.list_arm(
+            f"{account}/providers/Microsoft.Authorization/roleAssignments",
+            api_version=AUTHORIZATION_API_VERSION,
+            params={"$filter": f"principalId eq '{principal}'"},
+        )
+        for assignment in assignments:
+            properties = assignment.get("properties") or {}
+            scope = str(properties.get("scope") or "").rstrip("/").casefold()
+            # The filter also returns assignments below the account; only those at or above count.
+            if not account.casefold().startswith(scope):
+                continue
+            if allows(
+                self._role_permissions(arm, str(properties.get("roleDefinitionId") or "")),
+                INFERENCE_DATA_ACTION,
+                data=True,
+            ):
+                return True
+        return False
+
+    def _role_permissions(self, arm: ArmClient, role_definition_id: str) -> Permissions:
+        key = role_definition_id.casefold()
+        with self._lock:
+            if key in self._roles:
+                return self._roles[key]
+        body = arm.get_arm_json(role_definition_id, api_version=AUTHORIZATION_API_VERSION) or {}
+        permissions = list((body.get("properties") or {}).get("permissions") or [])
+        with self._lock:
+            self._roles[key] = permissions
+        return permissions
+
+    def _custom_role(self, prefix: str, scope: str) -> str | None:
+        """The name of this app's custom role (created by azd provision), if it exists."""
+        key = f"{prefix}|{scope}".casefold()
+        with self._lock:
+            if key in self._role_names:
+                return self._role_names[key]
+        name = None
+        try:
+            for role in self._arm.list_arm(
+                f"{scope}/providers/Microsoft.Authorization/roleDefinitions",
+                api_version=AUTHORIZATION_API_VERSION,
+                params={"$filter": "type eq 'CustomRole'"},
+            ):
+                role_name = str((role.get("properties") or {}).get("roleName") or "")
+                if role_name.startswith(prefix):
+                    name = role_name
+                    break
+        except ArmError as error:
+            logger.info("Cannot list custom roles at %s: %s", scope, error.message)
+        with self._lock:
+            self._role_names[key] = name
+        return name
+
+    def _role_request(
+        self,
+        identity: SetupIdentity | None,
+        principal_type: str,
+        role: str,
+        scope: str,
+        *,
+        command: str | None = None,
+    ) -> AdminRequest:
+        object_id = identity.object_id if identity else None
+        assignee = (identity.name if identity else None) or object_id or "<your account>"
+        target = (
+            f"--assignee-object-id {object_id} --assignee-principal-type {principal_type}"
+            if object_id
+            else f'--assignee "{assignee}"'
+        )
+        role_command = f'az role assignment create {target} --role "{role}" --scope "{scope}"'
+        return AdminRequest(
+            assignee=assignee,
+            assignee_id=object_id,
+            role=role,
+            scope=scope,
+            command=f"{command}\n# or: {role_command}" if command else role_command,
+            portal_url=_portal(scope, "users"),
+        )
+
+    def _foundry_request(self, account: str, principal: str) -> AdminRequest:
+        return AdminRequest(
+            assignee=f"{self._settings.apim_name} (APIM managed identity)",
+            assignee_id=principal,
+            role=OPENAI_USER_ROLE,
+            scope=account,
+            command=f"az role assignment create --assignee-object-id {principal} "
+            f'--assignee-principal-type ServicePrincipal --role "{OPENAI_USER_ROLE}" '
+            f'--scope "{account}"',
+            portal_url=_portal(account, "users"),
+        )
+
+    # -- fixes --------------------------------------------------------------------------
+
+    def foundry_checks(self, token: UserToken | None, account_ids: list[str]) -> list[SetupCheck]:
+        """Read-only: whether APIM's identity can call these accounts, e.g. before importing."""
+        try:
+            principal = str(self._service.apim_identity().get("principalId") or "") or None
+        except ArmError as error:
+            raise ServiceError(502, f"Cannot read the APIM service: {error.message}") from error
+        return self._foundry(account_ids, principal, self.user_arm(token))
+
+    def grant_foundry_access(
+        self, token: UserToken | None, account_ids: list[str], actor: str
+    ) -> list[SetupCheck]:
+        user = self.require_user(token)
+        known = {account.casefold() for account in self._service.foundry_accounts()}
+        known.update(account.casefold() for account in self._discovered_accounts())
+        unknown = [account for account in account_ids if account.casefold() not in known]
+        if unknown:
+            raise ServiceError(
+                400, f"Not a member or discovered Foundry account: {', '.join(unknown)}"
+            )
+        try:
+            principal = str(self._service.apim_identity().get("principalId") or "") or None
+        except ArmError as error:
+            raise ServiceError(502, f"Cannot read the APIM service: {error.message}") from error
+        if principal is None:
+            raise ServiceError(409, "Enable the APIM managed identity first")
+        for account in account_ids:
+            subscription = account.split("/")[2]
+            name = uuid.uuid5(
+                uuid.NAMESPACE_URL, f"{account.casefold()}|{principal}|{OPENAI_USER_ROLE_ID}"
+            )
+            try:
+                user.request(
+                    "PUT",
+                    user.arm_url(
+                        f"{account}/providers/Microsoft.Authorization/roleAssignments/{name}"
+                    ),
+                    api_version=AUTHORIZATION_API_VERSION,
+                    json_body={
+                        "properties": {
+                            "roleDefinitionId": f"/subscriptions/{subscription}/providers/"
+                            f"Microsoft.Authorization/roleDefinitions/{OPENAI_USER_ROLE_ID}",
+                            "principalId": principal,
+                            "principalType": "ServicePrincipal",
+                        }
+                    },
+                )
+            except ArmError as error:
+                if error.code == "RoleAssignmentExists":
+                    continue
+                if error.status in {401, 403}:
+                    raise ServiceError(
+                        403,
+                        f"Your Azure account cannot assign roles on {_account_name(account)}: "
+                        f"{error.message}",
+                    ) from error
+                raise ServiceError(502, f"Assigning the role failed: {error.message}") from error
+            logger.info(
+                "%s granted %s to APIM identity %s on %s",
+                actor,
+                OPENAI_USER_ROLE,
+                principal,
+                account,
+            )
+        return self._foundry(account_ids, principal, user)
+
+    def enable_apim_identity(self, token: UserToken | None, actor: str) -> SetupCheck:
+        user = self.require_user(token)
+        try:
+            identity = self._service.apim_identity()
+            if identity.get("principalId"):
+                return SetupCheck(id="apim_identity", kind="apim_identity", status="ok")
+            current = str(identity.get("type") or "None")
+            assigned = dict(identity.get("userAssignedIdentities") or {})
+            # Keep any user-assigned identities; PATCH replaces the whole identity block.
+            body: dict[str, Any] = {
+                "type": "SystemAssigned, UserAssigned"
+                if "userassigned" in current.casefold()
+                else "SystemAssigned"
+            }
+            if assigned:
+                body["userAssignedIdentities"] = {key: {} for key in assigned}
+            user.request(
+                "PATCH", "", api_version=self._settings.api_version, json_body={"identity": body}
+            )
+        except ArmError as error:
+            if error.status in {401, 403}:
+                raise ServiceError(
+                    403, f"Your Azure account cannot change the APIM service: {error.message}"
+                ) from error
+            raise ServiceError(502, f"Enabling the identity failed: {error.message}") from error
+        logger.info(
+            "%s enabled the system-assigned identity of %s", actor, self._settings.apim_name
+        )
+        self._service.forget_service()
+        check, _ = self._apim_identity(None)
+        return check
+
+    def sign_in(self, tenant_id: str | None = None) -> None:
+        """Local only: opens the browser sign-in on this machine and waits for it. Without a
+        tenant it signs in to the APIM service's tenant, or the home tenant if there is none."""
+        if not self.local or self._credential is None:
+            raise ServiceError(400, "Browser sign-in is only available when running locally")
+        tenant = tenant_id or self._settings.tenant_id or self._arm.subscription_tenant()
+        try:
+            self._credential.sign_in(tenant, self._arm.token_scope)
+        except Exception as error:
+            raise ServiceError(401, f"Sign-in did not complete: {error}") from error
+        self._arm.reset_token()
+        self.forget()
+
+    def _local_credential(self) -> Any:
+        if not self.local or self._credential is None:
+            raise ServiceError(
+                400, "Signing in from the app is only available when running locally"
+            )
+        return self._credential
+
+    def start_device_code(self, tenant_id: str | None = None) -> DeviceCodePrompt:
+        """Local only: starts a device-code sign-in for machines without a local browser (SSH,
+        servers, WSL, containers). It finishes in the background; poll device_code_status."""
+        credential = self._local_credential()
+        tenant = tenant_id or self._settings.tenant_id or self._arm.subscription_tenant()
+        try:
+            prompt = credential.start_device_code(tenant, self._arm.token_scope)
+        except Exception as error:
+            raise ServiceError(502, f"Device-code sign-in did not start: {error}") from error
+        return DeviceCodePrompt(
+            verification_uri=prompt.verification_uri,
+            user_code=prompt.user_code,
+            expires_on=prompt.expires_on,
+        )
+
+    def device_code_status(self) -> DeviceCodeStatus:
+        credential = self._local_credential()
+        flow = credential.device_flow(acknowledge=True)
+        if flow.state == "done" and flow.unacknowledged:
+            # Tokens cached for the previous account (or a failed attempt) must go.
+            self._arm.reset_token()
+            self.forget()
+        return DeviceCodeStatus(state=flow.state, error=flow.error)
+
+    def sign_out(self) -> None:
+        """Local only: forgets the app's own sign-in; az / azd / PowerShell are left alone."""
+        self._local_credential().sign_out()
+        self._arm.reset_token()
+        self.forget()
+
+    def require_user(self, token: UserToken | None) -> ArmClient:
+        if self._settings.guest:
+            raise ServiceError(
+                403, "The guest view is read-only: sign in with your own Microsoft account for this"
+            )
+        user = self.user_arm(token)
+        if user is None:
+            raise ServiceError(401, "Sign in to Azure first: the app has no Azure token for you")
+        return user

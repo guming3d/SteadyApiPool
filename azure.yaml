@@ -1,0 +1,19 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/schemas/v1.0/azure.yaml.json
+name: apim-backend-pool
+hooks:
+  # Build the React app into backend/pool_manager/static so it ships inside the web package.
+  prepackage:
+    windows:
+      shell: pwsh
+      run: ./scripts/build-frontend.ps1
+    posix:
+      shell: sh
+      run: ./scripts/build-frontend.sh
+services:
+  web:
+    project: ./backend
+    language: py
+    host: appservice
+infra:
+  provider: bicep
+  path: infra

@@ -1,0 +1,36 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+# The APIM service chosen in the local setup wizard
+backend/.pool-manager.json
+# The local app's own sign-in (an account record; tokens stay in the OS's encrypted store)
+backend/.pool-manager-auth.json
+.azure/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Frontend dependencies and build output (served from backend/pool_manager/static)
+frontend/node_modules/
+frontend/*.tsbuildinfo
+backend/pool_manager/static/
+
+# Packaging (scripts/package-release.py), editors and OS
+*.zip
+dist/
+*.log
+.DS_Store
+.idea/
+.vscode/
+# Screenshots and logs from browser automation (Playwright MCP)
+.playwright-mcp/
+
+# Local-only notes
+/pulse-report-model-api-failover.md
+/模型网关容灾方案对比：APIM vs LiteLLM.md

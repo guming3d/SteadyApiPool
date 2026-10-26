@@ -1,0 +1,14 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "environmentName": { "value": "${AZURE_ENV_NAME}" },
+    "location": { "value": "${AZURE_LOCATION}" },
+    "entraClientId": { "value": "${ENTRA_CLIENT_ID}" },
+    "allowedTenants": { "value": "${ALLOWED_TENANTS}" },
+    "webExists": { "value": "${SERVICE_WEB_RESOURCE_EXISTS=false}" },
+    "guestApimName": { "value": "${GUEST_APIM_NAME}" },
+    "guestApimResourceGroup": { "value": "${GUEST_APIM_RESOURCE_GROUP}" },
+    "guestApimSubscriptionId": { "value": "${GUEST_APIM_SUBSCRIPTION_ID=${AZURE_SUBSCRIPTION_ID}}" }
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "name": "apim-backend-pool-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "typecheck": "tsc -b",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "@azure/msal-browser": "5.26.0",
+    "@tanstack/react-query": "5.101.2",
+    "lucide-react": "1.24.0",
+    "react": "19.2.7",
+    "react-dom": "19.2.7"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.3",
+    "typescript": "7.0.2",
+    "vite": "8.3.4"
+  }
+}
