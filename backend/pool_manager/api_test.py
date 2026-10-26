@@ -1,16 +1,13 @@
-"""Trying a pool API from the UI, and getting an APIM subscription key to call it with.
+"""Trying a pool from the UI, and the LiteLLM virtual keys to call it with.
 
-Browsers can't call the APIM gateway directly (it sends no CORS headers), so the backend sends
-the test request: only to this APIM service's gateway, only to APIs bound to a pool, and only as
-a POST below the API's path. The key comes with the request and is never stored or logged. The
-public app, where anyone can sign in and bring their own service, only calls Azure's own gateway
-host names (``*.azure-api.net`` and the sovereign clouds' equivalents), never a custom domain,
-so its backend can't be pointed at other hosts.
+The backend sends the test request, so the browser needs no CORS from the gateway: only to this
+gateway's own URL, only below ``/v1``, and only for a model name of the pool. The key comes with
+the request and is never stored or logged.
 
-Keys are read with the signed-in user's own Azure rights, like the setup fixes; the app
-identity has no ``subscriptions/listSecrets``. The only write is one test subscription per API,
-scoped to that API and created with ``If-None-Match: *``. Existing subscriptions are never
-changed.
+LiteLLM keeps only a hash of each virtual key, so a key can be shown once, when it is created.
+The only key this app writes is one test key per pool (alias ``<prefix>test-<pool>``), scoped to
+the pool's model names; creating it again replaces it (rotating a key in place is an Enterprise
+feature).
 """
 
 from __future__ import annotations
@@ -19,76 +16,33 @@ import logging
 import time
 from collections.abc import Mapping
 from typing import Any
-from urllib.parse import urlsplit
 
 import httpx
 
-from .arm import ArmClient, ArmError, segment
 from .config import Settings
+from .litellm import LiteLLMError
 from .models import (
     ApiTestRequest,
     ApiTestResult,
-    ApiView,
-    KeyScope,
-    SubscriptionKeyView,
-    SubscriptionSecret,
+    PoolEndpoint,
+    VirtualKeySecret,
+    VirtualKeyView,
 )
-from .service import PoolManagerService, ServiceError
+from .service import PoolManagerService, ServiceError, test_key_alias, translate_error
 
 logger = logging.getLogger(__name__)
 
-# The built-in all-access subscription; never offered to clients or for tests.
-MASTER_SUBSCRIPTION = "master"
-# Gateway host names Azure assigns (public, China and US Government clouds).
-AZURE_GATEWAY_SUFFIXES = (".azure-api.net", ".azure-api.cn", ".azure-api.us")
-KEY_ACTIONS = (
-    "Microsoft.ApiManagement/service/subscriptions/read",
-    "Microsoft.ApiManagement/service/subscriptions/listSecrets/action",
-)
-# Longer than the pool's 120 s backend timeout, so APIM's own timeout answer gets through.
+# Longer than the pool's default 120 s per-attempt timeout, so LiteLLM's own answer gets through.
 _TIMEOUT = httpx.Timeout(150.0, connect=10.0)
 _MAX_BODY = 64 * 1024
-_HEADER_PREFIXES = ("x-ms-", "x-ratelimit-", "apim-")
+_HEADER_PREFIXES = ("x-litellm-", "x-ratelimit-", "x-ms-", "llm_provider-")
 _HEADERS = frozenset({"content-type", "retry-after", "x-request-id"})
-_SCOPE_ORDER: dict[KeyScope, int] = {"api": 0, "product": 1, "all_apis": 2}
+# Cost and spend headers say nothing about routing.
+_SKIPPED = ("x-litellm-response-cost", "x-litellm-key-spend", "x-litellm-callback")
 
 
-def _key_error(error: ArmError, apim: str) -> ServiceError:
-    if error.status == 401:
-        return ServiceError(401, f"Sign in to Azure to read subscription keys: {error.message}")
-    if error.status == 403:
-        return ServiceError(
-            403,
-            f"Your Azure account cannot read subscription keys on {apim}. It needs "
-            f"{' and '.join(KEY_ACTIONS)} (API Management Service Contributor has both).",
-        )
-    if error.status in {400, 404, 409}:
-        return ServiceError(error.status, error.message)
-    return ServiceError(502, f"APIM returned {error.status} {error.code}: {error.message}")
-
-
-def _key_scope(
-    scope: str, api_id: str, products: Mapping[str, str]
-) -> tuple[KeyScope, str | None] | None:
-    """What a subscription scope opens for ``api_id``, or None if its key doesn't work there.
-
-    ARM returns full IDs (``/subscriptions/.../service/<name>/apis/<id>``); short forms
-    (``/apis/<id>``) are accepted too. ``products`` maps lower-case IDs of the products
-    containing the API to their IDs.
-    """
-    lowered = scope.casefold().rstrip("/")
-    marker = "/providers/microsoft.apimanagement/service/"
-    if marker in lowered:
-        lowered = "/" + lowered.split(marker, 1)[1].partition("/")[2]
-    if lowered == "/apis":
-        return "all_apis", None
-    if lowered == f"/apis/{api_id.casefold()}":
-        return "api", None
-    if lowered.startswith("/products/"):
-        product = lowered.removeprefix("/products/")
-        if product in products:
-            return "product", products[product]
-    return None
+def _float(value: object) -> float | None:
+    return float(value) if isinstance(value, int | float) and not isinstance(value, bool) else None
 
 
 class ApiTester:
@@ -105,147 +59,106 @@ class ApiTester:
     def close(self) -> None:
         self._http.close()
 
-    def _bound_api(self, api_id: str) -> ApiView:
-        api = self._service.get_api(api_id)
-        if api.binding is None:
-            raise ServiceError(
-                409, f"{api_id} is not bound to a pool; only pool APIs are tested here"
-            )
-        return api
-
-    def _test_key_id(self, api_id: str) -> str:
-        return f"{self._settings.id_prefix}test-{api_id}"
-
-    # -- subscription keys (with the user's rights) -----------------------------------------
-
-    def _products(self, arm: ArmClient, api_id: str) -> dict[str, str]:
-        items = arm.list(
-            f"/apis/{segment(api_id)}/products", api_version=self._settings.api_version
-        )
-        return {
-            str(item["name"]).casefold(): str(item["name"]) for item in items if item.get("name")
-        }
-
-    def _view(
-        self, item: Mapping[str, Any], api_id: str, products: Mapping[str, str]
-    ) -> SubscriptionKeyView | None:
-        name = str(item.get("name") or "")
-        properties = item.get("properties") or {}
-        scope = _key_scope(str(properties.get("scope") or ""), api_id, products)
-        if not name or name.casefold() == MASTER_SUBSCRIPTION or scope is None:
+    def _view(self, key: Mapping[str, Any], endpoint: PoolEndpoint) -> VirtualKeyView | None:
+        """The key, when it can call the pool; ``None`` otherwise."""
+        token = str(key.get("token") or "")
+        models = [str(model) for model in key.get("models") or []]
+        names = {name.casefold() for name in endpoint.model_names}
+        if not token:
             return None
-        return SubscriptionKeyView(
-            id=name,
-            display_name=str(properties.get("displayName") or name),
-            scope=scope[0],
-            product=scope[1],
-            state=str(properties.get("state") or "unknown"),
-            managed=name.casefold() == self._test_key_id(api_id).casefold(),
+        # "all-proxy-models" is LiteLLM's way of saying every model.
+        every = not models or "all-proxy-models" in models
+        if not every and not names & {model.casefold() for model in models}:
+            return None
+        alias = str(key.get("key_alias") or "") or None
+        expires = key.get("expires")
+        return VirtualKeyView(
+            id=token,
+            alias=alias,
+            key_name=str(key.get("key_name") or "") or None,
+            scope="all" if every else "pool",
+            models=models,
+            blocked=key.get("blocked") is True,
+            expires=str(expires) if expires else None,
+            spend=_float(key.get("spend")),
+            managed=alias == test_key_alias(self._settings.id_prefix, endpoint.pool_id),
         )
 
-    def keys(self, arm: ArmClient, api_id: str) -> list[SubscriptionKeyView]:
-        """Subscriptions whose key works for the API, most specific and usable first."""
-        self._bound_api(api_id)
+    def keys(self, pool_id: str) -> list[VirtualKeyView]:
+        """Keys that can call the pool, the pool's own test key and usable ones first."""
+        endpoint = self._service.endpoint(pool_id)
         try:
-            products = self._products(arm, api_id)
-            items = list(arm.list("/subscriptions", api_version=self._settings.api_version))
-        except ArmError as error:
-            raise _key_error(error, self._settings.apim_name) from error
-        views = [view for item in items if (view := self._view(item, api_id, products))]
+            keys = list(self._service.client().list_keys())
+        except LiteLLMError as error:
+            raise translate_error(error) from error
+        views = [view for key in keys if (view := self._view(key, endpoint))]
         return sorted(
             views,
             key=lambda view: (
                 not view.managed,
-                view.state != "active",
-                _SCOPE_ORDER[view.scope],
-                view.display_name.casefold(),
+                view.blocked,
+                view.scope != "pool",
+                view.alias or "",
             ),
         )
 
-    def create_key(self, arm: ArmClient, api_id: str, actor: str) -> SubscriptionKeyView:
-        """Creates this API's test subscription, or returns it if it already exists."""
-        api = self._bound_api(api_id)
-        key_id = self._test_key_id(api_id)
-        path = f"/subscriptions/{segment(key_id)}"
-        body = {
-            "properties": {
-                "scope": f"/apis/{api_id}",
-                "displayName": f"Test key for {api.display_name} (APIM Backend Pool Manager)"[:100],
-                "state": "active",
-            }
-        }
+    def create_key(self, pool_id: str, actor: str) -> VirtualKeySecret:
+        """Creates the pool's test key, replacing the one created before."""
+        endpoint = self._service.endpoint(pool_id)
+        alias = test_key_alias(self._settings.id_prefix, endpoint.pool_id)
+        client = self._service.client()
         try:
-            try:
-                response = arm.request(
-                    "PUT",
-                    path,
-                    api_version=self._settings.api_version,
-                    json_body=body,
-                    headers={"If-None-Match": "*"},
-                )
-                item = response.json()
-                logger.info("%s created test subscription %s for API %s", actor, key_id, api_id)
-            except ArmError as error:
-                if error.status != 412:
-                    raise
-                found = arm.get_json(path, api_version=self._settings.api_version)
-                if found is None:
-                    raise
-                item = found[0]
-        except ArmError as error:
-            raise _key_error(error, self._settings.apim_name) from error
-        view = self._view(item, api_id, {})
-        if view is None:
-            raise ServiceError(409, f"Subscription {key_id} exists but doesn't open {api_id}")
-        return view
-
-    def secret(self, arm: ArmClient, api_id: str, key_id: str, actor: str) -> SubscriptionSecret:
-        """The primary key of a subscription that works for the API (and only such one)."""
-        self._bound_api(api_id)
-        path = f"/subscriptions/{segment(key_id)}"
-        try:
-            found = arm.get_json(path, api_version=self._settings.api_version)
-            if found is None:
-                raise ServiceError(404, f"Subscription {key_id} was not found")
-            if self._view(found[0], api_id, self._products(arm, api_id)) is None:
-                raise ServiceError(403, f"The key of {key_id} doesn't open {api_id}")
-            secrets = arm.request(
-                "POST", f"{path}/listSecrets", api_version=self._settings.api_version
-            ).json()
-        except ArmError as error:
-            raise _key_error(error, self._settings.apim_name) from error
-        key = str(secrets.get("primaryKey") or "")
-        if not key:
-            raise ServiceError(502, f"APIM returned no key for {key_id}")
-        logger.info("%s read the key of subscription %s for API %s", actor, key_id, api_id)
-        return SubscriptionSecret(primary_key=key)
-
-    # -- the test call ----------------------------------------------------------------
-
-    def call(self, api_id: str, request: ApiTestRequest, actor: str) -> ApiTestResult:
-        api = self._bound_api(api_id)
-        gateway = self._service.capabilities().gateway_url
-        if not gateway or not gateway.startswith("https://"):
-            raise ServiceError(409, "The APIM service has no gateway URL yet")
-        split = urlsplit(gateway)
-        host = (split.hostname or "").casefold()
-        if self._settings.public and (
-            split.port is not None or not host.endswith(AZURE_GATEWAY_SUFFIXES)
-        ):
-            raise ServiceError(
-                409, f"The public app only calls Azure's own gateway host names, not {host}"
+            old = [
+                str(key["token"]) for key in client.list_keys(key_alias=alias) if key.get("token")
+            ]
+            created = client.generate_key(
+                {
+                    "key_alias": alias,
+                    "models": endpoint.model_names,
+                    "metadata": {
+                        "pool_manager": {
+                            "managed_by": "AI Gateway Pool Manager",
+                            "pool": endpoint.pool_id,
+                        }
+                    },
+                }
             )
-        base = "/".join(part for part in (gateway.rstrip("/"), api.path.strip("/")) if part)
-        url = f"{base}/{request.path}"
-        headers = {"Content-Type": "application/json"}
-        if request.subscription_key:
-            headers[api.subscription_key_header] = request.subscription_key.get_secret_value()
-        params = {"api-version": request.api_version} if request.api_version else {}
+            client.delete_keys(old)
+        except LiteLLMError as error:
+            raise translate_error(error) from error
+        logger.info("%s created the test key of pool %s", actor, endpoint.pool_id)
+        view = self._view({**created, "models": endpoint.model_names}, endpoint)
+        if view is None:
+            raise ServiceError(502, "The gateway created a key that can't call the pool")
+        return VirtualKeySecret(key=str(created["key"]), view=view)
+
+    def call(self, pool_id: str, request: ApiTestRequest, actor: str) -> ApiTestResult:
+        endpoint = self._service.endpoint(pool_id)
+        if not endpoint.base_url:
+            raise ServiceError(409, "The gateway has no URL yet")
+        # A local gateway (e.g. in Docker) may be plain HTTP; a deployed app only calls HTTPS.
+        if not endpoint.base_url.startswith("https://") and not self._settings.local:
+            raise ServiceError(409, "The gateway has no HTTPS URL")
+        if request.key is None:
+            raise ServiceError(400, "Create or paste a key to call the pool with")
+        body = dict(request.body)
+        model = body.get("model")
+        if model is None:
+            body["model"] = endpoint.pool_id
+        elif not isinstance(model, str) or model.casefold() not in {
+            name.casefold() for name in endpoint.model_names
+        }:
+            raise ServiceError(
+                400, f"model must be one of the pool's names: {', '.join(endpoint.model_names)}"
+            )
+        url = f"{endpoint.base_url}/{request.path}"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {request.key.get_secret_value()}",
+        }
         started = time.monotonic()
         try:
-            with self._http.stream(
-                "POST", url, params=params, json=request.body, headers=headers
-            ) as response:
+            with self._http.stream("POST", url, json=body, headers=headers) as response:
                 data = b""
                 for chunk in response.iter_bytes():
                     data += chunk
@@ -253,12 +166,12 @@ class ApiTester:
                         break
         except httpx.TimeoutException as error:
             raise ServiceError(
-                504, f"APIM did not answer within {_TIMEOUT.read:.0f} seconds"
+                504, f"The gateway did not answer within {_TIMEOUT.read:.0f} seconds"
             ) from error
         except httpx.HTTPError as error:
-            raise ServiceError(502, f"Could not reach {gateway}: {error}") from error
+            raise ServiceError(502, f"Could not reach {endpoint.base_url}: {error}") from error
         elapsed = round((time.monotonic() - started) * 1000)
-        logger.info("%s tested API %s: %s in %d ms", actor, api_id, response.status_code, elapsed)
+        logger.info("%s tested pool %s: %s in %d ms", actor, pool_id, response.status_code, elapsed)
         return ApiTestResult(
             status=response.status_code,
             elapsed_ms=elapsed,
@@ -266,7 +179,8 @@ class ApiTester:
             headers={
                 name: value
                 for name, value in response.headers.items()
-                if name in _HEADERS or name.startswith(_HEADER_PREFIXES)
+                if (name in _HEADERS or name.startswith(_HEADER_PREFIXES))
+                and not name.startswith(_SKIPPED)
             },
             body=data[:_MAX_BODY].decode("utf-8", errors="replace"),
             truncated=len(data) > _MAX_BODY,

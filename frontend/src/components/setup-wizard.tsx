@@ -1,5 +1,6 @@
-// First-run setup: checks the Azure access the user, the app and APIM's identity need, fixes
-// what the user's own rights allow, and turns the rest into a ready-to-send admin request.
+// First-run setup: picks or deploys the gateway, checks the Azure access the user, the app and
+// the gateway's identity need, fixes what the user's own rights allow, and turns the rest into a
+// ready-to-send admin request.
 import { Check, CheckCircle2, CircleAlert, CircleDashed, Clock, Copy, ExternalLink, KeyRound, LoaderCircle, RefreshCw, ShieldAlert, ShieldCheck } from "lucide-react"
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
@@ -9,60 +10,65 @@ import { fill, useI18n } from "../i18n"
 import { attentionCount, canAdvance, elapsedMinutes, firstStep, grantable, reachable, resourceName, STEPS, stepChecks, stepState, type StepId, type StepState } from "../setup-steps"
 import type { AdminRequest, DeviceCodePrompt, SetupCheck, SetupReport, SignInSource, TargetView } from "../types"
 import { isPublic, signIn as publicSignIn } from "../session"
-import { ApimPicker } from "./apim-picker"
+import { GatewayPicker } from "./gateway-picker"
 import { Button, Dialog, ErrorText } from "./ui"
 
 type Messages = ReturnType<typeof useI18n>["t"]
 
 const SetupContext = createContext<() => void>(() => {})
-/** Opens the setup wizard from anywhere, e.g. an inline "APIM can't call this account" notice. */
+/** Opens the setup wizard from anywhere, e.g. an inline "the gateway can't call this account" notice. */
 export const useOpenSetup = () => useContext(SetupContext)
 export const SetupProvider = ({ open, children }: { open: () => void; children: ReactNode }) =>
   <SetupContext value={open}>{children}</SetupContext>
 
-const STEP_LABEL: Record<StepId, "setupStepSignIn" | "setupStepApim" | "setupStepAccess" | "setupStepFoundry"> = {
+const STEP_LABEL: Record<StepId, "setupStepSignIn" | "setupStepGateway" | "setupStepAccess" | "setupStepFoundry"> = {
   sign_in: "setupStepSignIn",
-  apim: "setupStepApim",
+  gateway: "setupStepGateway",
   access: "setupStepAccess",
   foundry: "setupStepFoundry",
 }
 
-function checkText(check: SetupCheck, report: SetupReport, t: Messages, apim: string): { title: string; hint?: string } {
-  const values = { apim, subject: check.kind === "foundry_access" ? resourceName(check.subject) : check.subject ?? "", name: report.user?.name ?? check.detail ?? "", state: check.detail ?? "" }
+function checkText(check: SetupCheck, report: SetupReport, t: Messages, gateway: string): { title: string; hint?: string } {
+  const values = { gateway, subject: check.kind === "foundry_access" ? resourceName(check.subject) : check.subject ?? "", name: report.user?.name ?? check.detail ?? "", state: check.detail ?? "" }
   const text = (title: string, hint?: string) => ({ title: fill(title, values), hint })
   const ok = check.status === "ok"
   switch (check.kind) {
     case "sign_in":
       if (ok) return text(t.chkSignedIn)
       return text(t.chkSignIn, check.detail?.startsWith("signed in to tenant") ? t.chkSignInTenant : t.chkSignInHint)
-    case "apim_target":
+    case "gateway_target":
       if (ok) return text(t.chkTargetOk)
       if (check.status === "pending") return text(t.chkTargetPending, t.chkTargetPendingHint)
-      if (check.detail === "Failed") return text(t.chkTargetFailed, t.chkTargetFailedHint)
+      if (check.detail === "Failed" || check.detail === "DeployFailed") return text(t.chkTargetFailed, t.chkTargetFailedHint)
       if (check.status === "blocked") return text(t.chkTargetMissing, t.chkTargetMissingHint)
       if (check.status === "unknown") return text(t.chkTargetUnknown)
       return text(t.chkTarget, check.fix ? t.chkTargetHint : t.chkTargetFixedHint)
+    case "gateway_health":
+      if (ok) return text(t.chkHealthOk)
+      if (check.detail === "master_key_refused") return text(t.chkHealthKey, check.fix ? t.chkHealthConnectHint : t.chkHealthKeyHint)
+      if (check.detail?.startsWith("database")) return text(t.chkHealthDatabase, t.chkHealthDatabaseHint)
+      return text(t.chkHealth, check.fix ? t.chkHealthConnectHint : t.chkHealthHint)
     case "azure_token":
       if (ok) return text(t.chkTokenOk)
       if (check.fix === "refresh_token") return text(t.chkTokenRefresh)
       if (check.fix === "consent") return text(t.chkTokenConsent, t.chkTokenConsentHint)
       return text(t.chkTokenOff, t.chkTokenOffHint)
-    case "apim_access":
-      if (ok) return text(check.granted_by === "owners" ? t.chkApimOwners : check.granted_by === "azure_rbac" ? t.chkApimRbac : t.chkApimOk)
-      if (check.status === "blocked") return text(t.chkApimBlocked, t.chkApimBlockedHint)
-      if (check.status === "unknown") return text(t.chkApimUnknown)
-      return text(t.chkApimReadOnly, report.mode === "deployed" ? t.chkApimReadOnlyDeployedHint : t.chkApimReadOnlyHint)
+    case "gateway_access":
+      if (ok) return text(check.granted_by === "owners" ? t.chkAccessOwners : check.granted_by === "azure_rbac" ? t.chkAccessRbac : t.chkAccessOk)
+      if (check.status === "blocked") return text(t.chkAccessBlocked, t.chkAccessBlockedHint)
+      if (check.status === "unknown") return text(t.chkAccessUnknown)
+      return text(t.chkAccessReadOnly, t.chkAccessReadOnlyHint)
     case "discovery":
       return ok ? text(t.chkDiscoveryOk) : text(t.chkDiscovery, t.chkDiscoveryHint)
-    case "app_apim":
-      if (ok) return text(t.chkAppApimOk)
-      return text(check.status === "blocked" ? t.chkAppApimBlocked : t.chkAppApim, t.chkAppHint)
+    case "app_gateway":
+      if (ok) return text(t.chkAppGatewayOk)
+      return text(t.chkAppGatewayBlocked, t.chkAppHint)
     case "app_discovery":
       return ok ? text(t.chkAppDiscoveryOk) : text(t.chkAppDiscovery, t.chkAppHint)
-    case "apim_identity":
+    case "gateway_identity":
       if (ok) return text(t.chkIdentityOk)
-      if (check.status === "pending") return text(t.chkIdentityPending, t.chkIdentityPendingHint)
       if (check.status === "unknown") return text(t.chkIdentityUnknown)
+      if (check.detail === "external_unknown") return text(t.chkIdentityExternal, t.chkIdentityExternalHint)
       return text(t.chkIdentity, t.chkIdentityHint)
     case "foundry_access":
       if (ok) return text(t.chkFoundryOk)
@@ -130,7 +136,6 @@ function useSetupActions() {
   // Starting returns the code at once; DeviceCodePanel follows the sign-in to the end.
   const device = useMutation({ mutationFn: () => api.startDeviceCode() })
   const signOut = useMutation({ mutationFn: api.signOut, onSuccess: switched })
-  const enableIdentity = useMutation({ mutationFn: api.enableApimIdentity, onSuccess: recheck })
   const grant = useMutation({ mutationFn: api.grantFoundryAccess, onSuccess: recheck })
   const refresh = useMutation({ mutationFn: recheck })
   const consent = () => {
@@ -146,7 +151,7 @@ function useSetupActions() {
       await recheck()
     },
   })
-  return { signIn, device, signOut, switched, enableIdentity, grant, refresh, consent, renew }
+  return { signIn, device, signOut, switched, grant, refresh, consent, renew }
 }
 
 function FixButton({ check, actions }: { check: SetupCheck; actions: ReturnType<typeof useSetupActions> }) {
@@ -154,7 +159,7 @@ function FixButton({ check, actions }: { check: SetupCheck; actions: ReturnType<
   const spinner = <LoaderCircle className="spin" size={13} />
   switch (check.fix) {
     case "sign_in":
-      // The public app signs the browser in again, into the APIM subscription's tenant if named.
+      // The public app signs the browser in again, into the gateway subscription's tenant if named.
       if (isPublic()) {
         return <Button variant="primary" onClick={() => void publicSignIn({ tenantId: check.subject })}>
           <ExternalLink size={13} />{check.subject ? t.setupSignInTenant : t.setupSignInAgain}
@@ -175,10 +180,6 @@ function FixButton({ check, actions }: { check: SetupCheck; actions: ReturnType<
       return <Button variant="primary" disabled={actions.renew.isPending} onClick={() => actions.renew.mutate()}>
         {actions.renew.isPending ? spinner : <RefreshCw size={13} />}{t.setupRenew}
       </Button>
-    case "enable_apim_identity":
-      return <Button variant="primary" disabled={actions.enableIdentity.isPending} onClick={() => actions.enableIdentity.mutate()}>
-        {actions.enableIdentity.isPending ? spinner : <ShieldCheck size={13} />}{t.setupEnableIdentity}
-      </Button>
     case "grant_foundry_access":
       return <Button variant="primary" disabled={actions.grant.isPending} onClick={() => actions.grant.mutate([check.subject!])}>
         {actions.grant.isPending && actions.grant.variables?.includes(check.subject!) ? spinner : <KeyRound size={13} />}{t.setupGrant}
@@ -188,9 +189,9 @@ function FixButton({ check, actions }: { check: SetupCheck; actions: ReturnType<
   }
 }
 
-function CheckRow({ check, report, apim, actions }: { check: SetupCheck; report: SetupReport; apim: string; actions: ReturnType<typeof useSetupActions> }) {
+function CheckRow({ check, report, gateway, actions }: { check: SetupCheck; report: SetupReport; gateway: string; actions: ReturnType<typeof useSetupActions> }) {
   const { t } = useI18n()
-  const { title, hint } = checkText(check, report, t, apim)
+  const { title, hint } = checkText(check, report, t, gateway)
   const attention = check.status === "action" || check.status === "blocked"
   return <li className="setup-check" data-status={check.status}>
     <span className="setup-check-icon"><StatusIcon status={check.status} /></span>
@@ -200,12 +201,13 @@ function CheckRow({ check, report, apim, actions }: { check: SetupCheck; report:
         {attention && <FixButton check={check} actions={actions} />}
       </div>
       {check.status !== "ok" && check.status !== "skipped" && hint && <p>{hint}</p>}
-      {check.kind === "apim_target" && check.status === "pending" && <ProvisioningProgress startedAt={check.started_at} />}
+      {check.kind === "gateway_target" && check.status === "pending" && <ProvisioningProgress startedAt={check.started_at} />}
+      {check.kind === "gateway_target" && (check.detail === "Failed" || check.detail === "DeployFailed") && check.missing[0] && <p className="warn-text">{check.missing[0]}</p>}
       {attention && !check.fix && check.request && <p className="muted">{t.setupNoFix}</p>}
       {check.fix === "sign_in" && actions.signIn.isPending && <p className="setup-waiting"><LoaderCircle className="spin" size={13} />{t.setupSignInWaiting}</p>}
       {check.kind === "sign_in" && actions.device.data && <DeviceCodePanel key={actions.device.data.user_code} prompt={actions.device.data} onDone={() => { actions.device.reset(); return actions.switched() }} />}
       {check.kind === "sign_in" && report.local_sign_in && <SignInDetails report={report} actions={actions} />}
-      {attention && check.missing.length > 0 && <details className="setup-missing">
+      {attention && check.missing.length > 0 && check.kind !== "gateway_target" && <details className="setup-missing">
         <summary>{t.setupMissing} ({check.missing.length})</summary>
         <ul>{check.missing.map((action) => <li key={action}><code>{action}</code></li>)}</ul>
       </details>}
@@ -214,7 +216,7 @@ function CheckRow({ check, report, apim, actions }: { check: SetupCheck; report:
   </li>
 }
 
-/** Live proof that a long APIM create is being followed: elapsed time and the last poll. The
+/** Live proof that a gateway deployment is being followed: elapsed time and the last poll. The
  *  setup query refetches every 5 s while a check is pending, and each poll re-renders this. */
 function ProvisioningProgress({ startedAt }: { startedAt: string | null }) {
   const { t, locale } = useI18n()
@@ -294,12 +296,12 @@ export function SetupWizard({ open = true, page = false, onClose }: { open?: boo
   const report = setup.data
   const step = chosen ?? firstStep(report)
   const index = STEPS.indexOf(step)
-  const apim = capabilities.data?.apim_name ?? target.data?.apim_name ?? "APIM"
+  const gateway = capabilities.data?.gateway_name ?? target.data?.gateway_name ?? "gateway"
   const checks = stepChecks(report, step)
   const count = attentionCount(report)
   const toGrant = grantable(checks)
   const advance = canAdvance(report, step)
-  const error = actions.signIn.error ?? actions.enableIdentity.error ?? actions.grant.error ?? actions.refresh.error ?? actions.renew.error
+  const error = actions.signIn.error ?? actions.grant.error ?? actions.refresh.error ?? actions.renew.error
 
   const body = !report
     ? setup.isLoading ? <div className="state"><LoaderCircle className="spin" size={14} />{t.loading}</div> : <ErrorText error={setup.error} />
@@ -320,8 +322,8 @@ export function SetupWizard({ open = true, page = false, onClose }: { open?: boo
         ? <div className="state">{t.setupStepWaiting}</div>
         : !checks.length
         ? <div className="state"><CheckCircle2 size={14} />{t.setupNoFoundry}</div>
-        : <ul className="setup-checks">{checks.map((check) => <CheckRow key={check.id} check={check} report={report} apim={apim} actions={actions} />)}</ul>}
-      {step === "apim" && target.data && <TargetPanel target={target.data} report={report} />}
+        : <ul className="setup-checks">{checks.map((check) => <CheckRow key={check.id} check={check} report={report} gateway={gateway} actions={actions} />)}</ul>}
+      {step === "gateway" && target.data && <TargetPanel target={target.data} report={report} />}
       {toGrant.length > 1 && <div className="setup-bulk">
         <Button disabled={actions.grant.isPending} onClick={() => actions.grant.mutate(toGrant)}><KeyRound size={13} />{fill(t.setupGrantAll, { count: toGrant.length })}</Button>
       </div>}
@@ -333,7 +335,7 @@ export function SetupWizard({ open = true, page = false, onClose }: { open?: boo
     <span className="setup-summary" data-ready={report?.ready} data-waiting={!!report && !report.ready && count === 0 && !advance}>
       {report && (report.ready ? <><CheckCircle2 size={14} />{t.setupAllSet}</>
         : count > 0 ? <><CircleAlert size={14} />{fill(t.setupAttention, { count })}</>
-        // Nothing to fix, yet Next is off: the step is still running (APIM provisioning).
+        // Nothing to fix, yet Next is off: the step is still running (the gateway deploying).
         : !advance && index < STEPS.length - 1 && <><Clock size={14} />{t.setupNextPending}</>)}
     </span>
     <Button variant="ghost" disabled={actions.refresh.isPending} onClick={() => actions.refresh.mutate()}>
@@ -357,12 +359,13 @@ export function SetupWizard({ open = true, page = false, onClose }: { open?: boo
   </Dialog>
 }
 
-/** Where the APIM service comes from, and the picker when it can be changed here. */
+/** Where the gateway comes from, and the picker when it can be changed here. */
 function TargetPanel({ target, report }: { target: TargetView; report: SetupReport }) {
   const { t } = useI18n()
-  const check = report.checks.find((item) => item.kind === "apim_target")
-  // Open straight away when there is nothing to manage yet.
-  const [open, setOpen] = useState(check?.status === "action" || check?.status === "blocked")
+  // Open straight away when there is nothing to manage yet, or the gateway can't be reached.
+  const [open, setOpen] = useState(report.checks.some((item) =>
+    (item.kind === "gateway_target" || item.kind === "gateway_health")
+    && (item.status === "action" || item.status === "blocked")))
   if (!target.can_change) {
     if (target.source === "guest") return <p className="muted">{t.targetGuest}</p>
     return target.source === "environment" ? <p className="muted">{t.targetFixed}</p> : null
@@ -371,7 +374,7 @@ function TargetPanel({ target, report }: { target: TargetView; report: SetupRepo
     {target.source === "saved" && <p className="muted">{t.targetSaved}</p>}
     {target.source === "browser" && <p className="muted">{t.targetBrowser}</p>}
     {open
-      ? <ApimPicker target={target} user={report.user} />
+      ? <GatewayPicker target={target} user={report.user} />
       : <div><Button onClick={() => setOpen(true)}>{t.targetChange}</Button></div>}
   </div>
 }
@@ -388,7 +391,7 @@ export function SetupButton({ onOpen }: { onOpen: () => void }) {
   </button>
 }
 
-/** Inline status of APIM's access to some Foundry accounts, with a one-click grant. */
+/** Inline status of the gateway's access to some Foundry accounts, with a one-click grant. */
 export function FoundryAccessNotice({ accountIds }: { accountIds: string[] }) {
   const { t, locale } = useI18n()
   const openSetup = useOpenSetup()

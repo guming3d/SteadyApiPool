@@ -1,7 +1,8 @@
-// APIM Backend Pool Manager: one Linux App Service with Entra sign-in (Easy Auth) and a
-// system-assigned managed identity that manages backends, named values and API policies on an
-// API Management service. Give an existing service with apimName, or leave it empty to create a
-// new one in this resource group. An existing service is never changed here.
+// AI Gateway Pool Manager: one Linux App Service with Entra sign-in (Easy Auth) and a
+// system-assigned managed identity that manages the pools of an existing LiteLLM gateway.
+// Deploy the gateway first (the local app's setup page does it on Azure Container Apps in one
+// step, or generates the AKS files), then name it here. The gateway is never changed here: its
+// secrets are generated once when it is deployed, and a re-provision must not rotate them.
 targetScope = 'resourceGroup'
 
 @minLength(1)
@@ -11,24 +12,28 @@ param environmentName string
 
 param location string = resourceGroup().location
 
-@description('Existing API Management service to manage. Empty creates a new one in this resource group.')
-param apimName string = ''
+@minLength(2)
+@description('The LiteLLM gateway: its Container App name, or the display name of a gateway elsewhere (with gatewayUrl).')
+param gatewayName string
 
-@description('Resource group of an existing APIM service. Defaults to this resource group.')
-param apimResourceGroup string = resourceGroup().name
+@description('Resource group of the gateway\'s Container App. Defaults to this resource group.')
+param gatewayResourceGroup string = resourceGroup().name
 
-@description('Subscription of an existing APIM service. Defaults to this subscription.')
-param apimSubscriptionId string = subscription().subscriptionId
+@description('Subscription of the gateway\'s Container App. Defaults to this subscription.')
+param gatewaySubscriptionId string = subscription().subscriptionId
 
-@description('Tier of a new APIM service (when apimName is empty). Developer takes 30-40 minutes to create and has no SLA.')
-@allowed([ 'BasicV2', 'StandardV2', 'Developer' ])
-param apimSkuName string = 'BasicV2'
+@description('A gateway that is not on Azure Container Apps (AKS, any LiteLLM proxy with a database): its HTTPS URL. Empty = the Container App gatewayName.')
+param gatewayUrl string = ''
 
-@description('Publisher email of a new APIM service. Defaults to the first entry of owners, which must then be an email address.')
-param apimPublisherEmail string = ''
+@secure()
+@description('With gatewayUrl: the gateway\'s master key. It is stored as an App Service setting.')
+param gatewayMasterKey string = ''
 
-@description('Publisher name of a new APIM service.')
-param apimPublisherName string = 'APIM Backend Pool Manager'
+@description('With gatewayUrl: object ID of the managed identity the gateway calls Foundry as, so the setup page can check and grant its access.')
+param gatewayPrincipalId string = ''
+
+@description('With gatewayUrl: resource ID of the Application Insights component its OpenTelemetry goes to, for the Monitor tab.')
+param gatewayAppInsightsId string = ''
 
 @description('Client ID of the Entra app registration used for App Service Authentication (see README).')
 param entraClientId string
@@ -36,16 +41,13 @@ param entraClientId string
 @description('Comma-separated UPNs/emails or object IDs allowed to change pools. Everyone else who can sign in is read-only.')
 param owners string
 
-@description('2024-05-01 (GA) cannot read or write pool.sessionAffinity; the preview version can.')
-param poolApiVersion string = '2025-09-01-preview'
-
-@description('Subscriptions scanned for Azure OpenAI / Foundry deployments. Empty = the APIM subscription.')
+@description('Subscriptions scanned for Azure OpenAI / Foundry deployments. Empty = the gateway\'s subscription.')
 param discoverySubscriptionIds array = []
 
 @description('Grant the app read-only access to Cognitive Services accounts and deployments in those subscriptions. Requires permission to create custom roles at subscription scope.')
 param enableDeploymentDiscovery bool = true
 
-@description('Easy Auth also gets an Azure Resource Manager token for the signed-in user, so the setup wizard can fix access with the user\'s own rights (grant APIM\'s identity a role, enable it). Needs the app registration steps in README "Delegated Azure access" first; without them sign-in fails.')
+@description('Easy Auth also gets an Azure Resource Manager token for the signed-in user, so the setup wizard can fix access with the user\'s own rights (grant the gateway\'s identity a role on Foundry accounts). Needs the app registration steps in README "Delegated Azure access" first; without them sign-in fails.')
 param enableDelegatedAzureAccess bool = false
 
 @description('Linux App Service plan SKU. B1 is enough for an operator console.')
@@ -53,10 +55,8 @@ param appServiceSkuName string = 'B1'
 
 var suffix = uniqueString(subscription().id, resourceGroup().id, environmentName)
 var tags = { 'azd-env-name': environmentName }
-var createApim = empty(apimName)
-var apimSubscription = createApim ? subscription().subscriptionId : apimSubscriptionId
-var apimGroup = createApim ? resourceGroup().name : apimResourceGroup
-var discoverySubscriptions = empty(discoverySubscriptionIds) ? [ apimSubscription ] : discoverySubscriptionIds
+var external = !empty(gatewayUrl)
+var discoverySubscriptions = empty(discoverySubscriptionIds) ? [ gatewaySubscriptionId ] : discoverySubscriptionIds
 // Easy Auth uses this identity as a federated credential of the app registration instead of a
 // client secret. The system-assigned identity stays the one that calls ARM.
 var authCredentialSetting = 'OVERRIDE_USE_MI_FIC_ASSERTION_CLIENTID'
@@ -67,21 +67,6 @@ resource authIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-
   location: location
   tags: tags
 }
-
-module newApim 'modules/apim.bicep' = if (createApim) {
-  name: 'apim-pool-manager-apim-${suffix}'
-  params: {
-    name: 'apim-pool-${suffix}'
-    location: location
-    tags: tags
-    skuName: apimSkuName
-    publisherEmail: empty(apimPublisherEmail) ? trim(first(split(owners, ','))) : apimPublisherEmail
-    publisherName: apimPublisherName
-  }
-}
-
-// Read from the module so the app and its role wait until a new service exists.
-var managedApimName = createApim ? newApim!.outputs.name : apimName
 
 resource plan 'Microsoft.Web/serverfarms@2024-11-01' = {
   name: 'plan-pool-${suffix}'
@@ -113,16 +98,20 @@ resource site 'Microsoft.Web/sites@2024-11-01' = {
       healthCheckPath: '/health'
       appSettings: concat([
         { name: 'SCM_DO_BUILD_DURING_DEPLOYMENT', value: 'true' }
-        { name: 'POOL_MANAGER_SUBSCRIPTION_ID', value: apimSubscription }
-        { name: 'POOL_MANAGER_RESOURCE_GROUP', value: apimGroup }
-        { name: 'POOL_MANAGER_APIM_NAME', value: managedApimName }
-        { name: 'POOL_MANAGER_POOL_API_VERSION', value: poolApiVersion }
+        { name: 'POOL_MANAGER_SUBSCRIPTION_ID', value: gatewaySubscriptionId }
+        { name: 'POOL_MANAGER_RESOURCE_GROUP', value: gatewayResourceGroup }
+        { name: 'POOL_MANAGER_GATEWAY_NAME', value: gatewayName }
         { name: 'POOL_MANAGER_AUTH_MODE', value: 'easy_auth' }
         { name: 'POOL_MANAGER_OWNERS', value: owners }
         { name: 'POOL_MANAGER_ARM_ENDPOINT', value: environment().resourceManager }
         { name: 'POOL_MANAGER_DISCOVERY_SUBSCRIPTIONS', value: join(discoverySubscriptions, ',') }
         { name: 'POOL_MANAGER_DELEGATED_ACCESS', value: string(enableDelegatedAzureAccess) }
-      ], enableDelegatedAzureAccess ? [
+      ], external ? [
+        { name: 'POOL_MANAGER_GATEWAY_URL', value: gatewayUrl }
+        { name: 'POOL_MANAGER_GATEWAY_MASTER_KEY', value: gatewayMasterKey }
+        { name: 'POOL_MANAGER_GATEWAY_PRINCIPAL_ID', value: gatewayPrincipalId }
+        { name: 'POOL_MANAGER_GATEWAY_APP_INSIGHTS_ID', value: gatewayAppInsightsId }
+      ] : [], enableDelegatedAzureAccess ? [
         { name: authCredentialSetting, value: authIdentity!.properties.clientId }
       ] : [])
     }
@@ -175,17 +164,18 @@ resource auth 'Microsoft.Web/sites/config@2024-11-01' = {
   }
 }
 
-module apimAccess 'modules/apim-rbac.bicep' = {
-  name: 'apim-pool-manager-rbac-${suffix}'
-  scope: resourceGroup(apimSubscription, apimGroup)
+// A gateway elsewhere is reached with its master key; on Container Apps the app reads it.
+module gatewayAccess 'modules/gateway-rbac.bicep' = if (!external) {
+  name: 'ai-gateway-pool-rbac-${suffix}'
+  scope: resourceGroup(gatewaySubscriptionId, gatewayResourceGroup)
   params: {
-    apimName: managedApimName
+    gatewayName: gatewayName
     principalId: site.identity.principalId
   }
 }
 
 module discoveryAccess 'modules/discovery-rbac.bicep' = [for subscriptionId in (enableDeploymentDiscovery ? discoverySubscriptions : []): {
-  name: 'apim-pool-manager-discovery-${uniqueString(subscriptionId, suffix)}'
+  name: 'ai-gateway-pool-discovery-${uniqueString(subscriptionId, suffix)}'
   scope: subscription(subscriptionId)
   params: {
     principalId: site.identity.principalId
@@ -196,7 +186,7 @@ output AZURE_LOCATION string = location
 output WEB_APP_NAME string = site.name
 output WEB_APP_URL string = 'https://${site.properties.defaultHostName}'
 output WEB_APP_PRINCIPAL_ID string = site.identity.principalId
-output APIM_SERVICE_NAME string = managedApimName
+output GATEWAY_NAME string = gatewayName
 output AUTH_REDIRECT_URI string = 'https://${site.properties.defaultHostName}/.auth/login/aad/callback'
 // For the app registration's federated credential (README "Delegated Azure access").
 output AUTH_FIC_ISSUER string = '${environment().authentication.loginEndpoint}${tenant().tenantId}/v2.0'

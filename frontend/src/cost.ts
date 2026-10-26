@@ -1,4 +1,4 @@
-// The service panel's cost section; see components/service-panel.tsx and pool_manager/cost.py.
+// The gateway panel's cost section; see components/service-panel.tsx and pool_manager/cost.py.
 import type { CostNote } from "./types"
 
 /** Money in the reader's language; amounts keep the currency Azure gave them. */
@@ -17,9 +17,10 @@ export function formatMoney(amount: number, currency: string, locale: string, ma
 }
 
 /** The message shown in place of this month's spend. */
-export const COST_NOTE: Record<CostNote, "costNoToken" | "costForbidden" | "costUnsupported" | "costUnavailable"> = {
+export const COST_NOTE: Record<CostNote, "costNoToken" | "costForbidden" | "costUnsupported" | "costUnavailable" | "costExternal"> = {
   no_token: "costNoToken",
   forbidden: "costForbidden",
   unsupported: "costUnsupported",
   unavailable: "costUnavailable",
+  external: "costExternal",
 }

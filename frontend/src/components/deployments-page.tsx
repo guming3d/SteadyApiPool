@@ -76,7 +76,7 @@ export function DeploymentsPage({
   const selectedModels = new Set(selectedViews.map(modelName))
   const selectedVersions = new Set(selectedViews.map(modelKey))
   const selectedAccounts = [...new Set(selectedViews.map((view) => view.account_id))]
-  const principalId = capabilities.data?.apim_principal_id ?? null
+  const principalId = capabilities.data?.gateway_principal_id ?? null
 
   const importViews = useMutation({
     mutationFn: async ({ views }: { views: DeploymentView[]; createPool?: boolean; addToPool?: string }) => {

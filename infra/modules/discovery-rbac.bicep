@@ -1,22 +1,22 @@
 // Read-only access for deployment discovery: list Azure OpenAI / Foundry accounts and their
 // deployments in one subscription. It deliberately excludes listKeys; discovered members
-// authenticate with the APIM managed identity instead of account keys.
+// authenticate with the gateway's managed identity instead of account keys.
 targetScope = 'subscription'
 
 param principalId string
 
 resource discoveryRole 'Microsoft.Authorization/roleDefinitions@2022-04-01' = {
-  name: guid(subscription().id, 'apim-backend-pool-discovery')
+  name: guid(subscription().id, 'ai-gateway-pool-discovery')
   properties: {
-    roleName: 'APIM Backend Pool Deployment Reader ${uniqueString(subscription().id)}'
-    description: 'Lists Cognitive Services accounts and model deployments for the APIM Backend Pool Manager.'
+    roleName: 'AI Gateway Pool Deployment Reader ${uniqueString(subscription().id)}'
+    description: 'Lists Cognitive Services accounts and model deployments for the AI Gateway Pool Manager.'
     type: 'CustomRole'
     permissions: [
       {
         actions: [
           'Microsoft.CognitiveServices/accounts/read'
           'Microsoft.CognitiveServices/accounts/deployments/read'
-          // The setup wizard checks the app's permissions here, and whether APIM's identity has
+          // The setup wizard checks the app's permissions here, and whether the gateway's identity has
           // an inference role on each Foundry account. Reading roles cannot change them.
           'Microsoft.Authorization/permissions/read'
           'Microsoft.Authorization/roleAssignments/read'
@@ -36,7 +36,7 @@ resource discoveryRole 'Microsoft.Authorization/roleDefinitions@2022-04-01' = {
 }
 
 resource assignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(subscription().id, principalId, 'apim-backend-pool-discovery')
+  name: guid(subscription().id, principalId, 'ai-gateway-pool-discovery')
   properties: {
     principalId: principalId
     principalType: 'ServicePrincipal'

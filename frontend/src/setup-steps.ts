@@ -1,16 +1,16 @@
 // Groups the setup report into wizard steps. Pure, so node --test can import it.
 import type { SetupCheck, SetupKind, SetupReport, SetupStatus } from "./types"
 
-export type StepId = "sign_in" | "apim" | "access" | "foundry"
+export type StepId = "sign_in" | "gateway" | "access" | "foundry"
 export type StepState = "ok" | "attention" | "pending" | "waiting"
 
-export const STEPS: StepId[] = ["sign_in", "apim", "access", "foundry"]
+export const STEPS: StepId[] = ["sign_in", "gateway", "access", "foundry"]
 
 const STEP_KINDS: Record<StepId, SetupKind[]> = {
   sign_in: ["sign_in", "azure_token"],
-  apim: ["apim_target"],
-  access: ["apim_access", "discovery", "app_apim", "app_discovery"],
-  foundry: ["apim_identity", "foundry_access"],
+  gateway: ["gateway_target", "gateway_health"],
+  access: ["gateway_access", "discovery", "app_gateway", "app_discovery"],
+  foundry: ["gateway_identity", "foundry_access"],
 }
 
 const ATTENTION: ReadonlySet<SetupStatus> = new Set(["action", "blocked"])
@@ -24,8 +24,8 @@ export function stepChecks(report: SetupReport | undefined, step: StepId) {
 /** "waiting" when the step was not checked yet, because an earlier step blocks it. */
 export function stepState(report: SetupReport | undefined, step: StepId): StepState {
   const checks = stepChecks(report, step)
-  // No Foundry members, or a report from before the APIM step: fine once the app can operate.
-  if (!checks.length) return (step === "foundry" || step === "apim") && report?.can_operate ? "ok" : "waiting"
+  // No Foundry members, or a report from before the gateway step: fine once the app can operate.
+  if (!checks.length) return (step === "foundry" || step === "gateway") && report?.can_operate ? "ok" : "waiting"
   if (checks.some(needsAttention)) return "attention"
   if (checks.some((check) => check.status === "pending")) return "pending"
   return "ok"
@@ -35,8 +35,8 @@ export function attentionCount(report: SetupReport | undefined) {
   return (report?.checks ?? []).filter(needsAttention).length
 }
 
-/** A step can be opened unless it is still waiting on an earlier one (e.g. APIM is
- *  provisioning, so permissions can't be checked yet). The current step always can. */
+/** A step can be opened unless it is still waiting on an earlier one (e.g. the gateway is
+ *  deploying, so permissions can't be checked yet). The current step always can. */
 export function reachable(report: SetupReport | undefined, step: StepId, current: StepId) {
   return step === current || stepState(report, step) !== "waiting"
 }

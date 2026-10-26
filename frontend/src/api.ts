@@ -1,28 +1,35 @@
 import { keepPreviousData, queryOptions } from "@tanstack/react-query"
 
 import type {
-  ApimCreate,
-  ApimCreateOptions,
-  ApimServiceView,
-  ApiBindingWrite,
+  AksBundle,
+  AliasView,
   ApiTestRequest,
   ApiTestResult,
-  ApiView,
   BackendView,
   Capabilities,
   CleanupConfirm,
-  DeletedServiceView,
+  ConfigPreview,
+  ConfigView,
+  DeployableModel,
   DeploymentImportResult,
-  DeviceCodePrompt,
-  DeviceCodeStatus,
   DeploymentRef,
   DeploymentView,
+  DeviceCodePrompt,
+  DeviceCodeStatus,
+  FoundryAccountView,
+  FoundryDeploymentCreate,
+  FoundryDeploymentStatus,
+  GatewayConnect,
+  GatewayCreate,
+  GatewayCreateOptions,
+  GatewayDeleteCheck,
+  GatewayDeployStatus,
+  GatewayView,
   MemberBackendWrite,
   MetricsRange,
+  ModelCapacity,
   ModelCheck,
-  PolicyPreview,
-  PolicyView,
-  PoolApiCreate,
+  PoolEndpoint,
   PoolMetrics,
   PoolView,
   PoolWrite,
@@ -31,20 +38,15 @@ import type {
   RemovalPlan,
   RemovalResult,
   ServiceCost,
-  ServiceDeleteCheck,
   SetupCheck,
   SetupProgress,
   SetupReport,
-  SubscriptionKeyView,
   SubscriptionView,
   TargetSelect,
   TargetView,
   TenantView,
-  DeployableModel,
-  FoundryAccountView,
-  FoundryDeploymentCreate,
-  FoundryDeploymentStatus,
-  ModelCapacity,
+  VirtualKeySecret,
+  VirtualKeyView,
 } from "./types"
 
 export class ApiError extends Error {
@@ -57,7 +59,7 @@ export class ApiError extends Error {
 type HeaderSource = () => Promise<Record<string, string>>
 let extraHeaders: HeaderSource = async () => ({})
 
-/** The public app adds the user's bearer token and their chosen APIM service (src/session.ts). */
+/** The public app adds the user's bearer token and their chosen gateway (src/session.ts). */
 export function configureRequests(source: HeaderSource) {
   extraHeaders = source
 }
@@ -95,10 +97,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 const id = encodeURIComponent
 const json = (method: string, body: unknown): RequestInit => ({ method, body: JSON.stringify(body) })
-const withEtag = (path: string, etag?: string | null) =>
-  etag ? `${path}?etag=${encodeURIComponent(etag)}` : path
 const scope = (tenantId: string | null, subscriptionId: string) =>
   new URLSearchParams({ subscription_id: subscriptionId, ...(tenantId ? { tenant_id: tenantId } : {}) }).toString()
+
+export type AksBundleParams = {
+  subscription_id: string
+  resource_group: string
+  cluster: string
+  name: string
+  location: string
+  namespace?: string
+}
 
 export const api = {
   me: () => request<Principal>("/api/me"),
@@ -107,8 +116,9 @@ export const api = {
   backend: (backendId: string) => request<BackendView>(`/api/backends/${id(backendId)}`),
   saveBackend: (backendId: string, body: MemberBackendWrite) =>
     request<BackendView>(`/api/backends/${id(backendId)}`, json("PUT", body)),
-  deleteBackend: (backendId: string, etag?: string | null) =>
-    request<void>(withEtag(`/api/backends/${id(backendId)}`, etag), { method: "DELETE" }),
+  // Only members no pool uses yet.
+  deleteBackend: (backendId: string) =>
+    request<void>(`/api/backends/${id(backendId)}`, { method: "DELETE" }),
   pools: () => request<PoolView[]>("/api/pools"),
   // Read-only: the same-model check saving a pool enforces.
   checkModels: (members: string[]) =>
@@ -116,23 +126,28 @@ export const api = {
   pool: (poolId: string) => request<PoolView>(`/api/pools/${id(poolId)}`),
   savePool: (poolId: string, body: PoolWrite) =>
     request<PoolView>(`/api/pools/${id(poolId)}`, json("PUT", body)),
-  deletePool: (poolId: string, etag?: string | null) =>
-    request<void>(withEtag(`/api/pools/${id(poolId)}`, etag), { method: "DELETE" }),
-  // Read-only: what removing the pool takes with it (its APIs and unused members).
+  // Read-only on the server: the LiteLLM config a save would write.
+  previewPool: (poolId: string, body: PoolWrite) =>
+    request<ConfigPreview>(`/api/pools/${id(poolId)}/preview`, json("POST", body)),
+  poolConfig: (poolId: string) => request<ConfigView>(`/api/pools/${id(poolId)}/config`),
+  // Read-only: what removing the pool takes with it (its aliases and test keys).
   poolRemoval: (poolId: string) => request<RemovalPlan>(`/api/pools/${id(poolId)}/removal`),
   removePool: (poolId: string, body: RemovalConfirm) =>
     request<RemovalResult>(`/api/pools/${id(poolId)}/remove`, json("POST", body)),
-  // This month's spend (read with the user's own Azure rights) and the tier's list price.
+  // This month's spend (read with the user's own Azure rights) and a list price estimate.
   serviceCost: (refresh = false) => request<ServiceCost>(`/api/cost${refresh ? "?refresh=true" : ""}`),
-  // Read-only: everything this app created in the service.
+  // Read-only: everything this app created on the gateway.
   cleanupPlan: () => request<RemovalPlan>("/api/cleanup"),
   cleanup: (body: CleanupConfirm) => request<RemovalResult>("/api/cleanup", json("POST", body)),
-  // Read-only Azure Monitor metrics; the server caches them for a minute unless refresh is set.
+  // Read-only; the server caches them for a minute unless refresh is set.
   poolMetrics: (poolId: string, range: MetricsRange, refresh = false) =>
     request<PoolMetrics>(`/api/pools/${id(poolId)}/metrics?range=${range}${refresh ? "&refresh=true" : ""}`),
-  apis: () => request<ApiView[]>("/api/apis"),
-  createPoolApi: (poolId: string, body: PoolApiCreate) =>
-    request<ApiView>(`/api/pools/${id(poolId)}/api`, json("POST", body)),
+  endpoint: (poolId: string) => request<PoolEndpoint>(`/api/pools/${id(poolId)}/endpoint`),
+  aliases: () => request<AliasView[]>("/api/aliases"),
+  addAlias: (poolId: string, name: string) =>
+    request<PoolEndpoint>(`/api/pools/${id(poolId)}/aliases`, json("POST", { name })),
+  removeAlias: (poolId: string, name: string) =>
+    request<PoolEndpoint>(`/api/pools/${id(poolId)}/aliases/${id(name)}`, { method: "DELETE" }),
   deployments: (refresh = false) =>
     request<DeploymentView[]>(`/api/deployments${refresh ? "?refresh=true" : ""}`),
   importDeployments: (deployments: DeploymentRef[]) =>
@@ -147,14 +162,6 @@ export const api = {
     request<FoundryDeploymentStatus>("/api/foundry/deployments", json("POST", body)),
   foundryDeploymentStatus: (accountId: string, deployment: string) =>
     request<FoundryDeploymentStatus>(`/api/foundry/deployments/status?${new URLSearchParams({ account_id: accountId, deployment })}`),
-  policy: (apiId: string) => request<PolicyView>(`/api/apis/${id(apiId)}/policy`),
-  // Read-only on the server; returns the policy a bind would write.
-  previewBinding: (apiId: string, body: ApiBindingWrite) =>
-    request<PolicyPreview>(`/api/apis/${id(apiId)}/binding/preview`, json("POST", body)),
-  bind: (apiId: string, body: ApiBindingWrite) =>
-    request<ApiView>(`/api/apis/${id(apiId)}/binding`, json("PUT", body)),
-  unbind: (apiId: string, etag?: string | null) =>
-    request<void>(withEtag(`/api/apis/${id(apiId)}/binding`, etag), { method: "DELETE" }),
   setup: (refresh = false) => request<SetupReport>(`/api/setup${refresh ? "?refresh=true" : ""}`),
   // Which step the setup report above is on while it runs.
   setupProgress: () => request<SetupProgress>("/api/setup/progress"),
@@ -167,8 +174,7 @@ export const api = {
   deviceCodeStatus: () => request<DeviceCodeStatus>("/api/setup/sign-in/device-code"),
   // Local only: forgets the app's own sign-in (not az / azd / PowerShell).
   signOut: () => request<void>("/api/setup/sign-out", { method: "POST" }),
-  enableApimIdentity: () => request<SetupCheck>("/api/setup/apim-identity", { method: "POST" }),
-  // Read-only: whether the APIM identity can call these Foundry accounts.
+  // Read-only: whether the gateway's identity can call these Foundry accounts.
   foundryAccess: (accountIds: string[]) =>
     request<SetupCheck[]>("/api/setup/foundry-access", json("POST", { account_ids: accountIds })),
   grantFoundryAccess: (accountIds: string[]) =>
@@ -177,30 +183,35 @@ export const api = {
   tenants: () => request<TenantView[]>("/api/target/tenants"),
   subscriptions: (tenantId: string | null) =>
     request<SubscriptionView[]>(`/api/target/subscriptions${tenantId ? `?tenant_id=${id(tenantId)}` : ""}`),
-  services: (tenantId: string | null, subscriptionId: string) =>
-    request<ApimServiceView[]>(`/api/target/services?${scope(tenantId, subscriptionId)}`),
+  gateways: (tenantId: string | null, subscriptionId: string) =>
+    request<GatewayView[]>(`/api/target/gateways?${scope(tenantId, subscriptionId)}`),
   createOptions: (tenantId: string | null, subscriptionId: string) =>
-    request<ApimCreateOptions>(`/api/target/create-options?${scope(tenantId, subscriptionId)}`),
+    request<GatewayCreateOptions>(`/api/target/create-options?${scope(tenantId, subscriptionId)}`),
   selectTarget: (body: TargetSelect) => request<TargetView>("/api/target", json("PUT", body)),
-  // Creates billable Azure resources with the user's own rights, then selects the new service.
-  createService: (body: ApimCreate) => request<ApimServiceView>("/api/target/services", json("POST", body)),
-  // Only services this app created; Azure soft-deletes them and keeps them 48 hours.
+  // Deploys billable Azure resources with the user's own rights, then selects the new gateway.
+  createGateway: (body: GatewayCreate) => request<GatewayView>("/api/target/gateways", json("POST", body)),
+  deployStatus: (tenantId: string | null, subscriptionId: string, resourceGroup: string, name: string) =>
+    request<GatewayDeployStatus>(
+      `/api/target/deploy-status?${scope(tenantId, subscriptionId)}&${new URLSearchParams({ resource_group: resourceGroup, name })}`,
+    ),
+  // Files that deploy the same gateway on an existing AKS cluster; nothing is written.
+  aksBundle: (params: AksBundleParams) =>
+    request<AksBundle>(`/api/target/aks-bundle?${new URLSearchParams(params)}`),
+  // Checks the URL and master key against the gateway, then selects it.
+  connectGateway: (body: GatewayConnect) => request<TargetView>("/api/target/connect", json("POST", body)),
+  disconnectGateway: () => request<void>("/api/target/disconnect", { method: "POST" }),
+  // Only gateways this app deployed; their resources go, the resource group stays.
   deleteCheck: (body: TargetSelect) =>
-    request<ServiceDeleteCheck>("/api/target/services/delete-check", json("POST", body)),
-  deleteService: (body: TargetSelect & { confirm_name: string }) =>
-    request<void>("/api/target/services/delete", json("POST", body)),
-  deletedServices: (tenantId: string | null, subscriptionId: string) =>
-    request<DeletedServiceView[]>(`/api/target/deleted?${scope(tenantId, subscriptionId)}`),
-  restoreService: (body: { tenant_id: string | null; subscription_id: string; location: string; name: string }) =>
-    request<ApimServiceView>("/api/target/deleted/restore", json("POST", body)),
-  // Subscription keys are read with the user's own Azure rights.
-  apiKeys: (apiId: string) => request<SubscriptionKeyView[]>(`/api/apis/${id(apiId)}/keys`),
-  createApiKey: (apiId: string) => request<SubscriptionKeyView>(`/api/apis/${id(apiId)}/keys`, { method: "POST" }),
-  readApiKey: (apiId: string, keyId: string) =>
-    request<{ primary_key: string }>(`/api/apis/${id(apiId)}/keys/${id(keyId)}/secret`, { method: "POST" }),
-  // The backend sends the request: browsers can't call the APIM gateway (no CORS).
-  testApi: (apiId: string, body: ApiTestRequest) =>
-    request<ApiTestResult>(`/api/apis/${id(apiId)}/test`, json("POST", body)),
+    request<GatewayDeleteCheck>("/api/target/gateways/delete-check", json("POST", body)),
+  deleteGateway: (body: TargetSelect & { confirm_name: string }) =>
+    request<void>("/api/target/gateways/delete", json("POST", body)),
+  // LiteLLM virtual keys; a key is only shown when it is created.
+  poolKeys: (poolId: string) => request<VirtualKeyView[]>(`/api/pools/${id(poolId)}/keys`),
+  createPoolKey: (poolId: string) =>
+    request<VirtualKeySecret>(`/api/pools/${id(poolId)}/keys`, { method: "POST" }),
+  // The backend sends the request, so the browser needs no CORS from the gateway.
+  testPool: (poolId: string, body: ApiTestRequest) =>
+    request<ApiTestResult>(`/api/pools/${id(poolId)}/test`, json("POST", body)),
 }
 
 export const keys = {
@@ -215,8 +226,10 @@ export const keys = {
   cost: ["cost"] as const,
   modelCheck: (members: string[]) => ["model-check", ...members] as const,
   poolMetrics: (poolId: string, range: MetricsRange) => ["pools", poolId, "metrics", range] as const,
-  apis: ["apis"] as const,
-  policy: (apiId: string) => ["apis", apiId, "policy"] as const,
+  endpoint: (poolId: string) => ["pools", poolId, "endpoint"] as const,
+  poolConfig: (poolId: string) => ["pools", poolId, "config"] as const,
+  poolKeys: (poolId: string) => ["pools", poolId, "keys"] as const,
+  aliases: ["aliases"] as const,
   deployments: ["deployments"] as const,
   foundryAccounts: ["foundry", "accounts"] as const,
   foundryModels: (accountId: string) => ["foundry", "models", accountId] as const,
@@ -225,13 +238,13 @@ export const keys = {
   // Not under "setup": invalidating the report must not refetch this.
   setupProgress: ["setup-progress"] as const,
   foundryAccess: (accountIds: string[]) => ["setup", "foundry", ...accountIds] as const,
-  apiKeys: (apiId: string) => ["apis", apiId, "keys"] as const,
   target: ["target"] as const,
   tenants: ["target", "tenants"] as const,
   subscriptions: (tenantId: string | null) => ["target", "subscriptions", tenantId] as const,
-  services: (tenantId: string | null, subscriptionId: string) => ["target", "services", tenantId, subscriptionId] as const,
+  gateways: (tenantId: string | null, subscriptionId: string) => ["target", "gateways", tenantId, subscriptionId] as const,
   createOptions: (tenantId: string | null, subscriptionId: string) => ["target", "create-options", tenantId, subscriptionId] as const,
-  deleted: (tenantId: string | null, subscriptionId: string) => ["target", "deleted", tenantId, subscriptionId] as const,
+  deployStatus: (subscriptionId: string, resourceGroup: string, name: string) =>
+    ["target", "deploy", subscriptionId, resourceGroup, name] as const,
 }
 
 export const queries = {
@@ -239,9 +252,11 @@ export const queries = {
   capabilities: () => queryOptions({ queryKey: keys.capabilities, queryFn: api.capabilities }),
   backends: () => queryOptions({ queryKey: keys.backends, queryFn: api.backends }),
   pools: () => queryOptions({ queryKey: keys.pools, queryFn: api.pools }),
-  // List responses carry no ETag; the editor always reads the pool itself before saving.
+  // The editor always reads the pool itself before saving, for its ETag.
   pool: (poolId: string) => queryOptions({ queryKey: keys.pool(poolId), queryFn: () => api.pool(poolId) }),
-  apis: () => queryOptions({ queryKey: keys.apis, queryFn: api.apis }),
+  endpoint: (poolId: string) => queryOptions({ queryKey: keys.endpoint(poolId), queryFn: () => api.endpoint(poolId) }),
+  poolConfig: (poolId: string) => queryOptions({ queryKey: keys.poolConfig(poolId), queryFn: () => api.poolConfig(poolId) }),
+  aliases: () => queryOptions({ queryKey: keys.aliases, queryFn: api.aliases }),
   // Read fresh each time a removal dialog opens: it must show what is there now.
   poolRemoval: (poolId: string) => queryOptions({
     queryKey: keys.poolRemoval(poolId),
@@ -263,7 +278,7 @@ export const queries = {
     queryKey: keys.poolMetrics(poolId, range),
     queryFn: () => api.poolMetrics(poolId, range),
     enabled,
-    // Platform metrics land every minute; changing the range keeps the old frame until it loads.
+    // Spans and platform metrics land within minutes; changing the range keeps the old frame.
     refetchInterval: 60_000,
     placeholderData: keepPreviousData,
     staleTime: 30_000,
@@ -274,7 +289,6 @@ export const queries = {
     enabled: members.length > 0,
     staleTime: 60_000,
   }),
-  policy: (apiId: string) => queryOptions({ queryKey: keys.policy(apiId), queryFn: () => api.policy(apiId) }),
   // The server caches scans for 5 minutes; Refresh bypasses that.
   deployments: () => queryOptions({ queryKey: keys.deployments, queryFn: () => api.deployments(), staleTime: 60_000 }),
   foundryAccounts: () => queryOptions({ queryKey: keys.foundryAccounts, queryFn: api.foundryAccounts, staleTime: 300_000 }),
@@ -294,7 +308,7 @@ export const queries = {
   setup: () => queryOptions({
     queryKey: keys.setup,
     queryFn: () => api.setup(),
-    // A new APIM service, or its identity, takes a while; follow it without a manual refresh.
+    // A new gateway takes a while to deploy; follow it without a manual refresh.
     refetchInterval: (query) => query.state.data?.checks.some((check) => check.status === "pending") ? 5_000 : false,
   }),
   // Polled only while something waits for the report.
@@ -311,11 +325,12 @@ export const queries = {
     enabled: accountIds.length > 0,
     staleTime: 60_000,
   }),
-  apiKeys: (apiId: string) => queryOptions({
-    queryKey: keys.apiKeys(apiId),
-    queryFn: () => api.apiKeys(apiId),
+  poolKeys: (poolId: string, enabled: boolean) => queryOptions({
+    queryKey: keys.poolKeys(poolId),
+    queryFn: () => api.poolKeys(poolId),
+    enabled,
     staleTime: 60_000,
-    // Missing rights or no delegated token fail the same way every time; the guide explains.
+    // Missing write access fails the same way every time; the guide explains.
     retry: false,
   }),
   target: () => queryOptions({ queryKey: keys.target, queryFn: api.target }),
@@ -327,17 +342,19 @@ export const queries = {
     // A tenant that needs another sign-in fails the same way on every retry.
     retry: false,
   }),
-  services: (tenantId: string | null, subscriptionId: string) => queryOptions({
-    queryKey: keys.services(tenantId, subscriptionId),
-    queryFn: () => api.services(tenantId, subscriptionId),
+  gateways: (tenantId: string | null, subscriptionId: string) => queryOptions({
+    queryKey: keys.gateways(tenantId, subscriptionId),
+    queryFn: () => api.gateways(tenantId, subscriptionId),
     enabled: Boolean(subscriptionId),
     staleTime: 60_000,
   }),
-  deleted: (tenantId: string | null, subscriptionId: string) => queryOptions({
-    queryKey: keys.deleted(tenantId, subscriptionId),
-    queryFn: () => api.deletedServices(tenantId, subscriptionId),
-    enabled: Boolean(subscriptionId),
-    staleTime: 30_000,
+  // Followed every few seconds while a deployment runs.
+  deployStatus: (tenantId: string | null, subscriptionId: string, resourceGroup: string, name: string) => queryOptions({
+    queryKey: keys.deployStatus(subscriptionId, resourceGroup, name),
+    queryFn: () => api.deployStatus(tenantId, subscriptionId, resourceGroup, name),
+    enabled: Boolean(subscriptionId && resourceGroup && name),
+    refetchInterval: (query) => query.state.data?.state === "running" ? 5_000 : false,
+    retry: false,
   }),
   createOptions: (tenantId: string | null, subscriptionId: string) => queryOptions({
     queryKey: keys.createOptions(tenantId, subscriptionId),

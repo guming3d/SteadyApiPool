@@ -1,21 +1,23 @@
-"""Choosing the APIM service to manage, or creating one, from the local setup wizard.
+"""Choosing the LiteLLM gateway to manage, deploying one, or connecting one, from the local setup
+wizard.
 
-Locally the app can start without ``POOL_MANAGER_SUBSCRIPTION_ID``, ``_RESOURCE_GROUP`` and
-``_APIM_NAME``: once signed in, the user picks a tenant, a subscription and a service, or creates
-a service. The choice is saved to ``.pool-manager.json`` and everything bound to one service is
-rebuilt (``on_change``). The Easy Auth deployment always uses the service its deployment set. In
-the public app every user chooses their own: this checks the choice and their browser keeps it,
-sending it with each request (sessions.py), so the server saves nothing.
+Locally the app can start without a gateway in the environment: once signed in, the user picks
+a tenant and a subscription, then a gateway there (a Container App), deploys a new one on
+Container Apps, or connects one that runs elsewhere (e.g. on AKS) by its URL and master key.
+The choice is saved to ``.pool-manager.json`` and everything bound to one gateway is rebuilt
+(``on_change``). The Easy Auth deployment always uses the gateway its deployment set.
 
 Every change here uses the signed-in user's own Azure rights:
 
-- Creating registers the Microsoft.ApiManagement provider when needed, creates the resource group
-  when it does not exist, and creates the service with ``If-None-Match: *``. It never changes an
-  existing resource group or service.
-- Deleting is limited to services this app created (the ``managed-by`` tag) and needs the name
-  typed again. Azure soft-deletes the service and keeps it for 48 hours, during which it can be
-  restored here; purging it for good is left to the portal or ``az apim deletedservice purge``.
-  Resource groups are never deleted.
+- Deploying registers the resource providers the template needs, creates the resource group when
+  it does not exist, and runs one ARM deployment (gateway_deploy.py). It never changes an
+  existing resource group or gateway.
+- Deleting is limited to gateways this app deployed (the ``managed-by`` tag) and needs the name
+  typed again. It deletes the resources tagged as that gateway's, starting with the Container
+  App, and never the resource group. Azure keeps no copy: the gateway's database (pools, keys,
+  spend) goes with it.
+- Connecting checks the URL and master key against the gateway itself and keeps the key in the
+  OS-encrypted local store (secret_store.py), never in the state file.
 """
 
 from __future__ import annotations
@@ -26,77 +28,79 @@ from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Lock
-from typing import Any, get_args
+from typing import Any
+from urllib.parse import urlsplit
 
-from .access import (
-    APIM_READ_ACTIONS,
-    APIM_WRITE_ACTIONS,
-    AUTHORIZATION_API_VERSION,
-    Permissions,
-    missing,
-)
+import httpx
+
+from .access import AUTHORIZATION_API_VERSION, GATEWAY_ACTIONS, Permissions, missing
 from .arm import ArmClient, ArmError, TokenCredential, segment
 from .config import Settings, clear_saved_target, save_target
+from .gateway import GATEWAY_TAG, MANAGED_TAG, MANAGED_TAG_VALUE, container_app_info
+from .gateway_deploy import (
+    DEPLOYMENTS_API_VERSION,
+    RESOURCES_API_VERSION,
+    GatewayDeployer,
+    app_path,
+    deployment_path,
+    group_path,
+    translate,
+)
+from .litellm import LiteLLMClient, LiteLLMError
 from .models import (
-    ApimCreate,
-    ApimCreateOptions,
-    ApimServiceView,
-    ApimSku,
-    DeletedServiceView,
+    GatewayConnect,
+    GatewayCreate,
+    GatewayCreateOptions,
+    GatewayDelete,
+    GatewayDeleteCheck,
+    GatewayDeployStatus,
+    GatewayProfile,
+    GatewayView,
     ResourceGroupView,
-    ServiceDelete,
-    ServiceDeleteCheck,
-    ServiceRestore,
     SubscriptionView,
     TargetSelect,
     TargetSource,
     TargetView,
     TenantView,
 )
+from .secret_store import SecretStore
 from .service import ServiceError
 
 logger = logging.getLogger(__name__)
 
 SUBSCRIPTIONS_API_VERSION = "2022-12-01"
-RESOURCES_API_VERSION = "2021-04-01"
-PROVIDER = "Microsoft.ApiManagement"
-# Marks services and resource groups this app created, like MANAGED_MARKER on backends.
-MANAGED_TAG = "managed-by"
-MANAGED_TAG_VALUE = "apim-backend-pool"
-
 _WORKERS = 8
-# Restoring ignores every property but ``restore``; the API still requires these fields.
-_RESTORE_PLACEHOLDER = {
-    "sku": {"name": "Developer", "capacity": 1},
-    "publisherEmail": "restore@apim-backend-pool.invalid",
-    "publisherName": "restore",
+_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+# Delete order and API versions of what the template creates: the app first (the environment
+# can't go while it has apps), the environment, then the rest.
+_DELETE_ORDER = {
+    "microsoft.app/containerapps": (0, "2025-01-01"),
+    "microsoft.app/managedenvironments": (1, "2025-01-01"),
+    "microsoft.dbforpostgresql/flexibleservers": (2, "2024-08-01"),
+    "microsoft.cache/redisenterprise": (2, "2025-04-01"),
+    "microsoft.managedidentity/userassignedidentities": (3, "2023-01-31"),
+    "microsoft.insights/components": (3, "2020-02-02"),
+    "microsoft.operationalinsights/workspaces": (4, "2023-09-01"),
 }
-# Registering a resource provider usually takes well under a minute.
-_REGISTER_POLLS = 12
-_REGISTER_POLL_SECONDS = 5.0
-
-
-def _translate(error: ArmError, action: str) -> ServiceError:
-    if error.status == 401:
-        return ServiceError(401, f"Sign in again to {action}: {error.message}")
-    if error.status == 403:
-        return ServiceError(403, f"Your Azure account cannot {action}: {error.message}")
-    if error.status in {400, 404, 409}:
-        return ServiceError(error.status, error.message)
-    return ServiceError(502, f"Azure returned {error.status} {error.code}: {error.message}")
-
-
-def _service_path(subscription_id: str, resource_group: str, name: str) -> str:
-    return (
-        f"/subscriptions/{segment(subscription_id)}/resourceGroups/{segment(resource_group)}"
-        f"/providers/{PROVIDER}/service/{segment(name)}"
-    )
 
 
 def _resource_group(resource_id: str) -> str:
     parts = resource_id.split("/")
     lowered = [part.casefold() for part in parts]
     return parts[lowered.index("resourcegroups") + 1] if "resourcegroups" in lowered else ""
+
+
+def _is_litellm(app: Mapping[str, Any]) -> bool:
+    """Deployed by this app, or running LiteLLM's image."""
+    if (app.get("tags") or {}).get(MANAGED_TAG) == MANAGED_TAG_VALUE:
+        return True
+    containers = ((app.get("properties") or {}).get("template") or {}).get("containers") or []
+    return any("litellm" in str(c.get("image") or "").casefold() for c in containers)
+
+
+def _profile(app: Mapping[str, Any]) -> GatewayProfile | None:
+    value = (app.get("tags") or {}).get("ai-gateway-profile")
+    return value if value in {"dev", "production"} else None
 
 
 class TargetChooser:
@@ -106,16 +110,22 @@ class TargetChooser:
         credential: TokenCredential | None,
         *,
         transport: Any = None,
+        gateway_transport: httpx.BaseTransport | None = None,
         sleep: Callable[[float], None] = time.sleep,
         state_file: Path | None = None,
+        secrets: SecretStore | None = None,
         on_change: Callable[[], None] = lambda: None,
     ) -> None:
         self._settings = settings
         self._credential = credential
         self._transport = transport
+        # How connecting reaches the gateway (tests replace it).
+        self._gateway_transport = gateway_transport
         self._sleep = sleep
         self._state_file = state_file
+        self._secrets = secrets
         self._on_change = on_change
+        self._deployer = GatewayDeployer(settings, sleep)
         self._lock = Lock()
         self._clients: dict[str, ArmClient] = {}
 
@@ -149,18 +159,18 @@ class TargetChooser:
 
     def _require_local(self) -> None:
         if self._settings.guest:
-            raise ServiceError(403, "The guest view shows one service; sign in to choose your own")
+            raise ServiceError(403, "The guest view shows one gateway; sign in to choose your own")
         if not (self._settings.local or self._settings.public):
-            raise ServiceError(400, "The deployed app manages the APIM service set at deployment")
+            raise ServiceError(400, "The deployed app manages the gateway set at deployment")
 
     def _require_changeable(self) -> None:
         self._require_local()
         if not self._settings.can_choose_target:
             raise ServiceError(
                 409,
-                "The APIM service is set in the environment or backend/.env "
-                "(POOL_MANAGER_SUBSCRIPTION_ID, _RESOURCE_GROUP, _APIM_NAME). "
-                "Remove those to choose one here.",
+                "The gateway is set in the environment or backend/.env "
+                "(POOL_MANAGER_SUBSCRIPTION_ID, _RESOURCE_GROUP, _GATEWAY_NAME or "
+                "_GATEWAY_URL). Remove those to choose one here.",
             )
 
     # -- reads -------------------------------------------------------------------------
@@ -179,9 +189,15 @@ class TargetChooser:
             else "environment"
         )
         return TargetView(
+            gateway_name=settings.gateway_name or None,
+            gateway_kind=None
+            if not settings.has_target
+            else "external"
+            if settings.external
+            else "aca",
             subscription_id=settings.subscription_id or None,
             resource_group=settings.resource_group or None,
-            apim_name=settings.apim_name or None,
+            gateway_url=settings.gateway_url or None,
             tenant_id=settings.tenant_id or None,
             source=source,
             can_change=settings.can_choose_target,
@@ -194,7 +210,7 @@ class TargetChooser:
                 self._arm(None).list_arm("/tenants", api_version=SUBSCRIPTIONS_API_VERSION)
             )
         except ArmError as error:
-            raise _translate(error, "list your tenants") from error
+            raise translate(error, "list your tenants") from error
         views = [
             TenantView(
                 tenant_id=str(item["tenantId"]),
@@ -215,7 +231,7 @@ class TargetChooser:
                 )
             )
         except ArmError as error:
-            raise _translate(error, "list the subscriptions of this tenant") from error
+            raise translate(error, "list the subscriptions of this tenant") from error
         views = [
             SubscriptionView(
                 subscription_id=str(item["subscriptionId"]),
@@ -228,52 +244,62 @@ class TargetChooser:
         ]
         return sorted(views, key=lambda view: view.display_name.casefold())
 
-    def services(self, tenant_id: str | None, subscription_id: str) -> list[ApimServiceView]:
+    def gateways(self, tenant_id: str | None, subscription_id: str) -> list[GatewayView]:
+        """LiteLLM gateways on Container Apps in the subscription."""
         self._require_local()
         arm = self._arm(tenant_id)
-        path = f"/subscriptions/{segment(subscription_id)}/providers/{PROVIDER}/service"
+        path = f"/subscriptions/{segment(subscription_id)}/providers/Microsoft.App/containerApps"
         try:
-            items = list(arm.list_arm(path, api_version=self._settings.api_version))
+            items = [
+                item
+                for item in arm.list_arm(
+                    path, api_version=self._settings.container_apps_api_version
+                )
+                if _is_litellm(item)
+            ]
         except ArmError as error:
-            raise _translate(error, "list the APIM services of this subscription") from error
+            if error.code == "MissingSubscriptionRegistration":
+                return []  # No Container Apps in this subscription yet.
+            raise translate(error, "list the Container Apps of this subscription") from error
         if not items:
             return []
         with ThreadPoolExecutor(max_workers=min(_WORKERS, len(items))) as executor:
-            views = list(executor.map(lambda item: self._service_view(arm, item), items))
+            views = list(executor.map(lambda item: self._gateway_view(arm, item), items))
         return sorted(views, key=lambda view: view.name.casefold())
 
-    def _service_view(self, arm: ArmClient, item: Mapping[str, Any]) -> ApimServiceView:
-        service_id = str(item.get("id") or "")
+    def _gateway_view(self, arm: ArmClient, item: Mapping[str, Any]) -> GatewayView:
+        app_id = str(item.get("id") or "")
         gaps: list[str] = []
         can_manage: bool | None = None
         try:
             permissions: Permissions = list(
                 arm.list_arm(
-                    f"{service_id}/providers/Microsoft.Authorization/permissions",
+                    f"{app_id}/providers/Microsoft.Authorization/permissions",
                     api_version=AUTHORIZATION_API_VERSION,
                 )
             )
-            gaps = missing(permissions, (*APIM_READ_ACTIONS, *APIM_WRITE_ACTIONS))
+            gaps = missing(permissions, GATEWAY_ACTIONS)
             can_manage = not gaps
         except ArmError as error:
-            logger.info("Cannot read permissions on %s: %s", service_id, error.message)
-        return ApimServiceView(
-            id=service_id,
-            name=str(item.get("name") or ""),
-            resource_group=_resource_group(service_id),
-            location=str(item.get("location") or ""),
-            sku=str((item.get("sku") or {}).get("name") or ""),
-            provisioning_state=(item.get("properties") or {}).get("provisioningState"),
-            managed=(item.get("tags") or {}).get(MANAGED_TAG) == MANAGED_TAG_VALUE,
+            logger.info("Cannot read permissions on %s: %s", app_id, error.message)
+        info = container_app_info(item, str(item.get("name") or ""))
+        return GatewayView(
+            id=app_id,
+            name=info.name,
+            resource_group=_resource_group(app_id),
+            location=info.location or "",
+            url=info.url,
+            profile=_profile(item),
+            provisioning_state=info.provisioning_state,
+            managed=info.managed,
             can_manage=can_manage,
             missing=gaps,
         )
 
-    def create_options(self, tenant_id: str | None, subscription_id: str) -> ApimCreateOptions:
+    def create_options(self, tenant_id: str | None, subscription_id: str) -> GatewayCreateOptions:
         self._require_local()
         arm = self._arm(tenant_id)
         subscription = f"/subscriptions/{segment(subscription_id)}"
-        locations: dict[ApimSku, set[str]] = {sku: set() for sku in get_args(ApimSku)}
         try:
             groups = [
                 ResourceGroupView(name=str(group["name"]), location=str(group["location"]))
@@ -281,158 +307,31 @@ class TargetChooser:
                     f"{subscription}/resourcegroups", api_version=RESOURCES_API_VERSION
                 )
             ]
-            # One entry per tier and region; restricted entries are not offered to this
-            # subscription, and EUAP (canary) regions need special access.
-            for item in arm.list_arm(
-                f"{subscription}/providers/{PROVIDER}/skus", api_version=self._settings.api_version
-            ):
-                sku = item.get("name")
-                if sku not in locations or item.get("restrictions"):
-                    continue
-                locations[sku].update(
-                    str(location).casefold().replace(" ", "")
-                    for location in item.get("locations") or []
-                    if not str(location).casefold().endswith("euap")
-                )
             provider = arm.get_arm_json(
-                f"{subscription}/providers/{PROVIDER}", api_version=RESOURCES_API_VERSION
+                f"{subscription}/providers/Microsoft.App", api_version=RESOURCES_API_VERSION
             )
+            unregistered = self._deployer.unregistered(arm, subscription_id, redis=True)
         except ArmError as error:
-            raise _translate(error, "read this subscription") from error
-        return ApimCreateOptions(
+            raise translate(error, "read this subscription") from error
+        types = (provider or {}).get("resourceTypes") or []
+        environments: dict[str, Any] = next(
+            (t for t in types if str(t.get("resourceType")).casefold() == "managedenvironments"),
+            {},
+        )
+        locations = sorted(
+            {
+                str(location).casefold().replace(" ", "")
+                for location in environments.get("locations") or []
+                if not str(location).casefold().replace(" ", "").endswith("euap")
+            }
+        )
+        return GatewayCreateOptions(
             resource_groups=sorted(groups, key=lambda group: group.name.casefold()),
-            locations={sku: sorted(values) for sku, values in locations.items()},
-            provider_registered=str((provider or {}).get("registrationState")).casefold()
-            == "registered",
+            locations=locations,
+            unregistered_providers=unregistered,
         )
 
     # -- changes -----------------------------------------------------------------------
-
-    def select(self, body: TargetSelect, actor: str) -> TargetView:
-        self._require_changeable()
-        arm = self._arm(body.tenant_id)
-        path = _service_path(body.subscription_id, body.resource_group, body.apim_name)
-        try:
-            found = arm.get_arm_json(path, api_version=self._settings.api_version)
-        except ArmError as error:
-            raise _translate(error, "read this APIM service") from error
-        if found is None:
-            raise ServiceError(
-                404, f"APIM service {body.apim_name} not found in {body.resource_group}"
-            )
-        # ARM's casing, so the saved target matches the resource IDs ARM returns.
-        resource_id = str(found.get("id") or path)
-        target = {
-            "subscription_id": body.subscription_id,
-            "resource_group": _resource_group(resource_id) or body.resource_group,
-            "apim_name": str(found.get("name") or body.apim_name),
-            "tenant_id": body.tenant_id or arm.subscription_tenant(body.subscription_id) or "",
-        }
-        self._save(target)
-        logger.info("%s chose APIM service %s", actor, resource_id)
-        return TargetView(
-            subscription_id=target["subscription_id"],
-            resource_group=target["resource_group"],
-            apim_name=target["apim_name"],
-            tenant_id=target["tenant_id"] or None,
-            source="browser" if self._settings.public else "saved",
-            can_change=True,
-        )
-
-    def create(self, body: ApimCreate, actor: str) -> ApimServiceView:
-        """Starts creating a service and selects it. The setup report follows provisioning."""
-        self._require_changeable()
-        arm = self._arm(body.tenant_id)
-        subscription = f"/subscriptions/{segment(body.subscription_id)}"
-        group_path = f"{subscription}/resourceGroups/{segment(body.resource_group)}"
-        path = _service_path(body.subscription_id, body.resource_group, body.name)
-        try:
-            self._ensure_provider(arm, subscription)
-            if arm.get_arm_json(path, api_version=self._settings.api_version) is not None:
-                raise ServiceError(
-                    409, f"{body.name} already exists; choose it in the list instead"
-                )
-            check = arm.request(
-                "POST",
-                arm.arm_url(f"{subscription}/providers/{PROVIDER}/checkNameAvailability"),
-                api_version=self._settings.api_version,
-                json_body={"name": body.name},
-            ).json()
-            if not check.get("nameAvailable", True):
-                raise ServiceError(409, str(check.get("message") or f"{body.name} is taken"))
-            if arm.get_arm_json(group_path, api_version=RESOURCES_API_VERSION) is None:
-                arm.request(
-                    "PUT",
-                    arm.arm_url(group_path),
-                    api_version=RESOURCES_API_VERSION,
-                    json_body={
-                        "location": body.location,
-                        "tags": {MANAGED_TAG: MANAGED_TAG_VALUE},
-                    },
-                )
-                logger.info("%s created resource group %s", actor, group_path)
-            response = arm.request(
-                "PUT",
-                arm.arm_url(path),
-                api_version=self._settings.api_version,
-                json_body={
-                    "location": body.location,
-                    "sku": {"name": body.sku, "capacity": 1},
-                    # Members authenticate with APIM's managed identity.
-                    "identity": {"type": "SystemAssigned"},
-                    "tags": {MANAGED_TAG: MANAGED_TAG_VALUE},
-                    "properties": {
-                        "publisherEmail": body.publisher_email,
-                        "publisherName": body.publisher_name,
-                    },
-                },
-                headers={"If-None-Match": "*"},
-            )
-        except ArmError as error:
-            raise _translate(error, "create this APIM service") from error
-        logger.info("%s started creating APIM service %s (%s)", actor, path, body.sku)
-        created: dict[str, Any] = {}
-        if response.content and "json" in response.headers.get("content-type", ""):
-            created = response.json()
-        self._save(
-            {
-                "subscription_id": body.subscription_id,
-                "resource_group": body.resource_group,
-                "apim_name": body.name,
-                "tenant_id": body.tenant_id or arm.subscription_tenant(body.subscription_id) or "",
-            }
-        )
-        return ApimServiceView(
-            id=str(created.get("id") or path),
-            name=body.name,
-            resource_group=body.resource_group,
-            location=body.location,
-            sku=body.sku,
-            provisioning_state=(created.get("properties") or {}).get("provisioningState")
-            or "Created",
-            managed=True,
-            can_manage=True,
-        )
-
-    def _ensure_provider(self, arm: ArmClient, subscription: str) -> None:
-        path = f"{subscription}/providers/{PROVIDER}"
-
-        def state() -> str:
-            found = arm.get_arm_json(path, api_version=RESOURCES_API_VERSION) or {}
-            return str(found.get("registrationState") or "").casefold()
-
-        current = state()
-        if current == "registered":
-            return
-        if current != "registering":
-            arm.request("POST", arm.arm_url(f"{path}/register"), api_version=RESOURCES_API_VERSION)
-        for _ in range(_REGISTER_POLLS):
-            self._sleep(_REGISTER_POLL_SECONDS)
-            if state() == "registered":
-                return
-        raise ServiceError(
-            503, f"{PROVIDER} is still being registered in this subscription; try again shortly"
-        )
 
     def _save(self, target: Mapping[str, str]) -> None:
         if self._settings.public:
@@ -440,167 +339,276 @@ class TargetChooser:
         save_target(target, self._state_file)
         self._on_change()
 
-    # -- deleting and restoring ---------------------------------------------------------
+    def select(self, body: TargetSelect, actor: str) -> TargetView:
+        self._require_changeable()
+        arm = self._arm(body.tenant_id)
+        path = app_path(body.subscription_id, body.resource_group, body.gateway_name)
+        try:
+            found = arm.get_arm_json(path, api_version=self._settings.container_apps_api_version)
+        except ArmError as error:
+            raise translate(error, "read this Container App") from error
+        if found is None:
+            raise ServiceError(
+                404, f"Container App {body.gateway_name} not found in {body.resource_group}"
+            )
+        if not _is_litellm(found):
+            raise ServiceError(409, f"{body.gateway_name} doesn't run LiteLLM")
+        # ARM's casing, so the saved target matches the resource IDs ARM returns.
+        resource_id = str(found.get("id") or path)
+        target = {
+            "subscription_id": body.subscription_id,
+            "resource_group": _resource_group(resource_id) or body.resource_group,
+            "gateway_name": str(found.get("name") or body.gateway_name),
+            "tenant_id": body.tenant_id or arm.subscription_tenant(body.subscription_id) or "",
+        }
+        self._save(target)
+        logger.info("%s chose gateway %s", actor, resource_id)
+        return self._view(target)
+
+    def _view(self, target: Mapping[str, str]) -> TargetView:
+        return TargetView(
+            gateway_name=target.get("gateway_name") or None,
+            gateway_kind="external" if target.get("gateway_url") else "aca",
+            subscription_id=target.get("subscription_id") or None,
+            resource_group=target.get("resource_group") or None,
+            gateway_url=target.get("gateway_url") or None,
+            tenant_id=target.get("tenant_id") or None,
+            source="browser" if self._settings.public else "saved",
+            can_change=True,
+        )
+
+    def create(self, body: GatewayCreate, actor: str) -> GatewayView:
+        """Starts deploying a gateway and selects it. Setup follows the deployment."""
+        self._require_changeable()
+        arm = self._arm(body.tenant_id)
+        self._deployer.start(arm, body, actor)
+        self._save(
+            {
+                "subscription_id": body.subscription_id,
+                "resource_group": body.resource_group,
+                "gateway_name": body.name,
+                "tenant_id": body.tenant_id or arm.subscription_tenant(body.subscription_id) or "",
+            }
+        )
+        return GatewayView(
+            id=app_path(body.subscription_id, body.resource_group, body.name),
+            name=body.name,
+            resource_group=body.resource_group,
+            location=body.location,
+            url=None,
+            profile=body.profile,
+            provisioning_state="Deploying",
+            managed=True,
+            can_manage=True,
+        )
+
+    def deploy_status(
+        self, tenant_id: str | None, subscription_id: str, resource_group: str, name: str
+    ) -> GatewayDeployStatus:
+        self._require_local()
+        return self._deployer.status(self._arm(tenant_id), subscription_id, resource_group, name)
+
+    def connect(self, body: GatewayConnect, actor: str) -> TargetView:
+        """Checks an external gateway's URL and master key, then selects it."""
+        self._require_changeable()
+        url = str(body.url).rstrip("/")
+        parts = urlsplit(url)
+        if parts.scheme != "https" and (parts.hostname or "") not in _LOCAL_HOSTS:
+            raise ServiceError(400, "Use the gateway's HTTPS URL (plain HTTP only for localhost)")
+        if parts.path not in {"", "/"} or parts.query:
+            raise ServiceError(400, "Use the gateway's base URL, without a path")
+        master_key = body.master_key.get_secret_value()
+        client = LiteLLMClient(url, master_key, transport=self._gateway_transport)
+        try:
+            health = client.readiness()
+            client.models()
+        except LiteLLMError as error:
+            if error.status in {401, 403}:
+                raise ServiceError(400, "The gateway refused that master key") from error
+            raise ServiceError(
+                502, f"Cannot reach a LiteLLM gateway at {url}: {error.message}"
+            ) from error
+        finally:
+            client.close()
+        if str(health.get("db") or "").casefold() not in {"connected", ""}:
+            raise ServiceError(
+                409,
+                f"{url} has no database ({health.get('db')}); pools need STORE_MODEL_IN_DB",
+            )
+        if self._secrets is None:
+            raise ServiceError(500, "The app has no store for gateway keys")
+        self._secrets.put(url, master_key)
+        arm = self._arm(body.tenant_id)
+        target = {
+            "subscription_id": body.subscription_id,
+            "gateway_name": body.name,
+            "gateway_url": url,
+            "gateway_principal_id": body.principal_id or "",
+            "gateway_app_insights_id": body.app_insights_id or "",
+            "tenant_id": body.tenant_id or arm.subscription_tenant(body.subscription_id) or "",
+        }
+        self._save(target)
+        logger.info("%s connected gateway %s at %s", actor, body.name, url)
+        return self._view(target)
+
+    def disconnect(self, actor: str) -> None:
+        """Forgets the external gateway and its key; the gateway itself is not touched."""
+        self._require_changeable()
+        if not self._settings.external:
+            raise ServiceError(400, "Only a connected gateway can be disconnected")
+        if self._secrets is not None:
+            self._secrets.forget(self._settings.gateway_url)
+        clear_saved_target(self._state_file)
+        logger.info("%s disconnected gateway %s", actor, self._settings.gateway_name)
+        self._on_change()
+
+    # -- deleting ----------------------------------------------------------------------
 
     def _is_current(self, body: TargetSelect) -> bool:
         settings = self._settings
-        return settings.has_target and (
-            settings.subscription_id.casefold(),
-            settings.resource_group.casefold(),
-            settings.apim_name.casefold(),
-        ) == (
-            body.subscription_id.casefold(),
-            body.resource_group.casefold(),
-            body.apim_name.casefold(),
+        return (
+            settings.has_target
+            and not settings.external
+            and (
+                settings.subscription_id.casefold(),
+                settings.resource_group.casefold(),
+                settings.gateway_name.casefold(),
+            )
+            == (
+                body.subscription_id.casefold(),
+                body.resource_group.casefold(),
+                body.gateway_name.casefold(),
+            )
         )
 
-    def _managed_service(self, arm: ArmClient, body: TargetSelect) -> dict[str, Any]:
-        path = _service_path(body.subscription_id, body.resource_group, body.apim_name)
+    def _managed(self, arm: ArmClient, body: TargetSelect) -> dict[str, Any]:
+        path = app_path(body.subscription_id, body.resource_group, body.gateway_name)
         try:
-            found = arm.get_arm_json(path, api_version=self._settings.api_version)
+            found = arm.get_arm_json(path, api_version=self._settings.container_apps_api_version)
+            if found is None:
+                # A deployment that failed before its Container App existed still left
+                # resources; its deployment record, tagged like them, stands in for the app.
+                found = arm.get_arm_json(
+                    deployment_path(body.subscription_id, body.resource_group, body.gateway_name),
+                    api_version=DEPLOYMENTS_API_VERSION,
+                )
+                if found is not None:
+                    found = {
+                        **found,
+                        "name": body.gateway_name,
+                        "id": "",
+                        "location": "",
+                        "deployment_only": True,
+                    }
         except ArmError as error:
-            raise _translate(error, "read this APIM service") from error
+            raise translate(error, "read this gateway") from error
         if found is None:
             raise ServiceError(
-                404, f"APIM service {body.apim_name} not found in {body.resource_group}"
+                404, f"Gateway {body.gateway_name} not found in {body.resource_group}"
             )
         if (found.get("tags") or {}).get(MANAGED_TAG) != MANAGED_TAG_VALUE:
             raise ServiceError(
                 403,
-                f"Only APIM services this app created (tag {MANAGED_TAG}: {MANAGED_TAG_VALUE}) "
+                f"Only gateways this app deployed (tag {MANAGED_TAG}: {MANAGED_TAG_VALUE}) "
                 "can be deleted here",
             )
         return found
 
-    def delete_check(self, body: TargetSelect) -> ServiceDeleteCheck:
-        """What deleting the service would remove, for the confirmation."""
+    def _deleting(self, arm: ArmClient, resource_id: str, api_version: str) -> bool:
+        found = arm.get_arm_json(resource_id, api_version=api_version)
+        state = str(((found or {}).get("properties") or {}).get("provisioningState") or "")
+        return state.casefold() in {"scheduledfordelete", "deleting"}
+
+    def _resources(self, arm: ArmClient, body: TargetSelect, name: str) -> list[dict[str, Any]]:
+        """The resources tagged as this gateway's, in the order they are deleted."""
+        path = f"{group_path(body.subscription_id, body.resource_group)}/resources"
+        try:
+            items = list(
+                arm.list_arm(
+                    path,
+                    api_version=RESOURCES_API_VERSION,
+                    params={"$filter": f"tagName eq '{GATEWAY_TAG}' and tagValue eq '{name}'"},
+                )
+            )
+        except ArmError as error:
+            raise translate(error, "list the gateway's resources") from error
+        owned = [
+            item
+            for item in items
+            if (item.get("tags") or {}).get(MANAGED_TAG) == MANAGED_TAG_VALUE
+            and (item.get("tags") or {}).get(GATEWAY_TAG) == name
+            and str(item.get("type") or "").casefold() in _DELETE_ORDER
+        ]
+        return sorted(owned, key=lambda item: _DELETE_ORDER[str(item["type"]).casefold()][0])
+
+    def delete_check(self, body: TargetSelect) -> GatewayDeleteCheck:
+        """What deleting the gateway would remove, for the confirmation."""
         self._require_changeable()
         arm = self._arm(body.tenant_id)
-        found = self._managed_service(arm, body)
-        service_id = str(found.get("id") or "")
-        try:
-            backends = list(
-                arm.list_arm(f"{service_id}/backends", api_version=self._settings.pool_api_version)
-            )
-            apis = [
-                item
-                for item in arm.list_arm(
-                    f"{service_id}/apis", api_version=self._settings.api_version
-                )
-                if ";rev=" not in str(item.get("name") or "")
-            ]
-        except ArmError as error:
-            raise _translate(error, "read what this APIM service contains") from error
-        pools = sum(1 for item in backends if (item.get("properties") or {}).get("type") == "Pool")
-        return ServiceDeleteCheck(
-            name=str(found.get("name") or body.apim_name),
-            resource_group=_resource_group(service_id) or body.resource_group,
+        found = self._managed(arm, body)
+        name = str(found.get("name") or body.gateway_name)
+        return GatewayDeleteCheck(
+            name=name,
+            resource_group=_resource_group(str(found.get("id") or "")) or body.resource_group,
             location=str(found.get("location") or ""),
-            sku=str((found.get("sku") or {}).get("name") or ""),
             current=self._is_current(body),
-            pools=pools,
-            members=len(backends) - pools,
-            apis=len(apis),
+            deployed=not found.get("deployment_only"),
+            pools=None,
+            resources=[
+                f"{item.get('type')}/{item.get('name')}"
+                for item in self._resources(arm, body, name)
+            ],
         )
 
-    def delete(self, body: ServiceDelete, actor: str) -> None:
-        """Soft-deletes a service this app created; Azure keeps it for 48 hours."""
+    def delete(self, body: GatewayDelete, actor: str) -> None:
+        """Deletes a gateway this app deployed and its resources; not the resource group."""
         self._require_changeable()
         arm = self._arm(body.tenant_id)
-        found = self._managed_service(arm, body)
-        name = str(found.get("name") or body.apim_name)
+        found = self._managed(arm, body)
+        name = str(found.get("name") or body.gateway_name)
         if body.confirm_name.strip().casefold() != name.casefold():
-            raise ServiceError(400, f"Type the service name ({name}) to confirm")
-        path = _service_path(body.subscription_id, body.resource_group, body.apim_name)
+            raise ServiceError(400, f"Type the gateway name ({name}) to confirm")
+        deleted: list[str] = []
+        failed: list[tuple[str, ServiceError]] = []
+        for item in self._resources(arm, body, name):
+            resource = str(item.get("name"))
+            order, api_version = _DELETE_ORDER[str(item["type"]).casefold()]
+            try:
+                if order == 1 and self._deleting(arm, str(item["id"]), api_version):
+                    # Asked before; Azure is still on it.
+                    deleted.append(resource)
+                    continue
+                response = arm.request(
+                    "DELETE",
+                    arm.arm_url(str(item["id"])),
+                    api_version=api_version,
+                    allow_not_found=True,
+                )
+                # Only the Container App is waited for: its environment can't go before it.
+                # Everything else, the environment included (Azure takes 10-20 minutes over
+                # one), finishes on its own.
+                if order == 0:
+                    arm.wait(response, timeout_seconds=600)
+                deleted.append(resource)
+            except ArmError as error:
+                failed.append((resource, translate(error, f"delete {resource}")))
+                if order == 0:
+                    break
+        if failed:
+            done = ", ".join(deleted) or "nothing"
+            reasons = "; ".join(f"{resource}: {error.message}" for resource, error in failed)
+            raise ServiceError(failed[0][1].status, f"Could not delete {reasons}. Deleted: {done}.")
         try:
-            arm.request("DELETE", arm.arm_url(path), api_version=self._settings.api_version)
+            # The deployment's record goes too, so the name can be deployed again cleanly.
+            arm.request(
+                "DELETE",
+                arm.arm_url(deployment_path(body.subscription_id, body.resource_group, name)),
+                api_version=DEPLOYMENTS_API_VERSION,
+                allow_not_found=True,
+            )
         except ArmError as error:
-            raise _translate(error, "delete this APIM service") from error
-        logger.warning("%s deleted APIM service %s (soft-delete, 48 h to restore)", actor, path)
+            logger.warning("Could not delete the deployment record of %s: %s", name, error.message)
+        logger.warning("%s deleted gateway %s and %s", actor, name, ", ".join(deleted))
         if self._is_current(body) and not self._settings.public:
             clear_saved_target(self._state_file)
             self._on_change()
-
-    def deleted_services(
-        self, tenant_id: str | None, subscription_id: str
-    ) -> list[DeletedServiceView]:
-        self._require_local()
-        arm = self._arm(tenant_id)
-        path = f"/subscriptions/{segment(subscription_id)}/providers/{PROVIDER}/deletedservices"
-        try:
-            items = list(arm.list_arm(path, api_version=self._settings.api_version))
-        except ArmError as error:
-            raise _translate(error, "list recently deleted APIM services") from error
-        views = []
-        for item in items:
-            record_id = str(item.get("id") or "")
-            properties = item.get("properties") or {}
-            service_id = str(properties.get("serviceId") or "")
-            lowered = record_id.casefold().split("/")
-            location = (
-                record_id.split("/")[lowered.index("locations") + 1]
-                if "locations" in lowered
-                else ""
-            )
-            views.append(
-                DeletedServiceView(
-                    name=str(item.get("name") or ""),
-                    location=location.casefold(),
-                    display_location=str(item.get("location") or location),
-                    resource_group=_resource_group(service_id),
-                    service_id=service_id,
-                    deletion_date=properties.get("deletionDate"),
-                    scheduled_purge_date=properties.get("scheduledPurgeDate"),
-                )
-            )
-        return sorted(views, key=lambda view: view.deletion_date or "", reverse=True)
-
-    def restore(self, body: ServiceRestore, actor: str) -> ApimServiceView:
-        """Undeletes a soft-deleted service into its original resource group."""
-        self._require_changeable()
-        arm = self._arm(body.tenant_id)
-        record_path = (
-            f"/subscriptions/{segment(body.subscription_id)}/providers/{PROVIDER}"
-            f"/locations/{segment(body.location)}/deletedservices/{segment(body.name)}"
-        )
-        try:
-            record = arm.get_arm_json(record_path, api_version=self._settings.api_version)
-            if record is None:
-                raise ServiceError(404, f"{body.name} is no longer in Azure's deleted services")
-            service_id = str((record.get("properties") or {}).get("serviceId") or "")
-            group = _resource_group(service_id)
-            if not group:
-                raise ServiceError(
-                    502, f"Azure returned no original resource group for {body.name}"
-                )
-            path = _service_path(body.subscription_id, group, body.name)
-            response = arm.request(
-                "PUT",
-                arm.arm_url(path),
-                api_version=self._settings.api_version,
-                json_body={
-                    "location": record.get("location") or body.location,
-                    "sku": _RESTORE_PLACEHOLDER["sku"],
-                    "properties": {
-                        "publisherEmail": _RESTORE_PLACEHOLDER["publisherEmail"],
-                        "publisherName": _RESTORE_PLACEHOLDER["publisherName"],
-                        "restore": True,
-                    },
-                },
-            )
-        except ArmError as error:
-            raise _translate(error, "restore this APIM service") from error
-        logger.warning("%s restored APIM service %s", actor, path)
-        restored: dict[str, Any] = {}
-        if response.content and "json" in response.headers.get("content-type", ""):
-            restored = response.json()
-        return ApimServiceView(
-            id=str(restored.get("id") or path),
-            name=body.name,
-            resource_group=group,
-            location=str(restored.get("location") or record.get("location") or body.location),
-            sku=str((restored.get("sku") or {}).get("name") or ""),
-            provisioning_state=(restored.get("properties") or {}).get("provisioningState"),
-            managed=(restored.get("tags") or {}).get(MANAGED_TAG) == MANAGED_TAG_VALUE,
-            can_manage=None,
-        )

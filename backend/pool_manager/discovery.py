@@ -1,10 +1,10 @@
-"""Finds Azure OpenAI / Foundry deployments and imports them as pool member backends.
+"""Finds Azure OpenAI / Foundry deployments and imports them as pool members.
 
-Members use a per-deployment URL (``.../openai/deployments/<name>``) so deployments of the
-same model with different names (``gpt-5.6-luna`` and ``gpt-5.6-luna-2``) can share one pool.
-They authenticate with the APIM managed identity: most accounts disable key auth, and reading
-keys would need ``listKeys`` permission. Bind the pool with ``https://cognitiveservices.azure.com``
-as the managed identity resource.
+Members are per-deployment URLs (``.../openai/deployments/<name>``), which become LiteLLM rows
+``azure/<name>`` on the account's endpoint, so deployments of the same model with different
+names (``gpt-5.6-luna`` and ``gpt-5.6-luna-2``) can share one pool. They authenticate as the
+gateway's managed identity: most accounts disable key auth, and reading keys would need
+``listKeys`` permission.
 """
 
 from __future__ import annotations
@@ -175,9 +175,12 @@ class DeploymentDiscovery:
             if refresh or cached is None or time.monotonic() - cached[0] > _CACHE_SECONDS:
                 cached = (time.monotonic(), self._scan())
                 self._cache = cached
-        # Backends change independently of deployments, so match them on every call.
+        # Members change independently of deployments, so match them on every call; only
+        # members of saved pools count, others are pending imports.
         by_url = {
-            _url_key(backend.url or ""): backend.id for backend in self._pools.list_backends()
+            _url_key(backend.url): backend.id
+            for backend in self._pools.list_backends()
+            if backend.pools
         }
         return [
             view.model_copy(update={"backend_id": by_url.get(_url_key(view.backend_url))})
@@ -209,6 +212,18 @@ class DeploymentDiscovery:
             if view.backend_id:
                 backend_ids.append(view.backend_id)
                 continue
+            # Imported before but not in a pool yet: the same member again.
+            pending = next(
+                (
+                    backend
+                    for backend in self._pools.list_backends()
+                    if not backend.pools and _url_key(backend.url) == _url_key(view.backend_url)
+                ),
+                None,
+            )
+            if pending is not None:
+                backend_ids.append(pending.id)
+                continue
             backend_id = view.suggested_backend_id
             if backend_id.casefold() in taken:
                 # The readable ID belongs to an unrelated backend; keep it and add a stable suffix.
@@ -221,11 +236,10 @@ class DeploymentDiscovery:
                     title=f"{view.deployment} · {view.account_name} ({view.location})",
                     url=view.backend_url,  # type: ignore[arg-type]
                     auth=MemberAuth(type="managed_identity"),
-                    circuit_breaker=request.circuit_breaker,
                 ),
                 actor,
             )
             backend_ids.append(backend.id)
             created.append(backend.id)
-        logger.info("%s imported %d deployment backend(s)", actor, len(created))
+        logger.info("%s imported %d deployment(s) as members", actor, len(created))
         return DeploymentImportResult(backend_ids=backend_ids, created=created)

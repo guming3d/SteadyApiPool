@@ -2,8 +2,9 @@
 .env
 .env.*
 !.env.example
-# The APIM service chosen in the local setup wizard
+# The gateway chosen in the local setup wizard, and connected gateways' master keys (encrypted)
 backend/.pool-manager.json
+backend/.pool-manager-gateways.bin
 # The local app's own sign-in (an account record; tokens stay in the OS's encrypted store)
 backend/.pool-manager-auth.json
 .azure/

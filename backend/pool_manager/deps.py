@@ -2,7 +2,7 @@
 
 Locally and in the Easy Auth deployment there is one set of components for the process (the
 ``lru_cache`` factories). In the public app each request resolves to the caller's own session
-(sessions.py), built for them and the APIM service their browser chose.
+(sessions.py), built for them and the gateway their browser chose.
 """
 
 from __future__ import annotations
@@ -21,7 +21,9 @@ from .cost import CostReader
 from .credentials import LocalCredential
 from .discovery import DeploymentDiscovery
 from .entra import EntraUser, OboExchanger, TokenVerifier
+from .gateway import GatewayConnection
 from .metrics import PoolMonitor
+from .secret_store import SecretStore
 from .service import PoolManagerService, ServiceError
 from .sessions import TARGET_HEADER, Sessions, UserSession, parse_target
 from .target import TargetChooser
@@ -44,8 +46,21 @@ def _arm() -> ArmClient:
 
 
 @lru_cache
+def _secrets() -> SecretStore:
+    """External gateways' master keys, kept locally (OS-encrypted)."""
+    return SecretStore()
+
+
+@lru_cache
+def _gateway() -> GatewayConnection:
+    settings = get_settings()
+    stored = _secrets().get if settings.local and settings.external else None
+    return GatewayConnection(settings, _arm(), stored_key=stored)
+
+
+@lru_cache
 def _service() -> PoolManagerService:
-    return PoolManagerService(get_settings(), _arm())
+    return PoolManagerService(get_settings(), _arm(), _gateway())
 
 
 @lru_cache
@@ -86,15 +101,31 @@ def _access() -> AccessChecker:
 
 @lru_cache
 def _targets() -> TargetChooser:
-    return TargetChooser(get_settings(), get_local_credential(), on_change=reset_target)
+    settings = get_settings()
+    return TargetChooser(
+        settings,
+        get_local_credential(),
+        secrets=_secrets() if settings.local else None,
+        on_change=reset_target,
+    )
 
 
 def reset_target() -> None:
-    """Rebuilds everything bound to one APIM service once the setup wizard chose another.
+    """Rebuilds everything bound to one gateway once the setup wizard chose another.
 
     The local credential stays, so a browser sign-in survives the switch.
     """
-    factories = (_targets, _monitor, _tester, _cost, _access, _discovery, _service, _arm)
+    factories = (
+        _targets,
+        _monitor,
+        _tester,
+        _cost,
+        _access,
+        _discovery,
+        _service,
+        _gateway,
+        _arm,
+    )
     for factory in (*factories, get_settings):
         factory.cache_clear()
 

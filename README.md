@@ -1,48 +1,55 @@
-# APIM Backend Pool Manager
+# AI Gateway Pool Manager (LiteLLM)
 
 **English** | [简体中文](README.zh-CN.md)
 
-A standalone web app for Azure API Management **native backend pools**: failover,
-balanced and weighted distribution, circuit breakers and session affinity. It also lets you
-bind a pool to an API.
+A standalone web app that gives you an **AI gateway with failover** in front of your Azure OpenAI /
+Foundry model deployments, without having to learn LiteLLM or Foundry first. It deploys (or
+connects) a [LiteLLM](https://github.com/BerriAI/litellm) gateway, finds your model deployments,
+and groups deployments of one model into a **pool**. Clients call the pool by one model name;
+the gateway spreads requests across the members (failover, balanced or weighted), benches a
+member that keeps failing (cooldown), retries on another member, and keeps Responses API
+follow-ups on the deployment that answered first.
 
-![A pool's Routing tab: the client calls one APIM endpoint, and the backend pool spreads requests by weight across two Foundry deployments, with circuit breakers and a retry on 429](docs/images/pool-routing.png)
+![A pool's Routing tab: the client calls the LiteLLM gateway with one model name, and the pool spreads requests across Foundry deployments in several regions, with cooldown and retries](docs/images/pool-routing.png)
 
-*One endpoint for clients, several model deployments behind it: the Routing tab shows how APIM
-spreads traffic across the pool, and lets you click a deployment to see what happens when it
-fails or is throttled.*
+*One endpoint and one model name for clients, several model deployments behind it: the Routing
+tab shows how the gateway routes traffic through the pool, and lets you click a deployment to see
+what happens when it fails or is throttled.*
 
 ```
 apim-backend-pool/
 ├── backend/    FastAPI app (pool_manager) + tests; serves the built frontend
 ├── frontend/   React/Vite UI (built into backend/pool_manager/static)
-├── tui/        Terminal UI (Textual), another client of the backend's /api
-├── infra/      Bicep: App Service + Easy Auth + least-privilege APIM role
-├── deploy/     The public app on Container Apps (its own azd project)
-├── scripts/    Local start scripts (browser or -Tui), the demo server and the azd frontend build hook
+├── infra/      Bicep: the gateway on Container Apps (infra/gateway), and the App Service hosting
+│               of this app with Easy Auth and least-privilege roles
+├── scripts/    Local start scripts, the doctor, the demo server, release packaging and the
+│               gateway template build
 ├── docs/       Screenshots for this README
-└── azure.yaml  azd project definition
+├── tui/        Terminal UI: still the APIM version, not usable with the gateway yet
+├── deploy/     Public multi-tenant app: not available with the gateway yet
+└── azure.yaml  azd project definition (App Service hosting)
 ```
 
-**Online demo:** https://ca-pool-public-5xgy5gsq3leyq.ambitiousground-f590833b.swedencentral.azurecontainerapps.io/ (choose **Browse as guest (read-only)** to look around
-without signing in, or sign in to manage your own APIM services).
+> [!NOTE]
+> This branch replaces the earlier Azure API Management (APIM) version. Two parts haven't been
+> ported yet: the [terminal UI](#terminal-ui) and the [public multi-tenant app](#public-app).
 
-New here? [Get started](#get-started) takes about ten minutes and needs only Python. To offer it
-to other organizations as a website where everyone signs in with their own Azure account, see
-[Public app on Azure Container Apps](#public-app-on-azure-container-apps).
+New here? [Get started](#get-started) takes about half an hour, most of it waiting for Azure to
+deploy the gateway, and needs only Python.
 
 ## Get started
 
 This guide runs the app on your own computer. You install Python and nothing else. You don't
-need the Azure CLI, Node.js, a config file or APIM experience; the app checks what's missing
-and fixes it with you. (To give your team a shared URL instead, see [Deploy to Azure](#deploy-to-azure).)
+need the Azure CLI, Node.js, Docker, a config file, or any LiteLLM experience; the app checks
+what's missing and fixes it with you. (To give your team a shared URL instead, see
+[Deploy to Azure](#deploy-to-azure).)
 
 **What you need**
 
 - **Python 3.11 or newer.** `winget install -e --id Python.Python.3.13` on Windows,
   `brew install python@3.13` on macOS, or see [Prerequisites per OS](#prerequisites-per-os).
-- **An Azure account** that can manage an API Management service, or create one in a
-  subscription (*Contributor*), and read your Azure OpenAI / Foundry resources (*Reader*).
+- **An Azure account** that can deploy resources in a subscription (*Contributor*), or read an
+  existing gateway, and read your Azure OpenAI / Foundry resources (*Reader*).
 - **Some Azure OpenAI / Foundry model deployments**, ideally of the same model in more than one
   region. If you don't have any, the app can create them (step 4).
 
@@ -70,30 +77,73 @@ Click **Sign in with browser** and sign in with your Azure account. On a machine
 browser (SSH, WSL, a server), click **Use a code instead**. The app remembers the sign-in in your
 OS's encrypted store, so you do this once.
 
-![Setup page, step 1: Sign in with browser](docs/images/onboarding-1-sign-in.png)
+![Setup page, step 1 of Sign in, AI gateway, Permissions and Gateway → Foundry: Sign in with browser, or Use a code instead](docs/images/onboarding-1-sign-in.png)
 
-### 3. Choose your APIM service, or create one
+### 3. Choose, deploy or connect a gateway
 
-The app lists the API Management services in each subscription you can access and says whether
-you may manage them. Click **Use this service**.
+The app lists the LiteLLM gateways on Azure Container Apps in each subscription you can access and
+says whether you may manage them. Click **Use this gateway**.
 
-![Setup page, step 2: the APIM services in a subscription, each with Use this service](docs/images/onboarding-2-choose-apim.png)
+![Setup page, step 2: the LiteLLM gateways in a subscription, each with Use this gateway, plus Deploy a gateway and Connect a gateway](docs/images/onboarding-2-choose-gateway.png)
 
-No APIM service yet? Click **Create an APIM service**. Everything is filled in: a unique name,
-a new resource group, a region and the recommended **Basic v2** tier. Check the publisher
-email and click **Create and use**. The app waits until the service is ready, usually a few
-minutes (the Developer tier takes 30–40). Azure bills the service from the moment it's created.
+No gateway yet? Click **Deploy a gateway**. The app first asks **Where should the gateway run?**
+(see [Container Apps or AKS?](#container-apps-or-aks) below) and recommends one:
 
-![Create an APIM service form, pre-filled with Basic v2](docs/images/onboarding-2b-create-apim.png)
+- **Deploy on Container Apps** opens a form with everything filled in: a unique name, a resource
+  group, a region and the size (**Dev / trial** or **Production**), with a list-price estimate.
+  Click **Deploy**. The app deploys LiteLLM, PostgreSQL, a managed identity and Application
+  Insights with your own Azure rights, and follows the deployment, which usually takes 5–15
+  minutes (PostgreSQL is the slowest). You can close the app meanwhile; setup picks it up again.
+  Azure bills the resources from the moment they're created.
+- **Generate AKS files** asks for your cluster, its resource group and a namespace, and generates
+  a `values.yaml`, a `deploy.sh` and a `README.md` (Helm chart, workload identity, PostgreSQL
+  Flexible Server). The cluster needs the OIDC issuer and workload identity enabled. Run the
+  script, for example in Azure Cloud Shell, then click **Deployed, connect it**. The script
+  exposes LiteLLM on plain HTTP on a public IP, and **Connect** accepts only HTTPS URLs (plain
+  HTTP only for localhost, so the master key never crosses the network unencrypted). To try it
+  from the machine running the app, keep `kubectl -n <namespace> port-forward svc/litellm 4000:4000`
+  running and connect to `http://localhost:4000`; for real traffic, put an ingress with TLS in
+  front and connect to its HTTPS URL.
+
+**Connect a gateway** works for any LiteLLM proxy with a database (`STORE_MODEL_IN_DB`): enter its
+HTTPS URL, its master key and, optionally, the object ID of the managed identity it calls Foundry
+as and its Application Insights resource ID. The app checks both against the gateway and keeps the
+master key encrypted on this machine, never in a file in plain text.
+
+![Where should the gateway run? A few questions, Azure Container Apps recommended, and the AKS option](docs/images/onboarding-2b-deploy-gateway.png)
 
 A two-minute guided tour opens next. Take it or skip it; **Tour** in the top bar replays it.
 
+#### Container Apps or AKS?
+
+The questionnaire asks what the gateway is for, the peak tokens per minute, the average tokens per
+request, and three yes/no questions. It recommends:
+
+| | Azure Container Apps (the default) | Azure Kubernetes Service (AKS) |
+| --- | --- | --- |
+| When | Most cases: trials, and production traffic up to about 250 requests a second (what the production profile's 5 replicas serve) | You already run an AKS cluster and have people for it; self-hosted (GPU) models should run next to the gateway; or the peak is over about 250 requests a second (peak TPM ÷ 60 ÷ tokens per request) |
+| How | Deployed by this app in one step, with no cluster to run | You run the generated Helm files and script on your cluster, then connect it |
+| Size | **Dev / trial**: one replica, no Redis. **Production**: 2–5 replicas scaling with load, sharing cooldowns through Redis | The script deploys 2 replicas; add Redis yourself so they share cooldowns |
+| List price | Dev about **$46–115 a month**; production about **$171–865 a month** | Your cluster's cost, plus PostgreSQL |
+
+The prices are **retail list-price estimates** (USD, East US 2, from quiet to busy) for what each
+profile deploys: Container Apps replicas, PostgreSQL and, for production, Redis. They leave out
+free grants, log ingestion and discounts, and of course your model usage, which Foundry bills as
+usual. Once the gateway exists, its panel shows this month's actual spend and the list price for
+its region. For production the recommendation also says how many replicas to plan for (about one
+per 50 requests a second at the peak).
+
+A gateway that must not be reachable from the internet works on both, but private networking
+isn't automated here: on Container Apps, put the environment in a virtual network afterwards (or
+adapt the template); on AKS, use an internal load balancer or private ingress.
+
 ### 4. Pick the deployments to pool
 
-Open the **Deployments** tab. It lists every Azure OpenAI / Foundry deployment in the APIM
-service's subscription, grouped by model. (Deployments in other subscriptions: set
-`POOL_MANAGER_DISCOVERY_SUBSCRIPTIONS` in `backend/.env`.) Click **Create pool from this model** on the model you want.
-To pool only some of a model's deployments, tick them and choose **Import & create pool**.
+Open the **Deployments** tab. It lists every Azure OpenAI / Foundry deployment in the gateway's
+subscription, grouped by model. (Deployments in other subscriptions: set
+`POOL_MANAGER_DISCOVERY_SUBSCRIPTIONS` in `backend/.env`.) Click **Create pool from this model**
+on the model you want. To pool only some of a model's deployments, tick them and choose
+**Import & create pool**.
 
 ![Deployments tab: gpt-5.6-luna deployed in three regions, with Create pool from this model](docs/images/onboarding-3-deployments.png)
 
@@ -102,71 +152,76 @@ then lists it here.
 
 ### 5. Publish the pool
 
-The pool opens with everything filled in: an ID, an API path that clients will call, the
-members and a circuit breaker. The defaults work. **Failover** sends all traffic to the primary
-and switches to a standby when it fails or runs out of quota; choose **Balanced** to spread
-traffic over every member instead.
+The pool opens with everything filled in: an ID (here `pool-gpt-5-6-luna`), which is also the
+model name clients send, the members, and the cooldown, retry and timeout settings. The defaults
+work. **Failover** sends all traffic to the primary and switches to a standby when it fails or
+runs out of quota; choose **Balanced** to spread traffic over every member instead, or
+**Weighted** to set the shares.
 
-![Add pool, pre-filled with three members in Failover mode and an API path](docs/images/onboarding-4-create-pool.png)
+![Add pool, pre-filled in Failover mode with three members and the cooldown settings](docs/images/onboarding-4-create-pool.png)
 
-Click **Publish to APIM**. The app lists exactly what it will create. Click **Publish to APIM**
-again to confirm.
+Click **Publish to the gateway**. The app lists exactly what it will write. Click **Publish to
+the gateway** again to confirm. Changes take effect on the gateway immediately.
 
-![Review and publish: the pool, its three members and the new API](docs/images/onboarding-5-publish.png)
+![Review and publish: the new pool and its three members](docs/images/onboarding-5-publish.png)
 
-### 6. Let APIM call your models, and get a key
+### 6. Let the gateway call your models, and get a key
 
-The pool opens on its **Test call** tab, which walks you through the rest:
+The pool opens on its **Test call** tab. It shows the gateway's URL and the pool's model names
+(**Add an alias** lets clients that already send another name, such as `gpt-5.6-luna`, reach the
+pool), and walks you through the rest:
 
-1. **Grant all** gives APIM's managed identity the *Cognitive Services OpenAI User* role on
-   each Foundry resource, so APIM can call your models without API keys. That takes a role
+1. **Grant all** gives the gateway's managed identity the *Cognitive Services OpenAI User* role on
+   each Foundry resource, so the gateway calls your models without API keys. That takes a role
    allowed to assign roles on those resources (*Owner*, *User Access Administrator* or *Role
-   Based Access Control Administrator*). Without one, **Permission check** in the top bar shows
-   a ready-to-send request for your Azure admin.
-2. **Create a test key for …** creates an APIM subscription key that opens only this API, and
-   fills it in.
+   Based Access Control Administrator*). Without one, **Permission check** in the top bar shows a
+   ready-to-send request for your Azure admin.
+2. **Create a test key** creates a LiteLLM virtual key that can call only this pool's model names,
+   and fills it in. LiteLLM keeps only a hash of it, so copy it now if you want to keep it: it's
+   shown this once.
 
-![Test call tab: Grant all, and Create a test key](docs/images/onboarding-6-grant-and-key.png)
+![Test call tab: the endpoint and model names, Before you call, and Get a virtual key with Create a test key](docs/images/onboarding-6-grant-and-key.png)
 
 ### 7. Send a test request
 
-Click **Send request**. The request goes through APIM and the pool, and you get the model's
-answer, with the region that served it. If you only just granted access, Azure can take up to
-10 minutes to apply the role; until then the page explains the error, so try again shortly.
+Click **Send request**. The request goes through the gateway and the pool, and you get the
+model's answer with the member that served it (and how many times LiteLLM tried other members
+first). If you only just granted access, Azure can take up to 10 minutes to apply the role; until
+then the page explains the error, so try again shortly.
 
-![Try it here: 200, the call succeeded, served from Sweden Central](docs/images/onboarding-7-test-call.png)
+![Try it here: 200, the call succeeded, answered by the pool's primary member pool-aoai-westus3-gpt-5-6-luna-dz](docs/images/onboarding-7-test-call.png)
 
-Your apps call the pool like any OpenAI endpoint. **Send a request**, further down, has the code
-for curl, Python, JavaScript and PowerShell with your URL filled in. In Python:
+Your apps call the pool like any OpenAI endpoint: base URL `<gateway>/v1`, the virtual key as the
+API key, and the pool ID (or an alias) as the model. No `api-version` is needed. **Send a request**,
+further down, has the code for curl, Python, JavaScript and PowerShell with your URL filled in.
+In Python:
 
 ```python
 from openai import OpenAI
 
-client = OpenAI(
-    base_url="https://<your-apim>.azure-api.net/<api-path>",
-    api_key="unused",  # The SDK needs a value; APIM sends its own token to Azure OpenAI
-    default_headers={"Ocp-Apim-Subscription-Key": "<your-subscription-key>"},
-    default_query={"api-version": "2025-04-01-preview"},
-)
+client = OpenAI(base_url="https://<your-gateway>/v1", api_key="<your-virtual-key>")
+
 response = client.chat.completions.create(
-    model="gpt-5.6-luna", messages=[{"role": "user", "content": "Hello"}]
+    model="pool-gpt-5-6-luna",
+    messages=[{"role": "user", "content": "Hello"}],
 )
 print(response.choices[0].message.content)
 ```
 
 ### 8. Watch it work
 
-The **Metrics** tab shows requests, availability, the 429s that reached clients and latency,
-plus each member's share of the traffic. **Routing** simulates a member failing, so you can see
-the failover before it happens for real.
+The **Metrics** tab shows requests, availability, the 429s that reached clients (and how many a
+failover saved) and latency, plus each member's share of the traffic and tokens. **Routing**
+simulates a member failing, so you can see the failover before it happens for real.
 
 ![Metrics tab: requests, availability, 429s, latency and each member's traffic share](docs/images/onboarding-8-metrics.png)
 
-That's it. Everything else (more pools, weights, session affinity, binding your own APIs,
-cleaning up) is in the same UI; [What it does](#what-it-does) lists it all.
+That's it. Everything else (more pools, weights, aliases, custom endpoints, the LiteLLM config
+view, cleaning up) is in the same UI; [What it does](#what-it-does) lists it all.
 
 > [!CAUTION]
-> The app acts on Azure as **you**, against your **real** APIM service. Changes are live.
+> The app acts on Azure as **you**, and on your **real** gateway with its master key. Changes are
+> live for every client at once.
 
 **If something gets in the way**
 
@@ -179,63 +234,124 @@ cleaning up) is in the same UI; [What it does](#what-it-does) lists it all.
   [Networks, proxies and certificates](#networks-proxies-and-certificates).
 
 **Try it without Azure.** From a clone, `scripts/demo_server.py` runs the same UI against an
-in-memory APIM with sample deployments, which is how the screenshots above were made. It needs
-the backend's virtual environment (the start script creates it) and the built UI (Node.js 22+):
+in-memory Azure and LiteLLM gateway with sample deployments, which is how the screenshots above
+were made. Nothing reaches Azure. It needs the backend's virtual environment (the start script
+creates it) and the built UI (Node.js 22+):
 
 ```sh
 cd frontend && npm ci && npm run build && cd ..
 backend/.venv/Scripts/python scripts/demo_server.py    # bin/python on macOS and Linux; http://127.0.0.1:8010
 ```
 
+It starts signed out, like a first run. `POST /demo/stage/{sign-in,ready,pool}` jumps to a point
+in onboarding (`pool` is a pool already in use, with an hour of metrics).
+
 ## What it does
 
 | Area | What it does |
 | --- | --- |
-| **Setup wizard** | Checks sign-in, the APIM service, your permissions and APIM's access to Foundry. It fixes what your Azure rights allow and writes a ready-to-send admin request for the rest. Locally it also picks, creates or deletes the APIM service. |
-| **Guided tour** | A two-minute walkthrough of the page for people new to APIM. It runs once after setup; **Tour** in the top bar replays it. |
+| **Setup wizard** | Four steps: **Sign in**, **AI gateway**, **Permissions** and **Gateway → Foundry**. It checks sign-in, the gateway (reachable, database connected, master key valid, managed identity), your access to it and the gateway's access to Foundry. It fixes what your Azure rights allow and writes a ready-to-send admin request for the rest. Locally it also chooses, deploys, connects, disconnects or deletes the gateway. |
+| **Gateway choice** | Recommends Container Apps or AKS from a few answers, deploys on Container Apps in one step, or generates the AKS files. |
+| **Guided tour** | A two-minute walkthrough for people new to AI gateways. It runs once after setup; **Tour** in the top bar replays it. |
 | **Deployment discovery** | Lists the Azure OpenAI / Foundry deployments in your subscriptions, grouped by model, and imports the ones you select into a new or existing pool. |
 | **Deploy a model** | Creates a pay-per-token OpenAI model deployment in a Foundry account, using your own Azure rights, so you don't need the Foundry portal. |
-| **Members** | Edited inside their pool. Besides Foundry deployments, you can add any OpenAI-compatible endpoint. Members the app created are deleted once no pool uses them. |
-| **Circuit breaker** | One rule per pool, written to every member backend this app created. |
-| **Pools** | Create and edit `Pool` backends with 2–30 members in **Failover**, **Balanced** or **Weighted** mode, with optional session affinity. |
-| **Cost** | Shows the APIM service's spend this month and its tier's list price. Open it from the APIM name in the top bar. |
-| **Removing** | Removes a pool, or everything this app created on the service, after showing exactly what will go. Locally it can also soft-delete a service it created (restorable for 48 hours). |
-| **Routing preview** | Shows how APIM routes traffic through the pool and simulates failures, breaker trips and recovery. |
-| **Pool API** | Creating a pool also creates and binds an HTTP API for it, so clients have an endpoint right away. |
-| **How to call** | Gets a subscription key, sends a test request from the page, and gives ready-to-copy client code. |
-| **Metrics** | A dashboard of requests, availability, 429s and latency for the pool, plus traffic share and tokens per member, from Azure Monitor. |
-| **API binding** | Points an existing API at a pool through its policy, with a diff preview first. Unbinding restores the original policy byte for byte. |
+| **Pools** | Create and edit pools of 2–30 members in **Failover**, **Balanced** or **Weighted** mode. A pool is a LiteLLM model group; its ID is the model name clients send. |
+| **Members** | Edited inside their pool. Besides Foundry deployments, **Add a custom endpoint** adds another Azure OpenAI resource or any OpenAI-compatible API, with no auth, an API key (stored by LiteLLM as an encrypted credential) or the gateway's managed identity. |
+| **Cooldown, retries, timeout** | Pool settings, written to every member: how many failures in a minute bench a member and for how long, how often a failed request is retried on another member, and the timeout per attempt. |
+| **Model names and aliases** | The pool ID always works; aliases point other model names at the pool, so existing clients don't have to change. |
+| **LiteLLM config** | **View LiteLLM config** shows the pool as a LiteLLM `config.yaml` would write it (secrets left out), with a diff before you publish, and **Export YAML**. |
+| **Routing preview** | Shows how the gateway routes traffic through the pool and simulates failures, cooldowns and recovery. |
+| **Test call** | Creates the pool's test virtual key, sends a test request from the page, shows which member answered, and gives ready-to-copy client code. |
+| **Metrics** | Requests, availability, 429s and latency for the pool from the gateway's OpenTelemetry traces in Application Insights, plus traffic share, tokens and latency per member from Azure Monitor. |
+| **Cost** | This month's spend for the gateway's resources and their list price. Open it from the gateway name in the top bar (**Manage the gateway**), which also links LiteLLM's own admin UI. |
 | **Same model** | Refuses to save a pool whose Foundry members serve different models. The model is read from Azure, not guessed from the deployment name. |
-| **Public app** | A website on Container Apps where anyone signs in with their own Microsoft account and works with their own Azure rights; nothing is stored on the server. |
-| **Safety** | Every update is ETag-conditional. The app only deletes what it created and only after you have seen it, never rewrites policy it didn't write, and leaves resources with a protected ID prefix (`POOL_MANAGER_PROTECTED_PREFIXES`) read-only. |
+| **Removing** | Removes a pool (with its aliases and test key), or everything this app created on the gateway, after showing exactly what will go. Locally it can also delete a gateway it deployed. |
+| **Safety** | The app only changes and deletes what it created, and only after you have seen it. Pools added elsewhere (LiteLLM's admin UI or config) are shown read-only, as are pools with a protected ID prefix (`POOL_MANAGER_PROTECTED_PREFIXES`). |
 
-Defaults:
-- **Circuit breaker:** trips on 1 failure among 429 / 408 / 5xx / connection failure / timeout within 60 s, trips for 60 s, and honours `Retry-After`.
-- **Retry:** 2 attempts, 1 s interval, fast first retry.
-- **Backend timeout:** 120 s.
+Defaults for a new pool:
+- **Cooldown:** a member that fails once within a minute (429s count) sits out 60 s; its traffic
+  goes to the other members, or in failover to the next priority.
+- **Retries:** 1 further attempt on another member.
+- **Timeout per attempt:** 120 s.
+
+### How a pool maps to LiteLLM
+
+| In the app | In LiteLLM |
+| --- | --- |
+| Pool | A model group: one model row per member, all with `model_name` = the pool ID |
+| Member | A row with `litellm_params.model = azure/<deployment>` and `api_base` = the account endpoint, and no key: the gateway signs in with its managed identity (`enable_azure_ad_token_refresh`) |
+| Priority / weight | `litellm_params.order` (priority + 1) and `litellm_params.weight`. LiteLLM uses the lowest order whose members aren't cooling down, and splits by weight within it |
+| Cooldown | `model_info.allowed_fails` and `model_info.cooldown_time` on every row of the pool |
+| Retries / timeout | `litellm_params.num_retries` and `timeout` on every row |
+| Alias | `router_settings.model_group_alias` |
+| Test key | A virtual key with alias `<prefix>test-<pool>`, scoped to the pool's model names |
+
+**Worth knowing about LiteLLM:**
+- **No ETags.** LiteLLM has no conditional updates, so a pool save is best-effort, not atomic. The
+  app re-reads the pool's rows and compares them with what you loaded (and refuses if someone
+  changed them), then writes new rows first, then changes, then removals, so the pool never runs
+  empty. Rows have deterministic IDs, so publishing again after a failure finishes the save.
+- **Keys are shown once.** LiteLLM keeps only a hash of each virtual key. Regenerating keys in
+  place (`/key/regenerate`) is a LiteLLM Enterprise feature, so **Regenerate the test key**
+  deletes the old test key and creates a new one.
+- **Session pinning is gateway-wide.** Responses API follow-ups (`previous_response_id`,
+  encrypted reasoning items) go back to the deployment that answered first. It is set in the
+  gateway's config for every pool, not per pool.
+- **No health checks.** Only real failed requests put a member in cooldown. When every member is
+  cooling down, the client gets the last upstream error (a 429 stays a 429), so clients should
+  back off and retry.
+- With more than one replica, cooldowns are only shared through Redis, which the production
+  profile on Container Apps includes.
 
 ### Discovered deployments
 
 - **What is listed:** only `Succeeded` deployments in **OpenAI format** on `OpenAI` or `AIServices` accounts. Partner models (Anthropic, DeepSeek, xAI, …) use other inference paths and are skipped.
-- **Member URL:** each imported member uses `https://<account>.openai.azure.com/openai/deployments/<deployment>`. Deployments of the same model with different names, such as `gpt-5.6-luna` and the DataZone `gpt-5.6-luna-2`, can therefore share one pool.
-- **How clients call it:** APIM appends the operation path, so clients call `https://<apim>/<api-path>/chat/completions?api-version=…` with the header `Ocp-Apim-Subscription-Key`. The API the app creates for a pool is already shaped this way. If you bind your own API instead, it must expose `/chat/completions` (or a catch-all `/*`), not `/deployments/{id}/…`.
-- **Auth:** members authenticate with the **APIM managed identity**, because most accounts disable key auth. The setup wizard and the selection bar check both prerequisites and fix them if you may:
-  1. The APIM system-assigned identity must be on (**Turn on identity**).
-  2. It needs **Cognitive Services OpenAI User** on each account (**Grant access**, or an admin request with the exact `az role assignment create` command).
-  3. The API the app creates for a pool already sends the managed-identity token. When binding your own API, set the managed identity resource to `https://cognitiveservices.azure.com`.
+- **Members:** each imported member points at `https://<account>.openai.azure.com/openai/deployments/<deployment>`, which becomes a LiteLLM row `azure/<deployment>`. Deployments of the same model with different names, such as `gpt-5.6-luna` and the DataZone `gpt-5.6-luna-dz`, can therefore share one pool.
+- **How clients call it:** `https://<gateway>/v1/chat/completions` (or `/v1/responses`) with `Authorization: Bearer <virtual key>` and the pool ID or an alias as `model`.
+- **Auth:** members authenticate with the **gateway's managed identity**, because most accounts disable key auth. It needs **Cognitive Services OpenAI User** on each account; the setup wizard, the Deployments selection bar and the Test call tab check that and grant it if you may (**Grant access**), or give you an admin request with the exact `az role assignment create` command.
 - **Caching:** results are cached for 5 minutes. **Refresh** rescans, which takes about 15 s for 25 accounts.
+
+### A gateway on Container Apps
+
+What **Deploy a gateway** creates in the resource group you choose (`infra/gateway/litellm-aca.bicep`,
+compiled into `backend/pool_manager/templates/litellm-aca.json`). Everything is tagged
+`managed-by: ai-gateway-pool` and `ai-gateway: <name>`.
+
+| Resource | Notes |
+| --- | --- |
+| Container App `<name>` | LiteLLM `v1.106.4` (pinned image `ghcr.io/berriai/litellm:v1.106.4`) on port 4000 behind external HTTPS ingress, plus an OpenTelemetry Collector sidecar that sends model-call spans to Application Insights. Dev: 1 replica; production: 2–5 replicas. The master key, salt key, database URL and `config.yaml` are Container App secrets |
+| Container Apps environment `cae-<name>` | Consumption plan, logs to Log Analytics |
+| User-assigned identity `id-<name>` | What LiteLLM calls Foundry as (`AZURE_CLIENT_ID`); the setup wizard grants it *Cognitive Services OpenAI User* on member accounts. It has no other role |
+| Azure Database for PostgreSQL Flexible Server | LiteLLM's model table, virtual keys and spend. Burstable B1ms (dev) or B2s (production), 32 GB. Public network access, limited to Azure services |
+| Azure Managed Redis (production only) | Balanced B0, so replicas share cooldowns |
+| Log Analytics workspace `log-<name>`, Application Insights `appi-<name>` | Container logs, and the traces behind the Metrics tab |
+
+The gateway's secrets are generated once by the app when it deploys and are never rotated by it:
+the salt key encrypts the member keys LiteLLM stores, so it must not change. That is also why a
+gateway that already exists is never deployed over.
+
+**Deleting a gateway** (**Delete the gateway** in the gateway panel, or **Delete** in the gateway
+list) is limited to gateways this app deployed, and needs the name typed again. It deletes the
+resources tagged as that gateway's, starting with the Container App, and never the resource
+group. There is **no soft-delete**: Azure keeps no copy, and the database with its pools, keys and
+spend history is gone. A connected gateway is never deleted; **Disconnect** only forgets it and
+its key.
 
 ## Deploy to Azure
 
+This hosts the manager itself on App Service with Entra sign-in (Easy Auth), for a team. It manages
+an **existing** gateway: Bicep never creates or changes the gateway, because its secrets are
+generated once by the app and a re-provision must not rotate them. So deploy the gateway first
+from the local app ([Get started](#get-started), steps 1–3), or on AKS.
+
 Prerequisites: [azd](https://aka.ms/azd), Azure CLI and Node.js 20.19+ or 22.12+. You need
-permission to create custom roles and role assignments (Owner or User Access Administrator)
-on the APIM resource group. An existing APIM instance is optional: without `APIM_NAME`, the
-deployment creates one in its resource group.
+permission to create custom roles and role assignments (Owner or User Access Administrator) on
+the gateway's resource group, and on each subscription scanned for deployments.
 
 **1. Create the Entra app registration for sign-in** (once):
 
 ```sh
-az ad app create --display-name "APIM Backend Pool Manager" \
+az ad app create --display-name "AI Gateway Pool Manager" \
   --sign-in-audience AzureADMyOrg --enable-id-token-issuance true
 # Note the appId. Add the redirect URI after the first provision (step 3).
 ```
@@ -245,13 +361,15 @@ az ad app create --display-name "APIM Backend Pool Manager" \
 ```sh
 cd apim-backend-pool
 azd env new pool-manager
-# Use an existing APIM service...
-azd env set APIM_NAME <apim-name>
-azd env set APIM_RESOURCE_GROUP <apim-resource-group>
-# azd env set APIM_SUBSCRIPTION_ID <id>   # only if APIM is in another subscription
-# ...or leave APIM_NAME unset to create apim-pool-<suffix> in the azd resource group:
-# azd env set APIM_SKU BasicV2            # BasicV2 (default), StandardV2 or Developer (30-40 min, no SLA)
-# azd env set APIM_PUBLISHER_EMAIL you@contoso.com   # defaults to the first POOL_OWNERS entry
+# A gateway on Container Apps (its Container App name)...
+azd env set GATEWAY_NAME <gateway-name>
+azd env set GATEWAY_RESOURCE_GROUP <gateway-resource-group>   # default: the azd resource group
+# azd env set GATEWAY_SUBSCRIPTION_ID <id>                     # only if it is in another subscription
+# ...or a gateway elsewhere (AKS, any LiteLLM proxy with a database):
+# azd env set GATEWAY_URL https://litellm.contoso.com
+# azd env set GATEWAY_MASTER_KEY sk-...
+# azd env set GATEWAY_PRINCIPAL_ID <object-id>        # optional: the identity it calls Foundry as
+# azd env set GATEWAY_APP_INSIGHTS_ID <resource-id>   # optional: where its OpenTelemetry goes
 azd env set ENTRA_CLIENT_ID <appId>
 azd env set POOL_OWNERS "you@contoso.com"  # comma-separated UPNs or object IDs who may change things
 azd provision --preview                    # review the what-if first
@@ -264,18 +382,20 @@ azd up
 az ad app update --id <appId> --web-redirect-uris "$(azd env get-value AUTH_REDIRECT_URI)"
 ```
 
-Open `WEB_APP_URL` and sign in. Users listed in `POOL_OWNERS` may make changes. With delegated
-Azure access (below), so may users whose own Azure roles already allow every APIM write the app
-makes. Everyone else is read-only. To restrict who can sign in at all, set *Assignment required*
-on the app's enterprise application.
+Open `WEB_APP_URL` and sign in. Users listed in `POOL_OWNERS` may make changes and see keys. With
+delegated Azure access (below), so may users whose own Azure roles already let them read the
+gateway's master key (a Container App secret), since they could change the gateway directly
+anyway. For a gateway outside Container Apps, only owners can. Everyone else is read-only. To
+restrict who can sign in at all, set *Assignment required* on the app's enterprise application.
 
 ### Delegated Azure access (optional, recommended)
 
-The app identity does all pool work and never gets permission to change role assignments. To let
-the setup wizard **fix** access problems (turn on APIM's identity, grant it a role on Foundry) and
+The app identity reads the gateway and never gets permission to change role assignments. To let
+the setup wizard **fix** access problems (grant the gateway's identity a role on Foundry) and
 check what each user may do, Easy Auth also gets an Azure Resource Manager token for the signed-in
 user. Fixes then run with that user's own Azure rights and show up as that user in the activity
-log. Without it, the wizard still checks everything and writes the admin requests.
+log. Without it, the wizard still checks everything and writes the admin requests, and the cost
+panel can't read actual spend.
 
 Set up the app registration first. Turning the parameter on without these steps breaks sign-in:
 
@@ -305,138 +425,43 @@ button for that.
 
 | Resource | Notes |
 | --- | --- |
-| API Management service `apim-pool-*` (only without `APIM_NAME`) | `BasicV2` by default (`APIM_SKU`), system-assigned identity for members, tagged `managed-by: apim-backend-pool`. It is billed from creation |
-| Linux App Service plan (B1) + Web App (Python 3.12) | HTTPS only, TLS 1.2, FTP/SCM basic auth disabled, system-assigned identity |
+| Linux App Service plan (B1) + Web App (Python 3.12) | HTTPS only, TLS 1.2, FTP/SCM basic auth disabled, system-assigned identity. With `GATEWAY_URL`, the gateway's master key is an app setting |
 | User-assigned identity `id-pool-auth-*` (only with delegated Azure access) | Federated credential for Easy Auth instead of a client secret. It has no Azure roles |
 | App Service Authentication (Easy Auth) | Entra sign-in is required on every path except `/health` |
-| Custom role *APIM Backend Pool Manager* on the APIM service | `Insights/metrics/read` for the Metrics tab, `backends/*`, `namedValues/*`, `apis/read,write,delete` (it deletes only APIs it created, when their pool is removed), `apis/operations/write` and `apis/policies/read,write`, plus `Authorization/permissions/read` so setup can check the app's own access |
-| Custom role *APIM Backend Pool Deployment Reader* per discovery subscription | `Insights/metrics/read` for the Metrics tab, `CognitiveServices/accounts/read` and `accounts/deployments/read`, plus read-only `Authorization/permissions`, `roleAssignments` and `roleDefinitions` so setup can check APIM's role on each account. It has no `listKeys` and cannot change roles. Turn it off with `enableDeploymentDiscovery=false`, and choose subscriptions with `discoverySubscriptionIds` (the default is the APIM subscription) |
+| Custom role *AI Gateway Pool Manager* on the gateway's Container App and its Application Insights component (Container Apps gateways only) | `Microsoft.App/containerApps/read` and `listSecrets/action` (the gateway's URL, identity and master key; every pool change then goes through LiteLLM's admin API), `Insights/components/read` and `Insights/logs/*/read` for the Metrics tab, and `Authorization/permissions/read` so setup can check the app's own access. It can't change the Container App, its database or anything else |
+| Custom role *AI Gateway Pool Deployment Reader* per discovery subscription | `CognitiveServices/accounts/read` and `accounts/deployments/read`, `Insights/metrics/read` for the members' metrics, plus read-only `Authorization/permissions`, `roleAssignments` and `roleDefinitions` so setup can check the gateway's role on each account. It has no `listKeys` and cannot change roles. Turn it off with the Bicep parameter `enableDeploymentDiscovery=false`, and choose subscriptions with `discoverySubscriptionIds` (the default is the gateway's subscription) |
 
-APIM's own identity needs extra RBAC in two cases:
-- **Key Vault secrets:** if member secrets reference Key Vault, the APIM managed identity needs *Key Vault Secrets User* on the vault.
-- **Managed identity to Foundry:** if members authenticate with managed identity, the APIM identity needs *Cognitive Services OpenAI User* (or any role that allows inference) on each member account. The setup wizard checks this and can grant it.
+The gateway's own identity needs *Cognitive Services OpenAI User* (or any role that allows
+inference) on each member account. The setup wizard checks this and, with delegated Azure access,
+grants it.
 
 ### Configuration
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
-| `POOL_MANAGER_SUBSCRIPTION_ID` / `_RESOURCE_GROUP` / `_APIM_NAME` | required when deployed | Target APIM service. Locally, leave them out to choose or create the service on the setup page; set all three to fix it |
-| `POOL_MANAGER_TENANT_ID` | from the setup page | Tenant of the APIM subscription, so local tokens are requested there |
+| `POOL_MANAGER_SUBSCRIPTION_ID` / `_RESOURCE_GROUP` / `_GATEWAY_NAME` | required when deployed (or `_GATEWAY_URL`) | A gateway on Container Apps. Locally, leave them out to choose, deploy or connect one on the setup page; set all three to fix it |
+| `POOL_MANAGER_GATEWAY_URL` | empty | A gateway elsewhere (AKS, any LiteLLM proxy with a database), with `_GATEWAY_NAME` as its display name. `_SUBSCRIPTION_ID` is then only where deployments are searched by default |
+| `POOL_MANAGER_GATEWAY_MASTER_KEY` | empty | That gateway's master key. Required when deployed; locally the setup page can keep it encrypted instead |
+| `POOL_MANAGER_GATEWAY_PRINCIPAL_ID` | empty | That gateway's managed identity (object ID), so setup can check and grant its Foundry access |
+| `POOL_MANAGER_GATEWAY_APP_INSIGHTS_ID` | empty | The Application Insights component its OpenTelemetry goes to, for the Metrics tab |
+| `POOL_MANAGER_TENANT_ID` | from the setup page | Tenant of the subscription, so local tokens are requested there |
 | `POOL_MANAGER_OWNERS` | empty | Who may make changes |
-| `POOL_MANAGER_RBAC_WRITERS` | `true` | Also let users make changes whose own Azure roles allow every APIM write the app makes. Needs delegated Azure access |
+| `POOL_MANAGER_RBAC_WRITERS` | `true` | Also let users make changes whose own Azure roles let them read the gateway's master key. Needs delegated Azure access |
 | `POOL_MANAGER_DELEGATED_ACCESS` | `false` | Set by `enableDelegatedAzureAccess`: Easy Auth provides the user's ARM token, so setup can fix access |
-| `POOL_MANAGER_POOL_API_VERSION` | `2025-09-01-preview` | API version for pool reads and writes. With `2024-05-01`, session affinity is disabled because GA cannot carry `sessionAffinity` |
-| `POOL_MANAGER_DISCOVERY_SUBSCRIPTIONS` | APIM subscription | Comma-separated subscriptions scanned for deployments |
-| `POOL_MANAGER_PROTECTED_PREFIXES` | empty | Comma-separated ID prefixes shown read-only, for resources another tool manages (e.g. `finops-`) |
-| `POOL_MANAGER_ID_PREFIX` | `pool-` | Suggested prefix for new resources |
-| `POOL_MANAGER_AUTH_MODE` | `easy_auth` | `disabled` is for local development; the app refuses to start that way on App Service |
+| `POOL_MANAGER_DISCOVERY_SUBSCRIPTIONS` | the gateway's subscription | Comma-separated subscriptions scanned for deployments |
+| `POOL_MANAGER_PROTECTED_PREFIXES` | empty | Comma-separated pool ID prefixes shown read-only, for pools another tool manages (e.g. `finops-`) |
+| `POOL_MANAGER_ID_PREFIX` | `pool-` | Prefix for new pools, members and test keys |
+| `POOL_MANAGER_AUTH_MODE` | `easy_auth` | `disabled` is for local development; the app refuses to start that way on App Service. `entra` (the public app) isn't available with the gateway yet |
 | `POOL_MANAGER_SYSTEM_TRUST` | `true` | Locally, verify TLS against the OS certificate store (company CAs behind TLS inspection) |
 | `AZURE_CLIENT_ID` | — | Use a user-assigned identity instead of system-assigned |
 
-## Public app on Azure Container Apps
+## Public app
 
-A deployment of it runs at https://ca-pool-public-5xgy5gsq3leyq.ambitiousground-f590833b.swedencentral.azurecontainerapps.io/.
-
-`deploy/container-apps/` deploys the app as a public website: anyone with a work or school
-account signs in with their own Microsoft Entra identity, and the app manages the APIM services
-and Foundry deployments **their own Azure roles** allow. Nothing about a customer is configured
-in advance, and the app has no Azure access of its own.
-
-| | [Deploy to Azure](#deploy-to-azure) (App Service) | Public app (Container Apps) |
-| --- | --- | --- |
-| Who signs in | Users of your own tenant | Any work or school tenant (or an allow-list) |
-| APIM service | One, fixed at deployment | Each user chooses or creates their own |
-| Who calls Azure | The app's managed identity, with custom roles | The signed-in user, through a token exchanged on their behalf |
-| Who may change things | `POOL_OWNERS`, or users whose roles allow it | Whatever the user's own Azure roles allow |
-
-**How it works.** The browser signs in with MSAL.js (a multi-tenant app registration) and sends a
-token for this app's API with each request. The backend verifies it (Entra's signing keys,
-audience, an issuer that matches the token's tenant, the `access_as_user` scope), then exchanges
-it on behalf of the user for an Azure Resource Manager token. Every Azure call (APIM, Foundry,
-Azure Monitor, Cost Management) runs as that user, so Azure decides what is allowed and the
-activity log names them. The app proves its own identity in that exchange with its user-assigned
-managed identity, set up as a federated credential, so the app registration has no client secret.
-
-**What is stored.** Nothing on the server: no passwords, tokens, keys or customer data, and no
-state files. Azure tokens live in the user's in-memory session, expire within about an hour, and
-are dropped when the user signs out (**Sign out** in the top bar), after 30 minutes without
-requests, or when the session store is full. In the browser, MSAL keeps its tokens in
-`sessionStorage` (gone when the tab closes), and the IDs of the chosen APIM service are kept in
-`localStorage` for that account (removed on sign-out).
-
-**Keeping users apart.** Every request is authenticated on its own, and sessions are keyed by the
-verified tenant and object ID, never by anything the browser chooses. Each user (and each APIM
-service they open) gets their own set of components, so every cache (deployments, metrics,
-permissions, cost) belongs to one user; nothing one user loaded can answer another's request,
-even in the same tenant. Each user is rate-limited (600 requests a minute by default). The test
-call only goes to Azure's own gateway host names (`*.azure-api.net`), so the backend can't be
-pointed at other hosts.
-
-**Deploy it.** You need [azd](https://aka.ms/azd), the Azure CLI signed in (`az login`) to the
-tenant that will own the app registration, Python 3, and rights to create app registrations and
-role assignments in the target resource group (Owner, or Contributor plus User Access
-Administrator). Docker and Node.js aren't needed: the image is built in Azure Container Registry.
-
-```sh
-cd deploy/container-apps
-azd env new pool-public
-# azd env set ALLOWED_TENANTS "<tenant-id>,<tenant-id>"   # optional: only these organizations
-azd up
-```
-
-`azd up` runs `scripts/public-app-registration.py` before and after provisioning. Before, it
-creates (or updates) the multi-tenant app registration and sets `ENTRA_CLIENT_ID`. After, it adds
-the container app's `/redirect.html` as a redirect URI and the federated credential for its
-managed identity. Then it provisions the Container Apps environment, registry, identity and Log
-Analytics workspace, builds the image and deploys it. Open the `PUBLIC_APP_URL` it prints.
-
-**Before other organizations use it:**
-- Verify the publisher of the app registration (*Microsoft Entra > App registrations > Branding &
-  properties*). Many tenants only let users consent to apps from verified publishers.
-- The first sign-in from a new organization installs the app there (its enterprise application)
-  when the user consents to *Azure Service Management* access as themselves; Entra may then ask
-  once more for the app's own API. Where users can't consent (many companies, including
-  Microsoft's own tenant, require admin approval for apps like this), an admin of that tenant
-  consents once for everyone at
-  `https://login.microsoftonline.com/<their-tenant-id>/adminconsent?client_id=<ENTRA_CLIENT_ID>`,
-  which covers both permissions, and can withdraw it later under *Enterprise applications*.
-  Until one of these happens, Entra answers sign-ins from that tenant with AADSTS500011 (the
-  app isn't in that tenant) or a request for admin approval.
-- Users still need Azure roles on what they manage, as in the portal: for example *API Management
-  Service Contributor* on the APIM service and *Reader* on their Foundry resources.
-
-**Guest view (optional).** To let visitors look around without signing in, point the deployment
-at one APIM service before provisioning:
-
-```sh
-azd env set GUEST_APIM_NAME <apim-name>
-azd env set GUEST_APIM_RESOURCE_GROUP <apim-resource-group>
-# azd env set GUEST_APIM_SUBSCRIPTION_ID <id>   # only if it is in another subscription
-azd provision && azd deploy
-```
-
-The sign-in page then offers **Browse as guest (read-only)**. Guests see that service and the
-Foundry deployments in its subscription, read with the app's managed identity, which gets the
-built-in *Reader* role on that subscription and nothing else: Reader can't change anything or list
-keys and secrets. The backend also refuses guests every change, subscription keys, test calls,
-setup fixes and choosing another service. Guests share one cached session and are rate-limited
-(300 requests a minute per client address, 3,000 for all guests together). Anything in that
-service and subscription, such as pool members' URLs and API policies, is visible to anyone with
-the URL, so use a demo service.
-
-**Limits.** Azure public cloud only. A sign-in covers one tenant; choosing a service in another
-tenant signs in to that tenant. Deployment discovery scans the chosen service's subscription.
-Services whose gateway uses a custom domain can be managed but not test-called from the app.
-
-| Setting | Default | Purpose |
-| --- | --- | --- |
-| `POOL_MANAGER_AUTH_MODE` | `entra` (set by the template) | The public app's sign-in |
-| `POOL_MANAGER_ENTRA_CLIENT_ID` | from the hook | The multi-tenant app registration |
-| `POOL_MANAGER_FEDERATED_IDENTITY_CLIENT_ID` | from the template | The managed identity used as the app's federated credential |
-| `POOL_MANAGER_ENTRA_ALLOWED_TENANTS` | empty (`ALLOWED_TENANTS`) | Tenant IDs whose users may sign in; empty = any work or school tenant |
-| `POOL_MANAGER_SESSION_IDLE_SECONDS` | `1800` | A session (and its Azure tokens) ends this long after the user's last request |
-| `POOL_MANAGER_MAX_SESSIONS` | `500` | Sessions kept per replica; the least recently used goes first |
-| `POOL_MANAGER_USER_REQUESTS_PER_MINUTE` | `600` | Requests per user per minute |
+The public multi-tenant website on Container Apps (`deploy/container-apps/`,
+`POOL_MANAGER_AUTH_MODE=entra`), where anyone signs in with their own Microsoft account, is **not
+available with the LiteLLM gateway yet**: each user would bring their own gateway and master key,
+which isn't built. The backend refuses to start in that mode. Use the app locally or
+[deploy it to App Service](#deploy-to-azure) for your team.
 
 ## Run it locally
 
@@ -445,7 +470,7 @@ Locally the app runs on your machine and acts on Azure as **you**. All it needs 
 
 **Quickest: the release package.** Download `apim-backend-pool-<version>.zip` from
 [Releases](https://github.com/guming3d/apim-backend-pool-manager/releases). It has the browser
-UI built in, so it needs no Node.js and no git. Unzip it, then:
+UI and the gateway template built in, so it needs no Node.js and no git. Unzip it, then:
 
 ```powershell
 scripts\start-local.cmd                 # Windows; works whatever the PowerShell execution policy
@@ -455,20 +480,22 @@ scripts\start-local.cmd                 # Windows; works whatever the PowerShell
 scripts/start-local.sh                  # macOS, Linux, WSL
 ```
 
-Open http://127.0.0.1:8000. The setup page signs you in, then lets you choose the APIM service
-or create one (the choice is saved in `backend/.pool-manager.json`). To pin a service instead,
-set `POOL_MANAGER_SUBSCRIPTION_ID`, `_RESOURCE_GROUP` and `_APIM_NAME` in `backend/.env`.
+Open http://127.0.0.1:8000. The setup page signs you in, then lets you choose, deploy or connect
+a gateway (the choice is saved in `backend/.pool-manager.json`, never with a master key; a
+connected gateway's key is kept OS-encrypted in `backend/.pool-manager-gateways.bin`). To pin a
+gateway instead, set `POOL_MANAGER_SUBSCRIPTION_ID`, `_RESOURCE_GROUP` and `_GATEWAY_NAME` (or
+`_GATEWAY_NAME` and `_GATEWAY_URL`) in `backend/.env`; `backend/.env.example` shows both.
 
 **From a clone**, the same scripts run the Vite dev server on `:5174` when Node.js 22+ is
 installed. Without Node.js they serve the UI from `backend/pool_manager/static`, if it has been
 built (`-Prebuilt` / `--prebuilt` forces that).
 
 ```powershell
-.\scripts\start-local.ps1               # -Tui -Prebuilt -BackendPort 8001 -FrontendPort 5175 -SkipInstall -SkipChecks
+.\scripts\start-local.ps1               # -Prebuilt -BackendPort 8001 -FrontendPort 5175 -SkipInstall -SkipChecks
 ```
 
 ```sh
-scripts/start-local.sh                  # --tui --prebuilt --backend-port 8001 --frontend-port 5175 --skip-install --skip-checks
+scripts/start-local.sh                  # --prebuilt --backend-port 8001 --frontend-port 5175 --skip-install --skip-checks
 ```
 
 The scripts first run `scripts/doctor.py --brief`. It uses only the standard library, so it runs
@@ -498,12 +525,12 @@ isn't installed or signed in is skipped for a minute rather than retried on ever
 - **Sign in with browser** opens the Microsoft sign-in page on this machine.
 - **Use a code instead** is for a machine with no browser: SSH, Linux servers, containers, or WSL
   when the browser doesn't open. Enter the code it shows at https://microsoft.com/devicelogin on any
-  device. In the TUI, press `d` on the Setup view.
+  device.
 - Sign-ins made in the app are **remembered** across restarts, in the OS's encrypted store (DPAPI
   on Windows, the Keychain on macOS, libsecret on Linux). `backend/.pool-manager-auth.json` holds
   only the account record. Where nothing can encrypt (Linux or WSL without a keyring), the app
-  keeps the sign-in in memory and says so; it never writes tokens in plain text. **Sign out of
-  this** forgets it.
+  keeps the sign-in, and a connected gateway's master key, in memory and says so; it never writes
+  them in plain text. **Sign out of this** forgets the sign-in.
 
 ### Networks, proxies and certificates
 
@@ -516,22 +543,23 @@ isn't installed or signed in is skipped for a minute rather than retried on ever
 - **Package mirrors:** `PIP_INDEX_URL=https://<mirror>/simple/` and
   `npm_config_registry=https://<mirror>/`. The doctor checks the mirror instead of PyPI and npm.
 - The app needs `https://login.microsoftonline.com` and `https://management.azure.com`, plus your
-  APIM gateway for the test call. The doctor tells a DNS failure, a timeout, an untrusted
-  certificate and a proxy asking for credentials apart.
+  gateway's URL (its admin API and the test call), `https://api.loganalytics.azure.com` for the
+  Metrics tab and `https://prices.azure.com` for list prices. The doctor tells a DNS failure, a
+  timeout, an untrusted certificate and a proxy asking for credentials apart.
 
 ### Remote machines and WSL
 
 Over SSH, sign in with a code and forward the port to open the UI on your own machine:
-`ssh -L 8000:localhost:8000 <host>` (or `5174` with the dev server). Or use the terminal UI
-(`--tui`), which needs no browser at all. In WSL, run `scripts/start-local.sh` inside WSL with a
-Linux Python; `.gitattributes` keeps the shell scripts' LF line endings even in a Windows checkout.
+`ssh -L 8000:localhost:8000 <host>` (or `5174` with the dev server). In WSL, run
+`scripts/start-local.sh` inside WSL with a Linux Python; `.gitattributes` keeps the shell
+scripts' LF line endings even in a Windows checkout.
 
 ### By hand
 
 ```sh
 cd backend
 python -m venv .venv && .venv/Scripts/pip install -r requirements.txt   # bin/pip on Linux/macOS
-cp .env.example .env                       # nothing to change; choose APIM on the setup page
+cp .env.example .env                       # nothing to change; choose the gateway on the setup page
 .venv/Scripts/python -m uvicorn pool_manager.app:app --reload           # serves static/ if built
 
 cd ../frontend && npm ci && npm run dev    # http://localhost:5174, proxies /api to :8000
@@ -540,43 +568,19 @@ cd ../frontend && npm ci && npm run dev    # http://localhost:5174, proxies /api
 `python scripts/package-release.py` builds the release zip from a clone, after
 `npm run build`. Pushing a `v*` tag publishes one (`.github/workflows/release.yml`).
 
+After changing `infra/gateway/litellm-aca.bicep`, run `python scripts/build-gateway-template.py`
+(needs the Azure CLI with Bicep) to recompile `backend/pool_manager/templates/litellm-aca.json`,
+which is what the app deploys. CI runs it with `--check`.
+
 ### Terminal UI
 
-The same app also runs in the terminal, for people who live there. `tui/` is a separate
-[Textual](https://textual.textualize.io/) app in the style of Omarchy's TUIs: Tokyo Night colours,
-rounded panes (the focused one in the accent colour), views as workspaces in the top bar and a
-key-hint footer. It is only a client of the backend's `/api`, so every rule (ETags, protected
-prefixes, the same-model check, who may write) still lives in one place.
-
-```powershell
-.\scripts\start-local.ps1 -Tui           # backend + TUI; Node.js isn't needed
-```
-
-```sh
-scripts/start-local.sh --tui
-# or by hand: cd tui && python -m venv .venv && .venv/bin/pip install -r requirements.txt
-#             .venv/bin/python -m pool_tui              # reuses :8000 or starts backend/ itself
-#             .venv/bin/python -m pool_tui --api http://127.0.0.1:8000
-```
-
-| Key | |
-| --- | --- |
-| `1` `2` `3` | Pools, Deployments, Setup |
-| `n` `e` `D` | New, edit (mode, members, primary, weights, affinity), delete a pool |
-| `a` `b` `u` | Create an API for the pool, bind an existing API, unbind |
-| `t` | Try the API: pick or create a subscription key, send a request, read what the answer means |
-| `m` | Monitor range (1h, 6h, 24h, 7d) for the pool's metrics and member table |
-| `space` `i` `c` `R` | Deployments: select, import as members, import and create a pool, rescan Azure |
-| `enter` `c` | Setup: run the fix under the cursor, choose the APIM service |
-| `d` `o` | Setup: sign in with a code (no browser here, e.g. over SSH), sign out of the app's sign-in |
-| `d` / `enter` | In choose APIM: delete a service this app created (type its name), restore one from Recently deleted |
-| `?` `q` | Help, quit |
-
-It covers the day-to-day operations. Creating an APIM service, the routing simulator and the
-policy diff are in the web UI. The TUI's text is English only.
+`tui/` is a [Textual](https://textual.textualize.io/) terminal client of the backend's `/api`. It
+still targets the APIM version and hasn't been ported to the LiteLLM gateway, so
+`start-local.ps1 -Tui` / `start-local.sh --tui` refuse with a message. It isn't checked in CI or
+included in the release package.
 
 > [!CAUTION]
-> Local development uses **your** Azure identity against a **real** APIM service. Changes are live.
+> Local development uses **your** Azure identity and your **real** gateway. Changes are live.
 
 ## Tests
 
@@ -584,10 +588,21 @@ policy diff are in the web UI. The TUI's text is English only.
 cd backend && .venv/Scripts/pip install pytest==9.1.1 ruff==0.15.22 mypy==2.3.0
 .venv/Scripts/python -m pytest -q && .venv/Scripts/python -m ruff check . && .venv/Scripts/python -m mypy
 cd ../frontend && npm test && npm run build
-cd ../tui && .venv/Scripts/pip install -r requirements.txt -r ../backend/requirements.txt pytest==9.1.1 ruff==0.15.22 mypy==2.3.0
-.venv/Scripts/python -m pytest -q && .venv/Scripts/python -m ruff check . && .venv/Scripts/python -m mypy
 ```
 
-Backend tests run against an in-memory APIM (`tests/fake_apim.py`) that enforces ETags and
-`If-Match` / `If-None-Match`. No Azure access is needed. The TUI tests drive the real backend
-app wired to that same fake, through `httpx.ASGITransport`.
+Backend tests run against an in-memory Azure (`tests/fake_azure.py`: ARM, the gateway's Container
+App and secrets, template deployments, permissions and roles, Foundry, Azure Monitor, Log
+Analytics, Cost Management and Retail Prices) and an in-memory LiteLLM proxy
+(`tests/fake_litellm.py`, its admin API and chat completions, modelled on v1.106). No Azure access
+is needed.
+
+An opt-in integration test runs the service layer against a **real** LiteLLM proxy with
+PostgreSQL and two fake Azure OpenAI regions in Docker (`tests/litellm_stack/`). It checks that
+LiteLLM takes the rows, credentials, aliases and keys the app writes, and routes the way the pool
+says:
+
+```sh
+cd backend
+docker compose -f tests/litellm_stack/docker-compose.yml up -d --wait
+.venv/Scripts/python -m pytest -q -m litellm
+```

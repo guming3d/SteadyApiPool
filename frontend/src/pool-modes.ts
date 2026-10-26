@@ -8,7 +8,7 @@ export const MIN_MEMBERS = 2
 export const MAX_MEMBERS = 30
 
 /** Lowest priority first. The sort is stable, so equal priorities keep the order this app
- *  wrote to APIM and the operator's primary survives a reload in balanced/weighted mode. */
+ *  wrote and the operator's primary survives a reload in balanced/weighted mode. */
 export function primaryFirst(members: PoolMember[]) {
   return [...members].sort((left, right) => left.priority - right.priority)
 }
@@ -108,23 +108,20 @@ export function draftIssues(draft: PoolWrite, mode: DeploymentMode | null) {
   return issues
 }
 
-// Same rule as API_PATH_PATTERN in backend/pool_manager/models.py.
-export const API_PATH_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._~-]*(?:\/[A-Za-z0-9._~-]+)*$/
+// Same rules as backend/pool_manager/models.py. A pool's ID is also the model name clients send.
+export const POOL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]{0,79}$/
+export const MODEL_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/
 
-/** A readable API path for a new pool: its title, else its ID without the app's prefix. */
-export function suggestApiPath(title: string | null | undefined, poolId: string, prefix: string) {
-  const slug = (value: string) => value.trim().toLowerCase()
-    .replace(/[^a-z0-9._~-]+/g, "-")
+/** A pool ID for a model: the model name with anything an ID can't hold turned into hyphens. */
+export function suggestPoolId(model: string | null | undefined, taken: Iterable<string> = []) {
+  const slug = (model ?? "").trim().toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
     .replace(/-{2,}/g, "-")
-    .replace(/^[^a-z0-9]+|-+$/g, "")
-  const id = prefix && poolId.toLowerCase().startsWith(prefix.toLowerCase()) ? poolId.slice(prefix.length) : poolId
-  return slug(title ?? "") || slug(id) || slug(poolId)
-}
-
-/** The pool's write payload: never silently drop requested affinity. */
-export function poolPayload(draft: PoolWrite, affinitySupported: boolean): PoolWrite {
-  if (draft.session_affinity && !affinitySupported) {
-    throw new Error("session affinity is not supported by the configured pool API version")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 72) || "pool"
+  const used = new Set([...taken].map((id) => id.toLowerCase()))
+  if (!used.has(slug)) return slug
+  for (let index = 2; ; index++) {
+    if (!used.has(`${slug}-${index}`)) return `${slug}-${index}`
   }
-  return { ...draft, session_affinity: affinitySupported && draft.session_affinity === true }
 }

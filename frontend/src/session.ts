@@ -18,7 +18,7 @@ const redirectUri = () => `${window.location.origin}/redirect.html`
 const home = () => `${window.location.origin}/`
 
 // The read-only guest view lasts as long as this tab, until the visitor signs in.
-const GUEST_KEY = "apim-backend-pool:guest"
+const GUEST_KEY = "ai-gateway-pool:guest"
 let guest = false
 
 export const isPublic = () => config.mode === "public"
@@ -114,7 +114,7 @@ export function chosenTarget(): ChosenTarget | null {
   return account ? parseStoredTarget(localStorage.getItem(targetStorageKey(account.homeAccountId))) : null
 }
 
-/** Remembers (or forgets) the APIM service this account works on, in this browser only. */
+/** Remembers (or forgets) the gateway this account works on, in this browser only. */
 export function chooseTarget(target: ChosenTarget | null) {
   if (!isPublic() || !account) return
   const key = targetStorageKey(account.homeAccountId)

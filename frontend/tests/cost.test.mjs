@@ -16,5 +16,5 @@ test("an unknown currency code still shows the amount", () => {
 })
 
 test("every note has a message", () => {
-  assert.deepEqual(Object.keys(COST_NOTE).sort(), ["forbidden", "no_token", "unavailable", "unsupported"])
+  assert.deepEqual(Object.keys(COST_NOTE).sort(), ["external", "forbidden", "no_token", "unavailable", "unsupported"])
 })

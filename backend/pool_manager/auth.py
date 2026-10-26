@@ -6,8 +6,8 @@ a custom header: browsers cannot send it cross-site without a CORS preflight thi
 approves, which blocks CSRF against the Easy Auth session cookie.
 
 Users listed in ``POOL_MANAGER_OWNERS`` may change pools. With ``rbac_writers`` on, so may users
-whose own Azure roles already allow every APIM write the app makes; the app can't do anything
-for them that they couldn't do in the portal.
+whose own Azure roles already let them read the gateway's master key (a Container App secret);
+with it they could change the gateway directly anyway.
 
 The public app (``auth_mode=entra``) has no Easy Auth: the browser sends a bearer token that
 deps.get_user verifies, and every Azure call runs as that user, so Azure itself decides what they
@@ -113,4 +113,14 @@ def writer(
         raise HTTPException(status_code=403, detail=f"Missing {WRITE_HEADER} header")
     if not principal.can_write:
         raise HTTPException(status_code=403, detail="Only configured owners can make changes")
+    return principal
+
+
+def owner(principal: Annotated[Principal, Depends(current_principal)]) -> Principal:
+    """Reads only owners may make, such as the gateway's virtual keys (listed with the master
+    key). No CSRF header: nothing changes."""
+    if principal.guest:
+        raise HTTPException(status_code=403, detail=GUEST_REFUSED)
+    if not principal.can_write:
+        raise HTTPException(status_code=403, detail="Only configured owners can see keys")
     return principal

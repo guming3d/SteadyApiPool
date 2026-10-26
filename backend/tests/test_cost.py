@@ -1,4 +1,4 @@
-"""The service panel's cost: this month's spend (Cost Management) and the tier's list price."""
+"""The gateway panel's cost: this month's spend (Cost Management) and a list price estimate."""
 
 from __future__ import annotations
 
@@ -11,7 +11,9 @@ from fastapi.testclient import TestClient
 
 from pool_manager.app import app
 from pool_manager.cost import list_price, region_name
-from tests.fake_apim import RETAIL_PRICES, SERVICE, FakeApim
+from pool_manager.gateway import container_app_info
+from tests.fake_azure import GATEWAY_APP, RETAIL_PRICES, FakeAzure
+from tests.fake_litellm import MASTER_KEY, URL
 from tests.test_app import _client, _settings
 from tests.test_setup import _jwt
 
@@ -20,61 +22,80 @@ QUERY = "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.CostManagement
 
 
 @pytest.fixture
-def apim() -> FakeApim:
-    return FakeApim()
+def azure() -> FakeAzure:
+    return FakeAzure()
 
 
 @pytest.fixture
-def client(apim: FakeApim) -> Iterator[TestClient]:
-    yield _client(apim, _settings())
+def client(azure: FakeAzure) -> Iterator[TestClient]:
+    yield _client(azure, _settings())
     app.dependency_overrides.clear()
 
 
-def _cost_requests(apim: FakeApim) -> list[str]:
+def _cost_requests(azure: FakeAzure) -> list[str]:
     return [
         request.url.host if request.url.host == "prices.azure.com" else "cost"
-        for request in apim.requests
+        for request in azure.requests
         if request.url.host == "prices.azure.com" or "CostManagement" in request.url.path
     ]
 
 
-def test_cost_has_spend_and_list_price(client: TestClient, apim: FakeApim) -> None:
-    apim.costs[SERVICE.casefold()] = (12.5, "EUR")
-    response = client.get("/api/cost")
-    assert response.status_code == 200, response.text
-    cost = response.json()
-
-    assert (cost["sku"], cost["units"], cost["location"]) == ("BasicV2", 2, "East US 2")
-    assert cost["month_to_date"] == {"amount": 12.5, "currency": "EUR", "since": SINCE}
-    assert (cost["month_to_date_note"], cost["detail"]) == (None, None)
-    # Two units around the clock for an average month; requests beyond the included ones extra.
-    assert cost["list_price"] == {
-        "tier": "Basic v2",
-        "units": 2,
-        "hourly": 0.20548,
-        "monthly": 300.0,
-        "per_10k_calls": 0.03,
-        "currency": "USD",
+def _prices() -> dict[str, list[dict[str, object]]]:
+    keys = {
+        "aca": "Azure Container Apps",
+        "postgres": "Azure Database for PostgreSQL",
+        "redis": "Redis Cache",
     }
-    assert cost["portal_url"].endswith("/subscriptions/sub/resourceGroups/rg/costanalysis")
-
-    query = next(r for r in apim.requests if "CostManagement" in r.url.path)
-    assert query.method == "POST"
-    assert query.url.path == QUERY
-    filter_ = json.loads(query.content)["dataset"]["filter"]["dimensions"]
-    assert filter_ == {"name": "ResourceId", "operator": "In", "values": [SERVICE.casefold()]}
+    return {key: [dict(item) for item in RETAIL_PRICES[name]] for key, name in keys.items()}
 
 
-def test_cost_is_cached_until_refreshed(client: TestClient, apim: FakeApim) -> None:
+def test_cost_has_spend_and_an_estimate(client: TestClient, azure: FakeAzure) -> None:
+    azure.costs["gw"] = (12.345, "USD")
+
+    cost = client.get("/api/cost").json()
+
+    assert (cost["profile"], cost["location"]) == ("dev", "East US 2")
+    assert cost["month_to_date"] == {"amount": 12.35, "currency": "USD", "since": SINCE}
+    assert cost["month_to_date_note"] is None
+    price = cost["list_price"]
+    kinds = [item["kind"] for item in price["items"]]
+    assert kinds == ["container_apps", "postgres"]  # No Redis for dev.
+    assert price["items"][0]["detail"] == "1.25 vCPU, 2.5 GiB x 1 replica"
+    assert price["monthly_low"] == pytest.approx(29.57 + 16.09, abs=0.02)
+    assert price["monthly_high"] == pytest.approx(98.55 + 16.09, abs=0.02)
+    assert cost["portal_url"].endswith("/resourceGroups/rg/costanalysis")
+    # The spend is everything tagged as this gateway's.
+    request = next(r for r in azure.requests if r.url.path == QUERY)
+    tags = json.loads(request.content)["dataset"]["filter"]["tags"]
+    assert tags == {"name": "ai-gateway", "operator": "In", "values": ["gw"]}
+
+
+def test_a_production_gateway_adds_redis() -> None:
+    fake = FakeAzure()
+    app_id = fake.add_gateway("gw", profile="production")
+    info = container_app_info(fake.container_apps[app_id.casefold()], "gw")
+
+    price = list_price(_prices(), info, "production")
+
+    assert price is not None
+    items = {item.kind: item for item in price.items}
+    assert items["container_apps"].detail == "2 vCPU, 4 GiB x 2-5 replicas"
+    assert items["container_apps"].monthly_low == pytest.approx(94.61, abs=0.01)
+    assert items["container_apps"].monthly_high == pytest.approx(788.4, abs=0.01)
+    assert items["postgres"].monthly_low == pytest.approx(53.32, abs=0.01)
+    assert items["redis"].monthly_low == pytest.approx(23.36, abs=0.01)
+
+
+def test_cost_is_cached_until_refreshed(client: TestClient, azure: FakeAzure) -> None:
     client.get("/api/cost")
-    assert _cost_requests(apim) == ["prices.azure.com", "cost"]
+    first = len(_cost_requests(azure))
     client.get("/api/cost")
-    assert len(_cost_requests(apim)) == 2
-    client.get("/api/cost?refresh=true")
-    assert len(_cost_requests(apim)) == 4
+    assert len(_cost_requests(azure)) == first
+    client.get("/api/cost", params={"refresh": "true"})
+    assert len(_cost_requests(azure)) == first * 2
 
 
-def test_no_charges_yet(client: TestClient, apim: FakeApim) -> None:
+def test_no_charges_yet(client: TestClient) -> None:
     cost = client.get("/api/cost").json()
     assert cost["month_to_date"] == {"amount": 0.0, "currency": None, "since": SINCE}
 
@@ -82,36 +103,42 @@ def test_no_charges_yet(client: TestClient, apim: FakeApim) -> None:
 @pytest.mark.parametrize(
     ("error", "note"),
     [
-        ((403, "RBACAccessDenied"), "forbidden"),
         ((400, "SubscriptionTypeNotSupported"), "unsupported"),
-        ((400, "BadRequest"), "unavailable"),
+        ((500, "InternalServerError"), "unavailable"),
     ],
 )
 def test_missing_spend_is_a_note_not_an_error(
-    client: TestClient, apim: FakeApim, error: tuple[int, str], note: str
+    client: TestClient, azure: FakeAzure, error: tuple[int, str], note: str
 ) -> None:
-    apim.cost_error = error
-    response = client.get("/api/cost")
-    assert response.status_code == 200, response.text
-    cost = response.json()
-    assert cost["month_to_date"] is None
-    assert cost["month_to_date_note"] == note
-    assert cost["detail"]
-    # The list price needs no Azure rights.
-    assert cost["list_price"]["monthly"] == 300.0
+    azure.cost_error = error
+    cost = client.get("/api/cost").json()
+    assert (cost["month_to_date"], cost["month_to_date_note"]) == (None, note)
+    assert cost["list_price"] is not None
 
 
-def test_unreachable_prices_leave_the_spend(client: TestClient, apim: FakeApim) -> None:
-    apim.prices_down = True
-    apim.costs[SERVICE.casefold()] = (3.0, "USD")
+def test_unreachable_prices_leave_the_spend(client: TestClient, azure: FakeAzure) -> None:
+    azure.prices_down = True
+    azure.costs["gw"] = (3.0, "USD")
     cost = client.get("/api/cost").json()
     assert cost["list_price"] is None
     assert cost["month_to_date"]["amount"] == 3.0
 
 
-def test_deployed_spend_is_read_with_the_users_own_token(apim: FakeApim) -> None:
+def test_an_external_gateways_bill_is_not_ours_to_read(azure: FakeAzure) -> None:
     client = _client(
-        apim, _settings(auth_mode="easy_auth", owners="dev@contoso.com", delegated_access=True)
+        azure, _settings(resource_group="", gateway_url=URL, gateway_master_key=MASTER_KEY)
+    )
+    try:
+        cost = client.get("/api/cost").json()
+    finally:
+        app.dependency_overrides.clear()
+    assert (cost["list_price"], cost["month_to_date_note"]) == (None, "external")
+    assert not _cost_requests(azure)
+
+
+def test_deployed_spend_is_read_with_the_users_own_token(azure: FakeAzure) -> None:
+    client = _client(
+        azure, _settings(auth_mode="easy_auth", owners="dev@contoso.com", delegated_access=True)
     )
     try:
         signed_in = {"X-MS-CLIENT-PRINCIPAL-NAME": "dev@contoso.com"}
@@ -120,30 +147,21 @@ def test_deployed_spend_is_read_with_the_users_own_token(apim: FakeApim) -> None
         assert without["month_to_date_note"] == "no_token"
 
         token = _jwt()
-        apim.callers[token] = "user"
+        azure.callers[token] = "user"
+        azure.allow("user", GATEWAY_APP, "*")
         # The app identity could read it; the user can't, so the user's answer counts.
-        apim.cost_forbidden.add("user")
+        azure.cost_forbidden.add("user")
         headers = {**signed_in, "X-MS-TOKEN-AAD-ACCESS-TOKEN": token}
         cost = client.get("/api/cost?refresh=true", headers=headers).json()
         assert cost["month_to_date_note"] == "forbidden"
-        query = next(r for r in reversed(apim.requests) if "CostManagement" in r.url.path)
+        query = next(r for r in reversed(azure.requests) if "CostManagement" in r.url.path)
         assert query.headers["Authorization"] == f"Bearer {token}"
     finally:
         app.dependency_overrides.clear()
 
 
-def test_list_price_per_tier() -> None:
-    items = [{"currencyCode": "USD", **item} for item in RETAIL_PRICES]
-    developer = list_price(items, "Developer", 1)
-    assert developer is not None
-    assert (developer.monthly, developer.per_10k_calls) == (48.03, None)
-    # Consumption has no units, only calls.
-    consumption = list_price(items, "Consumption", 0)
-    assert consumption is not None
-    assert (consumption.hourly, consumption.monthly, consumption.per_10k_calls) == (
-        None,
-        None,
-        0.035,
-    )
-    assert list_price(items, "PremiumV2", 1) is None  # Not in this region's list.
+def test_an_estimate_needs_the_container_apps_meters() -> None:
+    fake = FakeAzure()
+    info = container_app_info(fake.container_apps[GATEWAY_APP.casefold()], "gw")
+    assert list_price({"aca": []}, info, "dev") is None
     assert region_name("East US 2") == "eastus2"

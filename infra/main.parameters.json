@@ -4,11 +4,13 @@
   "parameters": {
     "environmentName": { "value": "${AZURE_ENV_NAME}" },
     "location": { "value": "${AZURE_LOCATION}" },
-    "apimName": { "value": "${APIM_NAME}" },
-    "apimSkuName": { "value": "${APIM_SKU=BasicV2}" },
-    "apimPublisherEmail": { "value": "${APIM_PUBLISHER_EMAIL}" },
-    "apimResourceGroup": { "value": "${APIM_RESOURCE_GROUP}" },
-    "apimSubscriptionId": { "value": "${APIM_SUBSCRIPTION_ID=${AZURE_SUBSCRIPTION_ID}}" },
+    "gatewayName": { "value": "${GATEWAY_NAME}" },
+    "gatewayResourceGroup": { "value": "${GATEWAY_RESOURCE_GROUP=${AZURE_RESOURCE_GROUP}}" },
+    "gatewaySubscriptionId": { "value": "${GATEWAY_SUBSCRIPTION_ID=${AZURE_SUBSCRIPTION_ID}}" },
+    "gatewayUrl": { "value": "${GATEWAY_URL}" },
+    "gatewayMasterKey": { "value": "${GATEWAY_MASTER_KEY}" },
+    "gatewayPrincipalId": { "value": "${GATEWAY_PRINCIPAL_ID}" },
+    "gatewayAppInsightsId": { "value": "${GATEWAY_APP_INSIGHTS_ID}" },
     "entraClientId": { "value": "${ENTRA_CLIENT_ID}" },
     "owners": { "value": "${POOL_OWNERS}" },
     "enableDelegatedAzureAccess": { "value": "${ENABLE_DELEGATED_AZURE_ACCESS=false}" }

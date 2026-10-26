@@ -12,11 +12,11 @@ const report = (checks, can_operate = true) => ({ mode: "local", user: null, che
 test("checks are grouped into steps", () => {
   const value = report([
     check("sign_in", "sign_in", "ok"),
-    check("apim_access", "apim_access", "action"),
+    check("gateway_access", "gateway_access", "action"),
     check("discovery:sub", "discovery", "ok"),
-    check("apim_identity", "apim_identity", "ok"),
+    check("gateway_identity", "gateway_identity", "ok"),
   ])
-  assert.deepEqual(stepChecks(value, "access").map((item) => item.id), ["apim_access", "discovery:sub"])
+  assert.deepEqual(stepChecks(value, "access").map((item) => item.id), ["gateway_access", "discovery:sub"])
   assert.equal(stepState(value, "sign_in"), "ok")
   assert.equal(stepState(value, "access"), "attention")
   assert.equal(stepState(value, "foundry"), "ok")
@@ -34,37 +34,37 @@ test("steps after a failed sign-in are waiting", () => {
 test("pending is not attention but keeps the step open", () => {
   const value = report([
     check("sign_in", "sign_in", "ok"),
-    check("apim_access", "apim_access", "ok"),
-    check("apim_identity", "apim_identity", "pending"),
+    check("gateway_access", "gateway_access", "ok"),
+    check("gateway_identity", "gateway_identity", "pending"),
   ])
   assert.equal(stepState(value, "foundry"), "pending")
   assert.equal(attentionCount(value), 0)
   assert.equal(firstStep(value), "foundry")
 })
 
-test("without an APIM service the wizard opens on choosing one", () => {
+test("without a gateway the wizard opens on choosing one", () => {
   const value = report([
     check("sign_in", "sign_in", "ok"),
-    check("apim_target", "apim_target", "action", { fix: "select_apim" }),
+    check("gateway_target", "gateway_target", "action", { fix: "select_gateway" }),
   ], false)
-  assert.equal(stepState(value, "apim"), "attention")
+  assert.equal(stepState(value, "gateway"), "attention")
   assert.equal(stepState(value, "access"), "waiting")
   assert.equal(stepState(value, "foundry"), "waiting")
-  assert.equal(firstStep(value), "apim")
+  assert.equal(firstStep(value), "gateway")
 })
 
-test("a service being created keeps the APIM step pending", () => {
+test("a gateway being deployed keeps the gateway step pending", () => {
   const value = report([
     check("sign_in", "sign_in", "ok"),
-    check("apim_target", "apim_target", "pending", { subject: "apim-new", detail: "Activating" }),
+    check("gateway_target", "gateway_target", "pending", { subject: "gw-new", detail: "Deploying" }),
   ], false)
-  assert.equal(stepState(value, "apim"), "pending")
+  assert.equal(stepState(value, "gateway"), "pending")
   assert.equal(attentionCount(value), 0)
-  assert.equal(firstStep(value), "apim")
+  assert.equal(firstStep(value), "gateway")
 })
 
 test("a ready report opens on the last step", () => {
-  const value = report([check("sign_in", "sign_in", "ok"), check("apim_access", "apim_access", "ok")])
+  const value = report([check("sign_in", "sign_in", "ok"), check("gateway_access", "gateway_access", "ok")])
   assert.equal(firstStep(value), "foundry")
 })
 
@@ -90,31 +90,42 @@ test("provisioning time is read from ARM's timestamp", () => {
   assert.equal(elapsedMinutes("0001-01-01T00:00:00", now), null, "Azure's placeholder date")
 })
 
-test("Next waits while APIM is provisioning or not chosen, and before sign-in", () => {
+test("Next waits while the gateway is deploying or not chosen, and before sign-in", () => {
   const signedIn = check("sign_in", "sign_in", "ok")
-  const provisioning = { mode: "local", checks: [signedIn, check("apim_target", "apim_target", "pending")], ready: false, can_operate: false }
+  const provisioning = { mode: "local", checks: [signedIn, check("gateway_target", "gateway_target", "pending")], ready: false, can_operate: false }
   assert.equal(canAdvance(provisioning, "sign_in"), true)
-  assert.equal(canAdvance(provisioning, "apim"), false)
-  assert.equal(reachable(provisioning, "access", "apim"), false)
-  assert.equal(reachable(provisioning, "foundry", "apim"), false)
+  assert.equal(canAdvance(provisioning, "gateway"), false)
+  assert.equal(reachable(provisioning, "access", "gateway"), false)
+  assert.equal(reachable(provisioning, "foundry", "gateway"), false)
   // Wherever it opened, the current step stays open.
   assert.equal(reachable(provisioning, "access", "access"), true)
 
-  const unchosen = { ...provisioning, checks: [signedIn, check("apim_target", "apim_target", "action")] }
-  assert.equal(canAdvance(unchosen, "apim"), false)
+  const unchosen = { ...provisioning, checks: [signedIn, check("gateway_target", "gateway_target", "action")] }
+  assert.equal(canAdvance(unchosen, "gateway"), false)
 
   const signedOut = { mode: "local", checks: [check("sign_in", "sign_in", "action")], ready: false, can_operate: false }
   assert.equal(canAdvance(signedOut, "sign_in"), false)
 })
 
-test("Next moves on once APIM is ready, even past advisory items", () => {
+test("Next moves on once the gateway is ready, even past advisory items", () => {
   const report = { mode: "local", ready: false, can_operate: true, checks: [
     check("sign_in", "sign_in", "ok"),
-    check("apim_target", "apim_target", "ok"),
-    check("apim_access", "apim_access", "action"),
-    check("apim_identity", "apim_identity", "ok"),
+    check("gateway_target", "gateway_target", "ok"),
+    check("gateway_access", "gateway_access", "action"),
+    check("gateway_identity", "gateway_identity", "ok"),
   ] }
-  assert.equal(canAdvance(report, "apim"), true)
+  assert.equal(canAdvance(report, "gateway"), true)
   assert.equal(canAdvance(report, "access"), true)
   assert.equal(canAdvance(report, "foundry"), false, "no step after the last one")
+})
+
+test("an unreachable gateway needs attention in the gateway step", () => {
+  const value = report([
+    check("sign_in", "sign_in", "ok"),
+    check("gateway_target", "gateway_target", "ok"),
+    check("gateway_access", "gateway_access", "ok"),
+    check("gateway_health", "gateway_health", "blocked", { detail: "master_key_refused" }),
+  ], false)
+  assert.equal(stepState(value, "gateway"), "attention")
+  assert.equal(firstStep(value), "gateway")
 })

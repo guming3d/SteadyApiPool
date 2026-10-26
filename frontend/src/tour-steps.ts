@@ -18,12 +18,12 @@ export type TourStep = {
 
 // Bumped when the tour changes enough to show it again to people who finished it.
 export const TOUR_VERSION = "1"
-export const TOUR_STORAGE_KEY = "apim-backend-pool:tour"
+export const TOUR_STORAGE_KEY = "ai-gateway-pool:tour"
 
 /** Deployments → pools → one pool's tabs: the order a first pool is built in. */
 export const TOUR_STEPS: TourStep[] = [
   { id: "welcome", placement: "center" },
-  { id: "apim", target: "apim", placement: "bottom" },
+  { id: "gateway", target: "gateway", placement: "bottom" },
   { id: "setup", target: "setup", placement: "bottom" },
   { id: "tabDeployments", target: "tab-deployments", action: "click", placement: "bottom" },
   { id: "deployments", target: "deployments-list", ensure: "tab-deployments", placement: "top" },

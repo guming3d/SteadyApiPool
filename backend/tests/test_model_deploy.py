@@ -9,21 +9,21 @@ import pytest
 from fastapi.testclient import TestClient
 
 from pool_manager.app import app
-from tests.fake_apim import FakeApim
+from tests.fake_azure import FakeAzure
 from tests.test_app import WRITE, _client, _settings
 from tests.test_setup import _jwt
 
 
 @pytest.fixture
-def apim() -> FakeApim:
-    fake = FakeApim()
+def apim() -> FakeAzure:
+    fake = FakeAzure()
     fake.add_account("aoai-east", deployments=[("gpt-4o", "gpt-4o", "OpenAI")])
     fake.add_account("speech", kind="SpeechServices")
     return fake
 
 
 @pytest.fixture
-def client(apim: FakeApim) -> Iterator[TestClient]:
+def client(apim: FakeAzure) -> Iterator[TestClient]:
     yield _client(apim, _settings())
     app.dependency_overrides.clear()
 
@@ -88,7 +88,7 @@ def test_offers_only_openai_models_with_pay_per_token_types(client: TestClient) 
     assert models[1]["lifecycle_status"] == "Legacy"
 
 
-def test_reports_free_capacity_in_the_accounts_region(client: TestClient, apim: FakeApim) -> None:
+def test_reports_free_capacity_in_the_accounts_region(client: TestClient, apim: FakeAzure) -> None:
     apim.capacities[("eastus2", "gpt-4o", "2024-11-20")] = {"GlobalStandard": 450, "Standard": 30}
     params = {"account_id": _account(client), "model": "gpt-4o", "version": "2024-11-20"}
     assert client.get("/api/foundry/capacity", params=params).json() == {
@@ -98,7 +98,7 @@ def test_reports_free_capacity_in_the_accounts_region(client: TestClient, apim: 
 
 
 def test_creates_a_deployment_and_follows_it_to_succeeded(
-    client: TestClient, apim: FakeApim
+    client: TestClient, apim: FakeAzure
 ) -> None:
     account_id = _account(client)
     response = _create(client, account_id)
@@ -136,7 +136,7 @@ def test_creates_a_deployment_and_follows_it_to_succeeded(
 )
 def test_refuses_what_the_account_does_not_offer(
     client: TestClient,
-    apim: FakeApim,
+    apim: FakeAzure,
     overrides: dict[str, Any],
     status: int,
     detail: str,
@@ -173,14 +173,14 @@ def test_writes_need_the_csrf_header(client: TestClient) -> None:
     assert client.post("/api/foundry/deployments", json=body).status_code == 403
 
 
-def test_azure_errors_come_back_readable(client: TestClient, apim: FakeApim) -> None:
+def test_azure_errors_come_back_readable(client: TestClient, apim: FakeAzure) -> None:
     apim.deploy_error = (400, "InsufficientQuota")
     response = _create(client, _account(client))
     assert response.status_code == 400
     assert "InsufficientQuota" in response.json()["detail"]
 
 
-def test_deployed_app_deploys_with_the_users_own_token(apim: FakeApim) -> None:
+def test_deployed_app_deploys_with_the_users_own_token(apim: FakeAzure) -> None:
     client = _client(
         apim, _settings(auth_mode="easy_auth", owners="owner@contoso.com", delegated_access=True)
     )

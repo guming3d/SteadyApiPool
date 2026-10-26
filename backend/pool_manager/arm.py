@@ -1,4 +1,4 @@
-"""Minimal Azure Resource Manager client scoped to one API Management service."""
+"""Minimal Azure Resource Manager client, scoped to the gateway's Container App when it has one."""
 
 from __future__ import annotations
 
@@ -71,10 +71,16 @@ class ArmClient:
         # Locally the user may belong to several tenants; ask for a token in the target's.
         self._tenant_id = tenant_id or settings.tenant_id or None
         self._subscription_id = settings.subscription_id
+        # Paths are relative to the Container App; an external gateway has no ARM resource, so
+        # only the ARM-root methods (Foundry, metrics, cost) make sense for it.
         self.resource_id = (
-            f"/subscriptions/{segment(settings.subscription_id)}"
-            f"/resourceGroups/{segment(settings.resource_group)}"
-            f"/providers/Microsoft.ApiManagement/service/{segment(settings.apim_name)}"
+            ""
+            if settings.external
+            else (
+                f"/subscriptions/{segment(settings.subscription_id)}"
+                f"/resourceGroups/{segment(settings.resource_group)}"
+                f"/providers/Microsoft.App/containerApps/{segment(settings.gateway_name)}"
+            )
         )
         self._http = httpx.Client(
             base_url=f"{self._origin}{self.resource_id}",
@@ -107,12 +113,24 @@ class ArmClient:
         clone._token = (token, expires_on)
         return clone
 
+    def token_for(self, scope: str) -> str:
+        """A token for another Azure API (e.g. Log Analytics), from the same credential and
+        tenant. Not cached: callers keep it as long as they need it."""
+        if isinstance(self._credential, _StaticToken):
+            raise ArmError(401, "TokenScope", "Only an ARM token is available here")
+        options = {"tenant_id": self._tenant_id} if self._tenant_id else {}
+        try:
+            return str(self._credential.get_token(scope, **options).token)
+        except Exception as error:  # azure-identity raises several unrelated types.
+            message = str(error).splitlines()[0] if str(error) else type(error).__name__
+            raise ArmError(401, "CredentialUnavailable", message) from error
+
     def token_claims(self) -> dict[str, Any]:
         """Claims of the current token, for display only (ARM validates the token itself)."""
         return jwt_claims(self._bearer())
 
     def subscription_tenant(self, subscription_id: str | None = None) -> str | None:
-        """The tenant of a subscription (the APIM one by default), from the unauthenticated
+        """The tenant of a subscription (the gateway's by default), from the unauthenticated
         challenge ARM returns."""
         subscription_id = subscription_id or self._subscription_id
         if not subscription_id:
@@ -158,7 +176,7 @@ class ArmClient:
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             response = self._http.request(
                 method,
-                # An empty path addresses the APIM service itself; httpx would add a trailing "/".
+                # An empty path addresses the Container App itself; httpx would add a trailing "/".
                 path or f"{self._origin}{self.resource_id}",
                 params=query,
                 json=json_body,
@@ -221,7 +239,7 @@ class ArmClient:
         return response.json(), response.headers.get("ETag")
 
     def list(self, path: str, *, api_version: str) -> Iterator[dict[str, Any]]:
-        """Lists a collection under the APIM service."""
+        """Lists a collection under the Container App."""
         yield from self._pages(self.request("GET", path, api_version=api_version))
 
     def list_arm(

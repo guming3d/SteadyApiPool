@@ -1,4 +1,5 @@
 // What publishing a pool draft changes, in the terms the editor shows: roles and traffic share.
+import { draftSettings, sameSettings } from "./pool-breaker.ts"
 import { deploymentMode, type DeploymentMode } from "./pool-modes.ts"
 import { route } from "./routing-sim.ts"
 import type { PoolMember, PoolWrite } from "./types"
@@ -12,10 +13,9 @@ export type PoolChange =
   | { kind: "removed"; id: string }
   | { kind: "role"; id: string; from: MemberRole; to: MemberRole }
   | { kind: "share"; id: string; from: number; to: number }
-  | { kind: "affinity"; to: boolean }
   | { kind: "title"; to: string | null }
-  // Members whose circuit breaker publishing rewrites to the pool's rule (see pool-breaker.ts).
-  | { kind: "breaker"; count: number }
+  // Cooldown, retries or timeout, which every member row gets (see pool-breaker.ts).
+  | { kind: "settings"; count: number }
 
 /** Same roles as the member list: the first member is primary, the rest standby in failover. */
 export function memberRole(members: PoolMember[], backendId: string): MemberRole {
@@ -37,7 +37,6 @@ export function poolChanges(before: PoolWrite | null, after: PoolWrite): PoolCha
         role: memberRole(after.members, member.backend_id),
         share: share(afterShares, member.backend_id),
       })),
-      ...after.session_affinity ? [{ kind: "affinity", to: true } as const] : [],
     ]
   }
 
@@ -66,7 +65,9 @@ export function poolChanges(before: PoolWrite | null, after: PoolWrite): PoolCha
   for (const member of before.members) {
     if (!next.has(key(member.backend_id))) changes.push({ kind: "removed", id: member.backend_id })
   }
-  if (before.session_affinity !== after.session_affinity) changes.push({ kind: "affinity", to: after.session_affinity })
   if ((before.title ?? null) !== (after.title ?? null)) changes.push({ kind: "title", to: after.title ?? null })
+  if (!sameSettings(draftSettings(before), draftSettings(after))) {
+    changes.push({ kind: "settings", count: after.members.length })
+  }
   return changes
 }

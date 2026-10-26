@@ -202,11 +202,11 @@ def test_a_corrupt_record_is_ignored(tmp_path: Path) -> None:
 
 
 def _app(tmp_path: Path, tools: list[Any]) -> tuple[Any, LocalCredential]:
-    from tests.fake_apim import FakeApim
+    from tests.fake_azure import FakeAzure
     from tests.test_app import _client, _settings
 
     credential = _credential(tmp_path, tools)
-    apim = FakeApim()
+    apim = FakeAzure()
     apim.callers.update({"app": "app", "azure_cli": "app"})
     return _client(apim, _settings(), sign_in=credential, credential=credential), credential
 
@@ -262,10 +262,10 @@ def test_device_code_and_sign_out_endpoints(tmp_path: Path) -> None:
 
 def test_deployed_app_has_no_local_sign_in(tmp_path: Path) -> None:
     from pool_manager.app import app
-    from tests.fake_apim import FakeApim
+    from tests.fake_azure import FakeAzure
     from tests.test_app import WRITE, _client, _settings
 
-    client = _client(FakeApim(), _settings(auth_mode="easy_auth"))
+    client = _client(FakeAzure(), _settings(auth_mode="easy_auth"))
     client.headers.update({"X-MS-CLIENT-PRINCIPAL-NAME": "dev@contoso.com"})
     try:
         report = client.get("/api/setup").json()

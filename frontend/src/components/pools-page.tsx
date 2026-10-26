@@ -1,12 +1,11 @@
 // The pools page: the list on the left, the selected pool's editor on the right.
 import { Network, Plus, RefreshCw, Search, ShieldCheck } from "lucide-react"
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 
 import { queries } from "../api"
 import { useI18n } from "../i18n"
 import { deploymentMode, primaryFirst } from "../pool-modes"
-import type { PoolApiCreate } from "../types"
 import { PoolEditor, type PoolAddRequest, type PoolCreateRequest } from "./pool-editor"
 import { Button, Dialog, ErrorText } from "./ui"
 
@@ -30,9 +29,8 @@ export function PoolsPage({
   // Start on the requested pool, so the select-the-first-pool fallback below never overrides it.
   const [selectedId, setSelectedId] = useState<string | null>(addRequest?.poolId ?? null)
   const [pendingAdd, setPendingAdd] = useState<PoolAddRequest | null>(addRequest ?? null)
-  // The API a just-created pool should get; its editor creates and binds it once.
-  const [pendingApi, setPendingApi] = useState<{ poolId: string; api: PoolApiCreate } | null>(null)
-  const clearPendingApi = useCallback(() => setPendingApi(null), [])
+  // A just-created pool opens on Connect, where clients learn how to call it.
+  const [justCreated, setJustCreated] = useState<string | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
   const [prefill, setPrefill] = useState<PoolCreateRequest | undefined>()
   useEffect(() => {
@@ -49,7 +47,7 @@ export function PoolsPage({
   }, [addRequest, onAddRequestHandled])
   const select = (poolId: string | null) => {
     setPendingAdd(null)
-    setPendingApi(null)
+    setJustCreated(null)
     setSelectedId(poolId)
   }
   const closeCreate = () => { setCreateOpen(false); setPrefill(undefined) }
@@ -103,8 +101,7 @@ export function PoolsPage({
             key={selected.id}
             poolId={selected.id}
             addMembers={pendingAdd?.poolId === selected.id ? pendingAdd.members : undefined}
-            autoCreateApi={pendingApi?.poolId === selected.id ? pendingApi.api : undefined}
-            onAutoCreateApiStarted={clearPendingApi}
+            openOn={justCreated === selected.id ? "connect" : undefined}
             onDeleted={() => select(null)}
             header={(controls) => <header className="detail-toolbar">
               <div><b>{selected.title || selected.id}</b><code>{selected.id}</code></div>
@@ -114,7 +111,7 @@ export function PoolsPage({
         </section>
       </div>}
     <Dialog open={createOpen} wide onClose={closeCreate} title={t.addPool} description={t.noPoolsHint}>
-      {createOpen && <PoolEditor initial={prefill} onCreated={(poolId, api) => { closeCreate(); setPendingId(poolId); setPendingApi(api ? { poolId, api } : null) }} />}
+      {createOpen && <PoolEditor initial={prefill} onCreated={(poolId) => { closeCreate(); setPendingId(poolId); setJustCreated(poolId) }} />}
     </Dialog>
   </div>
 }

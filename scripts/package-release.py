@@ -5,8 +5,9 @@ Python only (no Node.js, no git):
     cd frontend && npm ci && npm run build && cd ..
     python scripts/package-release.py [--version v0.2.0] [--out dist]
 
-The zip holds backend/ (with pool_manager/static), tui/, the start scripts and the doctor, under
-one apim-backend-pool-<version>/ folder. Tests, virtual environments, local settings and sign-ins
+The zip holds backend/ (with pool_manager/static and the gateway template), the start scripts
+and the doctor, under one apim-backend-pool-<version>/ folder. tui/ still targets the APIM
+version and is left out. Tests, virtual environments, local settings and sign-ins
 are left out. .github/workflows/release.yml runs this for every v* tag.
 """
 
@@ -26,7 +27,6 @@ STATIC_INDEX = ROOT / "backend" / "pool_manager" / "static" / "index.html"
 # (folder, files and folders inside it to ship)
 CONTENTS = [
     ("backend", ["pool_manager", "requirements.txt", "pyproject.toml", ".env.example"]),
-    ("tui", ["pool_tui", "requirements.txt", "pyproject.toml"]),
     (
         "scripts",
         ["start-local.ps1", "start-local.sh", "start-local.cmd", "doctor.py"],
@@ -34,7 +34,7 @@ CONTENTS = [
     (".", ["README.md", "README.zh-CN.md", "LICENSE"]),
 ]
 SKIP_DIRS = {"__pycache__", ".venv", ".pytest_cache", ".mypy_cache", ".ruff_cache", "tests"}
-SKIP_FILES = re.compile(r"(\.py[cod]$|^\.env$|^\.pool-manager.*\.json$|\.log$)")
+SKIP_FILES = re.compile(r"(\.py[cod]$|^\.env$|^\.pool-manager.*\.(json|bin)$|\.log$)")
 # Line endings the scripts need whatever the checkout used (see .gitattributes).
 LF = {".sh", ".py"}
 CRLF = {".cmd", ".ps1"}

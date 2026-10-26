@@ -6,7 +6,7 @@
 # (the release package has it; --prebuilt does the same with Node.js installed).
 #
 # Local development uses your Azure identity (the app's sign-in, or az / azd / PowerShell)
-# against a real APIM service. Writes are live.
+# against a real LiteLLM gateway and Foundry. Writes are live.
 #
 # Usage: scripts/start-local.sh [--tui] [--prebuilt] [--backend-port 8000] [--frontend-port 5174]
 #                               [--skip-install] [--skip-checks]
@@ -47,6 +47,9 @@ STATIC_INDEX="$BACKEND/pool_manager/static/index.html"
 step() { printf '\033[36m==>\033[0m %s\n' "$*"; }
 fail() { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 warn() { printf '\033[33mwarning:\033[0m %s\n' "$*" >&2; }
+
+# tui/ is a client of the APIM version's API and hasn't been ported to the LiteLLM gateway.
+[ "$TUI" -eq 0 ] || fail "The terminal UI still targets the APIM version and doesn't work with the LiteLLM gateway yet; run without --tui for the browser UI."
 
 # --- Prerequisites -------------------------------------------------------------------
 
@@ -113,7 +116,7 @@ fi
 
 ENV_FILE="$BACKEND/.env"
 if [ ! -f "$ENV_FILE" ]; then
-  # Nothing to fill in: the app's setup page chooses or creates the APIM service.
+  # Nothing to fill in: the app's setup page deploys, chooses or connects the gateway.
   cp "$BACKEND/.env.example" "$ENV_FILE"
   step "Created backend/.env from .env.example"
 fi
@@ -125,16 +128,20 @@ env_value() {
 
 SUBSCRIPTION="${POOL_MANAGER_SUBSCRIPTION_ID:-$(env_value POOL_MANAGER_SUBSCRIPTION_ID)}"
 RESOURCE_GROUP="${POOL_MANAGER_RESOURCE_GROUP:-$(env_value POOL_MANAGER_RESOURCE_GROUP)}"
-APIM_NAME="${POOL_MANAGER_APIM_NAME:-$(env_value POOL_MANAGER_APIM_NAME)}"
+GATEWAY_NAME="${POOL_MANAGER_GATEWAY_NAME:-$(env_value POOL_MANAGER_GATEWAY_NAME)}"
+GATEWAY_URL="${POOL_MANAGER_GATEWAY_URL:-$(env_value POOL_MANAGER_GATEWAY_URL)}"
 AUTH_MODE="${POOL_MANAGER_AUTH_MODE:-$(env_value POOL_MANAGER_AUTH_MODE)}"
-# The APIM service is optional here (the setup page chooses one); if given, give all of it.
-if [ -n "$SUBSCRIPTION$RESOURCE_GROUP$APIM_NAME" ] \
-  && { [ -z "$SUBSCRIPTION" ] || [ -z "$RESOURCE_GROUP" ] || [ -z "$APIM_NAME" ]; }; then
-  fail "Set all of POOL_MANAGER_SUBSCRIPTION_ID, POOL_MANAGER_RESOURCE_GROUP and POOL_MANAGER_APIM_NAME in backend/.env, or remove them to choose the service in the app."
+# The gateway is optional here (the setup page chooses one). A Container App needs all three
+# settings; a gateway elsewhere needs its name and URL.
+if [ -n "$GATEWAY_URL" ]; then
+  [ -n "$GATEWAY_NAME" ] || fail "POOL_MANAGER_GATEWAY_URL needs POOL_MANAGER_GATEWAY_NAME in backend/.env."
+elif [ -n "$SUBSCRIPTION$RESOURCE_GROUP$GATEWAY_NAME" ] \
+  && { [ -z "$SUBSCRIPTION" ] || [ -z "$RESOURCE_GROUP" ] || [ -z "$GATEWAY_NAME" ]; }; then
+  fail "Set all of POOL_MANAGER_SUBSCRIPTION_ID, POOL_MANAGER_RESOURCE_GROUP and POOL_MANAGER_GATEWAY_NAME in backend/.env, or remove them to choose the gateway in the app."
 fi
-if [ "$SUBSCRIPTION" = "00000000-0000-0000-0000-000000000000" ] || [ "$RESOURCE_GROUP" = "my-apim-rg" ] \
-  || [ "$APIM_NAME" = "my-apim" ]; then
-  fail "backend/.env still has the example APIM values; set real ones or remove them to choose the service in the app."
+if [ "$SUBSCRIPTION" = "00000000-0000-0000-0000-000000000000" ] || [ "$RESOURCE_GROUP" = "my-gateway-rg" ] \
+  || [ "$GATEWAY_NAME" = "my-gateway" ]; then
+  fail "backend/.env still has the example gateway values; set real ones or remove them to choose the gateway in the app."
 fi
 # Locally there is no App Service Authentication, so easy_auth would answer 401 to everything.
 [ "$AUTH_MODE" = "disabled" ] || fail "Set POOL_MANAGER_AUTH_MODE=disabled in backend/.env for local development."
@@ -274,10 +281,12 @@ fi
 
 printf '\n  App:     \033[1m%s\033[0m\n' "$APP_URL"
 printf '  API:     http://127.0.0.1:%s/api\n' "$BACKEND_PORT"
-if [ -n "$APIM_NAME" ]; then
-  printf '  \033[33mAPIM:    %s (resource group %s). Changes are live.\033[0m\n' "$APIM_NAME" "$RESOURCE_GROUP"
+if [ -n "$GATEWAY_URL" ]; then
+  printf '  \033[33mGateway: %s (%s). Changes are live.\033[0m\n' "$GATEWAY_NAME" "$GATEWAY_URL"
+elif [ -n "$GATEWAY_NAME" ]; then
+  printf '  \033[33mGateway: %s (resource group %s). Changes are live.\033[0m\n' "$GATEWAY_NAME" "$RESOURCE_GROUP"
 else
-  printf "  \033[33mAPIM:    chosen or created on the app's setup page. Changes are live.\033[0m\n"
+  printf "  \033[33mGateway: deployed, chosen or connected on the app's setup page. Changes are live.\033[0m\n"
 fi
 if [ "$USE_VITE" -eq 0 ]; then
   printf '  Press Ctrl+C to stop the server.\n\n'

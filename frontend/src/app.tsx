@@ -21,7 +21,7 @@ import { shouldAutoStart, TOUR_STORAGE_KEY, TOUR_VERSION } from "./tour-steps"
 type Tab = "pools" | "deployments"
 const TABS: Tab[] = ["pools", "deployments"]
 // Opened automatically once per browser session; the top-bar button reopens it.
-const SETUP_SEEN_KEY = "apim-backend-pool:setup-seen"
+const SETUP_SEEN_KEY = "ai-gateway-pool:setup-seen"
 
 export function App() {
   const { t, locale, setLocale } = useI18n()
@@ -29,7 +29,7 @@ export function App() {
   const setup = useQuery(queries.setup())
   // Locally the name comes from the setup report, so wait for it rather than flash "no sign-in".
   const user = me.data && (me.data.authenticated || setup.data) ? displayUser(me.data, setup.data?.user) : undefined
-  // Until an APIM service is chosen (and readable) there is nothing to describe.
+  // Until a gateway is chosen (and readable) there is nothing to describe.
   const capabilities = useQuery({ ...queries.capabilities(), enabled: setup.data?.can_operate === true })
   const [setupOpen, setSetupOpen] = useState(false)
   const [serviceOpen, setServiceOpen] = useState(false)
@@ -72,7 +72,7 @@ export function App() {
     localStorage.setItem(TOUR_STORAGE_KEY, TOUR_VERSION)
     setTourOpen(false)
   }
-  // Nothing else works until the app can read the APIM service, so setup takes the whole page.
+  // Nothing else works until the app can reach the gateway, so setup takes the whole page.
   const blocked = setup.data?.can_operate === false
   const [tab, setTab] = useState<Tab>(() => {
     const requested = new URLSearchParams(window.location.search).get("tab") as Tab | null
@@ -92,8 +92,8 @@ export function App() {
   return <SetupProvider open={openSetup}><div className="shell">
     <nav className="topbar">
       <div className="brand"><img src="/favicon.svg" alt="" width={20} height={20} /><b>{t.appTitle}</b>
-        {capabilities.data && <button type="button" className="brand-service" data-tour="apim" title={t.serviceOpen} aria-haspopup="dialog" onClick={() => setServiceOpen(true)}>
-          <code>{capabilities.data.apim_name}</code><ChevronDown size={12} />
+        {capabilities.data && <button type="button" className="brand-service" data-tour="gateway" title={t.serviceOpen} aria-haspopup="dialog" onClick={() => setServiceOpen(true)}>
+          <code>{capabilities.data.gateway_name}</code><ChevronDown size={12} />
         </button>}
       </div>
       <div className="tabs" role="tablist">

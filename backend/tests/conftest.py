@@ -22,6 +22,8 @@ def _no_real_azure(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     caches = (
         deps._arm,
         deps.get_local_credential,
+        deps._secrets,
+        deps._gateway,
         deps._service,
         deps._discovery,
         deps._verifier,
@@ -31,6 +33,8 @@ def _no_real_azure(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         factory.cache_clear()
     monkeypatch.setattr(deps, "ArmClient", refuse)
     monkeypatch.setattr(deps, "LocalCredential", refuse)
+    # The real store would read the developer's saved gateway keys.
+    monkeypatch.setattr(deps, "SecretStore", refuse)
     # The public app's real token exchange would call Entra with the app's managed identity.
     monkeypatch.setattr(deps, "OboExchanger", refuse)
     yield

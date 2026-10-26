@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from .access import AccessChecker, user_token
 from .api_test import ApiTester
-from .auth import acting_user, caller_name, current_principal, is_owner, writer
+from .auth import acting_user, caller_name, current_principal, is_owner, owner, writer
 from .config import Settings, get_settings
 from .cost import CostReader
 from .deps import (
@@ -37,20 +37,20 @@ from .deps import (
 )
 from .discovery import DeploymentDiscovery
 from .entra import API_SCOPE_NAME, ARM_USER_SCOPE
+from .gateway_template import aks_bundle
 from .metrics import PoolMonitor
 from .model_deploy import ModelDeployer
 from .models import (
-    ApiBindingWrite,
-    ApimCreate,
-    ApimCreateOptions,
-    ApimServiceView,
+    AksBundle,
+    AliasView,
+    AliasWrite,
     ApiTestRequest,
     ApiTestResult,
-    ApiView,
     BackendView,
     Capabilities,
     CleanupConfirm,
-    DeletedServiceView,
+    ConfigPreview,
+    ConfigView,
     DeployableModel,
     DeploymentImport,
     DeploymentImportResult,
@@ -61,14 +61,19 @@ from .models import (
     FoundryAccountView,
     FoundryDeploymentCreate,
     FoundryDeploymentStatus,
+    GatewayConnect,
+    GatewayCreate,
+    GatewayCreateOptions,
+    GatewayDelete,
+    GatewayDeleteCheck,
+    GatewayDeployStatus,
+    GatewayView,
     MemberBackendWrite,
     MetricsRange,
     ModelCapacity,
     ModelCheck,
     ModelCheckRequest,
-    PolicyPreview,
-    PolicyView,
-    PoolApiCreate,
+    PoolEndpoint,
     PoolMetrics,
     PoolView,
     PoolWrite,
@@ -78,19 +83,16 @@ from .models import (
     RemovalPlan,
     RemovalResult,
     ServiceCost,
-    ServiceDelete,
-    ServiceDeleteCheck,
-    ServiceRestore,
     SetupCheck,
     SetupProgress,
     SetupReport,
     SignInRequest,
-    SubscriptionKeyView,
-    SubscriptionSecret,
     SubscriptionView,
     TargetSelect,
     TargetView,
     TenantView,
+    VirtualKeySecret,
+    VirtualKeyView,
 )
 from .service import PoolManagerService, ServiceError
 from .sessions import Sessions
@@ -127,11 +129,12 @@ Targets = Annotated[TargetChooser, Depends(get_targets)]
 Tester = Annotated[ApiTester, Depends(get_tester)]
 Monitor = Annotated[PoolMonitor, Depends(get_monitor)]
 Cost = Annotated[CostReader, Depends(get_cost)]
-# In the public app, with the APIM service the caller's browser chose.
+# In the public app, with the gateway the caller's browser chose.
 SettingsDep = Annotated[Settings, Depends(get_request_settings)]
 AppSettings = Annotated[Settings, Depends(get_settings)]
 Reader = Annotated[Principal, Depends(current_principal)]
 Writer = Annotated[Principal, Depends(writer)]
+Owner = Annotated[Principal, Depends(owner)]
 # Setup fixes run with the user's own Azure rights, so they need sign-in but not POOL_OWNERS.
 Actor = Annotated[Principal, Depends(acting_user)]
 # Only the caller's name: no Azure call, so it answers while their other requests wait on ARM.
@@ -144,11 +147,11 @@ SubscriptionQuery = Annotated[str, Query(pattern=GUID)]
 
 def require_target(settings: SettingsDep) -> None:
     if not settings.has_target:
-        raise ServiceError(409, "No APIM service is chosen yet; choose or create one in setup")
+        raise ServiceError(409, "No gateway is chosen yet; deploy, choose or connect one in setup")
 
 
 api = APIRouter(prefix="/api")
-# Everything that works on the APIM service, which locally may not be chosen yet.
+# Everything that works on the gateway, which locally may not be chosen yet.
 bound = APIRouter(dependencies=[Depends(require_target)])
 
 
@@ -210,11 +213,10 @@ def put_backend(
     return service.put_backend(backend_id, body, principal.name)
 
 
+# Only members no pool uses yet; members of pools go when their pools drop them.
 @bound.delete("/backends/{backend_id}", status_code=204)
-def delete_backend(
-    backend_id: str, service: Service, principal: Writer, etag: str | None = None
-) -> Response:
-    service.delete_backend(backend_id, etag, principal.name)
+def delete_backend(backend_id: str, service: Service, principal: Writer) -> Response:
+    service.delete_backend(backend_id, principal.name)
     return Response(status_code=204)
 
 
@@ -239,7 +241,19 @@ def put_pool(pool_id: str, body: PoolWrite, service: Service, principal: Writer)
     return service.put_pool(pool_id, body, principal.name)
 
 
-# Read-only Azure Monitor metrics for the pool's APIs and its Foundry members.
+# Read-only: the LiteLLM config a save would write, to review or export first.
+@bound.post("/pools/{pool_id}/preview")
+def preview_pool(pool_id: str, body: PoolWrite, service: Service, _: Reader) -> ConfigPreview:
+    return service.preview_pool(pool_id, body)
+
+
+# The pool as LiteLLM config.yaml describes it (no secrets).
+@bound.get("/pools/{pool_id}/config")
+def pool_config(pool_id: str, service: Service, _: Reader) -> ConfigView:
+    return service.config(pool_id)
+
+
+# Read-only: the gateway's spans for the pool and its Foundry members' metrics.
 @bound.get("/pools/{pool_id}/metrics")
 def pool_metrics(
     pool_id: str,
@@ -251,22 +265,28 @@ def pool_metrics(
     return monitor.get(pool_id, range, refresh=refresh)
 
 
-@bound.post("/pools/{pool_id}/api")
-def create_pool_api(
-    pool_id: str, body: PoolApiCreate, service: Service, principal: Writer
-) -> ApiView:
-    return service.create_pool_api(pool_id, body, principal.name)
+# How clients call the pool: base URL and model names.
+@bound.get("/pools/{pool_id}/endpoint")
+def pool_endpoint(pool_id: str, service: Service, _: Reader) -> PoolEndpoint:
+    return service.endpoint(pool_id)
 
 
-@bound.delete("/pools/{pool_id}", status_code=204)
-def delete_pool(
-    pool_id: str, service: Service, principal: Writer, etag: str | None = None
-) -> Response:
-    service.delete_pool(pool_id, etag, principal.name)
-    return Response(status_code=204)
+@bound.post("/pools/{pool_id}/aliases")
+def add_alias(pool_id: str, body: AliasWrite, service: Service, principal: Writer) -> PoolEndpoint:
+    return service.add_alias(pool_id, body.name, principal.name)
 
 
-# Read-only: what removing the pool takes with it (its APIs, unused members).
+@bound.delete("/pools/{pool_id}/aliases/{name}")
+def remove_alias(pool_id: str, name: str, service: Service, principal: Writer) -> PoolEndpoint:
+    return service.remove_alias(pool_id, name, principal.name)
+
+
+@bound.get("/aliases")
+def list_aliases(service: Service, _: Reader) -> list[AliasView]:
+    return service.list_aliases()
+
+
+# Read-only: what removing the pool takes with it (aliases, test keys).
 @bound.get("/pools/{pool_id}/removal")
 def pool_removal_plan(pool_id: str, service: Service, _: Reader) -> RemovalPlan:
     return service.pool_removal_plan(pool_id)
@@ -279,7 +299,7 @@ def remove_pool(
     return service.remove_pool(pool_id, body, principal.name)
 
 
-# Read-only: this month's spend (with the user's own Azure rights) and the tier's list price.
+# Read-only: this month's spend (with the user's own Azure rights) and the list price.
 @bound.get("/cost")
 def service_cost(
     request: Request, cost: Cost, access: Access, principal: Reader, refresh: bool = False
@@ -288,7 +308,7 @@ def service_cost(
     return cost.get(user, principal.name, refresh=refresh)
 
 
-# Read-only: everything this app created in the service, which cleanup would remove.
+# Read-only: everything this app created on the gateway, which cleanup would remove.
 @bound.get("/cleanup")
 def cleanup_plan(service: Service, _: Reader) -> RemovalPlan:
     return service.cleanup_plan()
@@ -299,68 +319,26 @@ def cleanup(body: CleanupConfirm, service: Service, principal: Writer) -> Remova
     return service.cleanup(body, principal.name)
 
 
-@bound.get("/apis")
-def list_apis(service: Service, _: Reader) -> list[ApiView]:
-    return service.list_apis()
+# -- trying a pool -------------------------------------------------------------------------
+# Keys are LiteLLM virtual keys, read and made with the master key, so only owners see them.
 
 
-@bound.get("/apis/{api_id}/policy")
-def get_policy(api_id: str, service: Service, _: Reader) -> PolicyView:
-    return service.get_policy(api_id)
+@bound.get("/pools/{pool_id}/keys")
+def list_keys(pool_id: str, tester: Tester, _: Owner) -> list[VirtualKeyView]:
+    return tester.keys(pool_id)
 
 
-# Read-only: computes the policy a binding would write so it can be reviewed or exported first.
-@bound.post("/apis/{api_id}/binding/preview")
-def preview_binding(
-    api_id: str, body: ApiBindingWrite, service: Service, _: Reader
-) -> PolicyPreview:
-    return service.preview_binding(api_id, body)
+# The only time the key itself is returned.
+@bound.post("/pools/{pool_id}/keys")
+def create_key(pool_id: str, tester: Tester, principal: Writer) -> VirtualKeySecret:
+    return tester.create_key(pool_id, principal.name)
 
 
-@bound.put("/apis/{api_id}/binding")
-def put_binding(api_id: str, body: ApiBindingWrite, service: Service, principal: Writer) -> ApiView:
-    return service.put_binding(api_id, body, principal.name)
-
-
-@bound.delete("/apis/{api_id}/binding", status_code=204)
-def delete_binding(
-    api_id: str, service: Service, principal: Writer, etag: str | None = None
-) -> Response:
-    service.delete_binding(api_id, etag, principal.name)
-    return Response(status_code=204)
-
-
-# -- trying a pool API ---------------------------------------------------------------------
-# Keys are read and created with the user's own Azure rights (Easy Auth's token when deployed).
-
-
-@bound.get("/apis/{api_id}/keys")
-def list_keys(
-    api_id: str, request: Request, access: Access, tester: Tester, _: Reader
-) -> list[SubscriptionKeyView]:
-    return tester.keys(access.require_user(user_token(request.headers)), api_id)
-
-
-@bound.post("/apis/{api_id}/keys")
-def create_key(
-    api_id: str, request: Request, access: Access, tester: Tester, principal: Actor
-) -> SubscriptionKeyView:
-    user = access.require_user(user_token(request.headers))
-    return tester.create_key(user, api_id, principal.name)
-
-
-# POST so the key is never cached or prefetched, and needs the CSRF header.
-@bound.post("/apis/{api_id}/keys/{key_id}/secret")
-def read_key(
-    api_id: str, key_id: str, request: Request, access: Access, tester: Tester, principal: Actor
-) -> SubscriptionSecret:
-    user = access.require_user(user_token(request.headers))
-    return tester.secret(user, api_id, key_id, principal.name)
-
-
-@bound.post("/apis/{api_id}/test")
-def test_api(api_id: str, body: ApiTestRequest, tester: Tester, principal: Actor) -> ApiTestResult:
-    return tester.call(api_id, body, principal.name)
+@bound.post("/pools/{pool_id}/test")
+def test_pool(
+    pool_id: str, body: ApiTestRequest, tester: Tester, principal: Actor
+) -> ApiTestResult:
+    return tester.call(pool_id, body, principal.name)
 
 
 @bound.get("/deployments")
@@ -497,12 +475,7 @@ def setup_sign_in(
     return Response(status_code=204)
 
 
-@bound.post("/setup/apim-identity")
-def setup_apim_identity(request: Request, access: Access, principal: Actor) -> SetupCheck:
-    return access.enable_apim_identity(user_token(request.headers), principal.name)
-
-
-# Read-only: whether the APIM identity can call these accounts, e.g. before importing them.
+# Read-only: whether the gateway's identity can call these accounts, e.g. before importing them.
 @bound.post("/setup/foundry-access")
 def setup_foundry_access(
     body: FoundryAccessRequest, request: Request, access: Access, _: Reader
@@ -522,7 +495,7 @@ def setup_grant_foundry_access(
 api.include_router(bound)
 
 
-# -- choosing or creating the APIM service (local) --------------------------------------
+# -- choosing, deploying or connecting the gateway (local) --------------------------------
 
 
 @api.get("/target")
@@ -547,49 +520,82 @@ def list_subscriptions(
     return targets.subscriptions(tenant_id)
 
 
-@api.get("/target/services")
-def list_services(
+@api.get("/target/gateways")
+def list_gateways(
     targets: Targets, _: Reader, subscription_id: SubscriptionQuery, tenant_id: TenantQuery = None
-) -> list[ApimServiceView]:
-    return targets.services(tenant_id, subscription_id)
+) -> list[GatewayView]:
+    return targets.gateways(tenant_id, subscription_id)
 
 
 @api.get("/target/create-options")
 def create_options(
     targets: Targets, _: Reader, subscription_id: SubscriptionQuery, tenant_id: TenantQuery = None
-) -> ApimCreateOptions:
+) -> GatewayCreateOptions:
     return targets.create_options(tenant_id, subscription_id)
 
 
-# Creates billable resources with the user's own Azure rights, then selects the new service.
-@api.post("/target/services")
-def create_service(body: ApimCreate, targets: Targets, principal: Actor) -> ApimServiceView:
+# Deploys billable resources with the user's own Azure rights, then selects the new gateway.
+@api.post("/target/gateways")
+def create_gateway(body: GatewayCreate, targets: Targets, principal: Actor) -> GatewayView:
     return targets.create(body, principal.name)
 
 
-# Read-only: what deleting a service this app created would remove.
-@api.post("/target/services/delete-check")
-def check_service_delete(body: TargetSelect, targets: Targets, _: Actor) -> ServiceDeleteCheck:
-    return targets.delete_check(body)
+@api.get("/target/deploy-status")
+def deploy_status(
+    targets: Targets,
+    _: Reader,
+    subscription_id: SubscriptionQuery,
+    resource_group: str,
+    name: str,
+    tenant_id: TenantQuery = None,
+) -> GatewayDeployStatus:
+    return targets.deploy_status(tenant_id, subscription_id, resource_group, name)
 
 
-# Soft-deletes a service this app created (Azure keeps it 48 hours); the name must be retyped.
-@api.post("/target/services/delete", status_code=204)
-def delete_service(body: ServiceDelete, targets: Targets, principal: Actor) -> Response:
-    targets.delete(body, principal.name)
+# Files that deploy the same gateway on an existing AKS cluster; nothing is written.
+@api.get("/target/aks-bundle")
+def get_aks_bundle(
+    _: Reader,
+    subscription_id: SubscriptionQuery,
+    resource_group: Annotated[str, Query(pattern=r"^[-\w.()]{0,89}[-\w()]$")],
+    cluster: Annotated[str, Query(pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$")],
+    name: Annotated[str, Query(pattern=r"^[a-z](?:[a-z0-9]|-[a-z0-9]){1,30}$")],
+    location: Annotated[str, Query(pattern=r"^[a-z0-9]{2,40}$")],
+    namespace: Annotated[str, Query(pattern=r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")] = "litellm",
+) -> AksBundle:
+    return aks_bundle(
+        name=name,
+        namespace=namespace,
+        cluster=cluster,
+        resource_group=resource_group,
+        subscription_id=subscription_id,
+        location=location,
+    )
+
+
+# Checks an external gateway's URL and master key, then selects it.
+@api.post("/target/connect")
+def connect_gateway(body: GatewayConnect, targets: Targets, principal: Actor) -> TargetView:
+    return targets.connect(body, principal.name)
+
+
+@api.post("/target/disconnect", status_code=204)
+def disconnect_gateway(targets: Targets, principal: Actor) -> Response:
+    targets.disconnect(principal.name)
     return Response(status_code=204)
 
 
-@api.get("/target/deleted")
-def list_deleted_services(
-    targets: Targets, _: Reader, subscription_id: SubscriptionQuery, tenant_id: TenantQuery = None
-) -> list[DeletedServiceView]:
-    return targets.deleted_services(tenant_id, subscription_id)
+# Read-only: what deleting a gateway this app deployed would remove.
+@api.post("/target/gateways/delete-check")
+def check_gateway_delete(body: TargetSelect, targets: Targets, _: Actor) -> GatewayDeleteCheck:
+    return targets.delete_check(body)
 
 
-@api.post("/target/deleted/restore")
-def restore_service(body: ServiceRestore, targets: Targets, principal: Actor) -> ApimServiceView:
-    return targets.restore(body, principal.name)
+# Deletes a gateway this app deployed, and its resources; the name must be retyped.
+@api.post("/target/gateways/delete", status_code=204)
+def delete_gateway(body: GatewayDelete, targets: Targets, principal: Actor) -> Response:
+    targets.delete(body, principal.name)
+    return Response(status_code=204)
 
 
 @asynccontextmanager
@@ -603,7 +609,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-app = FastAPI(title="APIM Backend Pool Manager", lifespan=lifespan)
+app = FastAPI(title="AI Gateway Pool Manager", lifespan=lifespan)
 app.include_router(api)
 
 

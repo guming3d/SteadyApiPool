@@ -1,12 +1,12 @@
-// Guidance around the pool editor for people new to APIM: a readiness checklist, a glossary
+// Guidance around the pool editor for people new to LiteLLM: a readiness checklist, a glossary
 // and a review of what Publish is about to change.
 import { BookOpen, CheckCircle2, ChevronDown, CircleAlert, CircleDashed, LoaderCircle, Send } from "lucide-react"
 
 import { fill, useI18n, type Locale } from "../i18n"
+import { draftSettings } from "../pool-breaker"
 import { MAX_MEMBERS, MIN_MEMBERS } from "../pool-modes"
 import type { PoolChange } from "../pool-changes"
-import { breakerCatches } from "../routing-sim"
-import type { ApiView, BackendView, ModelCheck, PoolWrite } from "../types"
+import type { BackendView, ModelCheck, PoolWrite } from "../types"
 import { Button, Dialog, ErrorText } from "./ui"
 
 type CheckState = "ok" | "warn" | "todo"
@@ -45,27 +45,27 @@ export type CheckItem = { label: string; state: CheckState; hint?: string }
 export function checklistItems({
   draft,
   backendById,
-  boundApis,
   creating,
   dirty,
   modelCheck,
+  identityReady,
 }: {
   draft: PoolWrite
   backendById: Map<string, BackendView>
-  boundApis: ApiView[]
   creating: boolean
   dirty: boolean
   /** Undefined while the check is loading. */
   modelCheck: ModelCheck | undefined
+  /** The gateway has an identity to call managed-identity members with. */
+  identityReady: boolean
 }, t: Messages, locale: Locale): CheckItem[] {
   const backendOf = (backendId: string) => backendById.get(backendId.toLowerCase())
-  const withoutBreaker = draft.members.filter((member) => !backendOf(member.backend_id)?.has_circuit_breaker)
-  const missing429 = draft.members.filter((member) => {
-    const breaker = backendOf(member.backend_id)?.circuit_breaker
-    return breaker && !breakerCatches(breaker, "throttle")
-  })
-  const withoutRetry = boundApis.filter((item) => !item.binding?.retry_on_429)
+  const settings = draftSettings(draft)
   const count = draft.members.length
+  const usesIdentity = draft.members.some((member) => backendOf(member.backend_id)?.auth_type === "managed_identity")
+  const priorities = new Set(draft.members.map((member) => member.priority)).size
+  // A failure is answered elsewhere within the request: by a retry, or by the next priority.
+  const rescued = settings.retries > 0 || priorities > 1
 
   return [
     { label: t.checkMembers, state: count >= MIN_MEMBERS && count <= MAX_MEMBERS ? "ok" : "warn" },
@@ -76,24 +76,22 @@ export function checklistItems({
     },
     {
       label: t.checkBreakers,
-      state: count && !withoutBreaker.length ? "ok" : "warn",
-      hint: withoutBreaker.length ? fill(t.checkBreakersHint, { names: withoutBreaker.map((member) => member.backend_id) }, locale) : undefined,
-    },
-    {
-      label: t.checkBreakers429,
-      state: count && !missing429.length && !withoutBreaker.length ? "ok" : missing429.length ? "warn" : "todo",
-      hint: missing429.length ? fill(t.checkBreakers429Hint, { names: missing429.map((member) => member.backend_id) }, locale) : undefined,
-    },
-    {
-      label: t.checkBound,
-      state: boundApis.length ? "ok" : "todo",
-      hint: boundApis.length ? undefined : t.checkBoundHint,
+      state: count ? "ok" : "todo",
+      hint: count ? fill(t.checkBreakersHint, {
+        count: settings.circuit_breaker.allowed_fails + 1,
+        cooldown: settings.circuit_breaker.cooldown_seconds,
+      }, locale) : undefined,
     },
     {
       label: t.checkRetry,
-      state: !boundApis.length ? "todo" : withoutRetry.length ? "warn" : "ok",
-      hint: withoutRetry.length ? fill(t.checkRetryHint, { names: withoutRetry.map((item) => item.display_name) }, locale) : undefined,
+      state: !count ? "todo" : rescued ? "ok" : "warn",
+      hint: count && !rescued ? t.checkRetryHint : undefined,
     },
+    ...usesIdentity ? [{
+      label: t.checkIdentity,
+      state: identityReady ? "ok" as const : "warn" as const,
+      hint: identityReady ? undefined : t.foundryNoIdentity,
+    }] : [],
     { label: t.checkPublished, state: !creating && !dirty ? "ok" : "todo" },
   ]
 }
@@ -131,7 +129,7 @@ export function GlossaryDialog({ open, onClose }: { open: boolean; onClose: () =
     <dl className="glossary">
       {([
         "glossBackend", "glossPool", "glossBinding", "glossPriority",
-        "glossWeight", "glossBreaker", "glossRetry", "glossAffinity",
+        "glossWeight", "glossBreaker", "glossRetry", "glossKey", "glossAffinity",
       ] as const).map((key) => {
         const [term, ...rest] = t[key].split(/[：:]/)
         return <div key={key}><dt>{term}</dt><dd>{rest.join(":")}</dd></div>
@@ -143,8 +141,7 @@ export function GlossaryDialog({ open, onClose }: { open: boolean; onClose: () =
 export function PublishDialog({
   open,
   changes,
-  createApiUrl,
-  boundApis,
+  endpoint,
   busy,
   error,
   onConfirm,
@@ -152,15 +149,14 @@ export function PublishDialog({
 }: {
   open: boolean
   changes: PoolChange[]
-  /** Publishing a new pool also creates and binds an API at this URL. */
-  createApiUrl?: string
-  boundApis: ApiView[]
+  /** Base URL and model name clients call the pool with. */
+  endpoint: { baseUrl: string; model: string }
   busy: boolean
   error: unknown
   onConfirm: () => void
   onClose: () => void
 }) {
-  const { t, locale } = useI18n()
+  const { t } = useI18n()
   const text = (change: PoolChange) => {
     switch (change.kind) {
       case "created": return fill(t.changeCreated, { mode: t[change.mode], count: change.count })
@@ -169,9 +165,8 @@ export function PublishDialog({
       case "removed": return fill(t.changeRemoved, { id: change.id })
       case "role": return fill(t.changeRole, { id: change.id, from: t[change.from], to: t[change.to] })
       case "share": return fill(t.changeShare, { id: change.id, from: change.from, to: change.to })
-      case "affinity": return change.to ? t.changeAffinityOn : t.changeAffinityOff
       case "title": return fill(t.changeTitle, { title: change.to ?? "—" })
-      case "breaker": return fill(t.changeBreaker, { count: change.count })
+      case "settings": return fill(t.changeSettings, { count: change.count })
     }
   }
   return <Dialog
@@ -189,15 +184,12 @@ export function PublishDialog({
     {changes.length
       ? <ul className="change-list">
         {changes.map((change, index) => <li key={index} data-kind={change.kind}>{text(change)}</li>)}
-        {createApiUrl && <li data-kind="added">{fill(t.changeCreateApi, { url: createApiUrl })}</li>}
       </ul>
       : <p className="muted">{t.noChanges}</p>}
     {changes.some((change) => change.kind === "removed") && <p className="muted">{t.publishCleanup}</p>}
-    <div className={`state ${boundApis.length ? "warning" : ""}`}>
+    <div className="state">
       <CircleAlert size={14} />
-      {boundApis.length
-        ? fill(t.publishAffects, { apis: boundApis.map((item) => `${item.display_name} (/${item.path})`) }, locale)
-        : t.publishNotBound}
+      {fill(t.publishAffects, { url: endpoint.baseUrl, model: endpoint.model })}
     </div>
     <ErrorText error={error} />
   </Dialog>

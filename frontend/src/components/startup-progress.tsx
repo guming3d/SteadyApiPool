@@ -13,11 +13,12 @@ type Messages = ReturnType<typeof useI18n>["t"]
 const LABEL: Record<ProgressRow["key"], keyof Messages> = {
   connecting: "startupConnecting",
   sign_in: "startupSignIn",
-  apim_target: "startupApimTarget",
-  apim_access: "startupApimAccess",
-  app_apim: "startupAppApim",
+  gateway_target: "startupGatewayTarget",
+  gateway_access: "startupGatewayAccess",
+  app_gateway: "startupAppGateway",
+  gateway_health: "startupGatewayHealth",
   discovery: "startupDiscovery",
-  apim_identity: "startupApimIdentity",
+  gateway_identity: "startupGatewayIdentity",
   members: "startupMembers",
   foundry_access: "startupFoundryAccess",
 }

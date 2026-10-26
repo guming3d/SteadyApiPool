@@ -1,5 +1,5 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/schemas/v1.0/azure.yaml.json
-name: apim-backend-pool
+name: ai-gateway-pool
 hooks:
   # Build the React app into backend/pool_manager/static so it ships inside the web package.
   prepackage:

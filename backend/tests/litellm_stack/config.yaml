@@ -1,0 +1,13 @@
+# Bootstrap config for the integration stack. Models are added through the admin API, the way
+# the app does it, so the model list starts empty.
+model_list: []
+
+litellm_settings:
+  num_retries: 2
+  request_timeout: 30
+
+router_settings:
+  routing_strategy: simple-shuffle
+  optional_pre_call_checks:
+    - encrypted_content_affinity
+    - responses_api_deployment_check

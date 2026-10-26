@@ -1,6 +1,8 @@
-"""Request and response models for APIM backend pools.
+"""Request and response models for AI gateway pools on LiteLLM.
 
-Members reference APIM backend IDs directly; the app has no model registry of its own.
+A pool is a LiteLLM model group: one row in the gateway's model table per member, all with the
+pool's ID as their ``model_name``. Members are identified by IDs this app gives them; a member
+in two pools is two rows.
 """
 
 from __future__ import annotations
@@ -19,143 +21,110 @@ from pydantic import (
     model_validator,
 )
 
-# APIM resource names: letters, digits and hyphens, starting with a letter or digit.
+# Pool and member IDs: letters, digits and hyphens, starting with a letter or digit. Pool IDs
+# are also the model name clients send, so they stay URL- and YAML-safe.
 RESOURCE_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9-]{0,79}$"
 _RESOURCE_ID = re.compile(RESOURCE_ID_PATTERN)
-
-ErrorReason = Literal["BackendConnectionFailure", "Timeout", "ClientConnectionFailure"]
+# Model names clients may send for a pool (aliases): what OpenAI and Azure deployment names use.
+MODEL_NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$"
 
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class FailureStatusCodeRange(StrictModel):
-    minimum: int = Field(ge=200, le=599)
-    maximum: int = Field(ge=200, le=599)
-
-    @model_validator(mode="after")
-    def validate_order(self) -> FailureStatusCodeRange:
-        if self.minimum > self.maximum:
-            raise ValueError("failure status code minimum cannot exceed maximum")
-        return self
-
-
 class CircuitBreaker(StrictModel):
-    """One APIM circuit-breaker rule. The defaults are the app's platform breaker."""
+    """LiteLLM's cooldown, applied to each member of a pool: a member that fails more than
+    ``allowed_fails`` times within a minute sits out ``cooldown_seconds``, and its share goes to
+    the other members (or, in failover, to the next priority)."""
 
-    failure_count: int = Field(default=1, ge=1, le=10_000)
-    interval_seconds: int = Field(default=60, ge=1, le=86_400)
-    trip_duration_seconds: int = Field(default=60, ge=1, le=86_400)
-    accept_retry_after: bool = True
-    status_code_ranges: list[FailureStatusCodeRange] = Field(
-        default_factory=lambda: [
-            FailureStatusCodeRange(minimum=429, maximum=429),
-            FailureStatusCodeRange(minimum=408, maximum=408),
-            FailureStatusCodeRange(minimum=500, maximum=599),
-        ],
-        max_length=10,
-    )
-    error_reasons: list[ErrorReason] = Field(
-        default_factory=lambda: list[ErrorReason](["BackendConnectionFailure", "Timeout"]),
-        max_length=3,
-    )
-
-    @model_validator(mode="after")
-    def require_failure_signal(self) -> CircuitBreaker:
-        if not self.status_code_ranges and not self.error_reasons:
-            raise ValueError("a circuit breaker needs at least one status range or error reason")
-        return self
+    allowed_fails: int = Field(default=0, ge=0, le=1000)
+    cooldown_seconds: int = Field(default=60, ge=1, le=86_400)
 
 
-class SecretSource(StrictModel):
-    """Exactly one of a literal secret (stored as an APIM secret named value) or a Key Vault
-    secret identifier (resolved by the APIM managed identity)."""
-
-    value: SecretStr | None = Field(default=None, min_length=1, max_length=4096)
-    key_vault_secret_id: HttpUrl | None = None
-    key_vault_identity_client_id: str | None = Field(default=None, max_length=64)
-
-    @model_validator(mode="after")
-    def require_one(self) -> SecretSource:
-        if (self.value is None) == (self.key_vault_secret_id is None):
-            raise ValueError("provide exactly one of value or key_vault_secret_id")
-        return self
+MemberAuthType = Literal["none", "api_key", "managed_identity"]
 
 
 class MemberAuth(StrictModel):
-    # ``managed_identity`` adds nothing to the backend; the API binding applies
-    # ``authentication-managed-identity`` because APIM backends cannot carry it.
-    type: Literal["none", "api_key", "bearer", "managed_identity"] = "none"
-    header_name: str = Field(default="api-key", pattern=r"^[A-Za-z0-9-]{1,64}$")
-    secret: SecretSource | None = None
+    # ``managed_identity``: the gateway calls the member as its own identity (Foundry members;
+    # it needs Cognitive Services OpenAI User there). ``api_key``: LiteLLM stores the key,
+    # encrypted with the gateway's salt key, and sends it as Azure's ``api-key`` header or an
+    # OpenAI-style bearer token.
+    type: MemberAuthType = "none"
+    secret: SecretStr | None = Field(default=None, min_length=1, max_length=4096)
 
     @model_validator(mode="after")
     def require_secret(self) -> MemberAuth:
-        if self.type in {"api_key", "bearer"} and self.secret is None:
-            raise ValueError(f"{self.type} authentication requires a secret")
         if self.type in {"none", "managed_identity"} and self.secret is not None:
             raise ValueError(f"{self.type} authentication does not take a secret")
         return self
 
 
 class MemberBackendWrite(StrictModel):
-    """Create or update a ``Single`` APIM backend that can join a pool."""
+    """A member a pool can use: an Azure OpenAI deployment URL (``.../openai/deployments/<name>``)
+    or any OpenAI-compatible base URL, which then needs the ``model`` to ask it for."""
 
     title: str | None = Field(default=None, max_length=300)
     url: HttpUrl
-    # On update, omitting the secret keeps the existing named value.
+    # OpenAI-compatible members only: the model name the endpoint serves.
+    model: str | None = Field(default=None, min_length=1, max_length=200)
+    # On update, an api_key member without a secret keeps the key the gateway already has.
     auth: MemberAuth = Field(default_factory=MemberAuth)
-    circuit_breaker: CircuitBreaker | None = Field(default_factory=CircuitBreaker)
-    etag: str | None = None
 
 
 class BackendView(StrictModel):
+    """A member, as its pools' rows describe it (or added but not in a pool yet)."""
+
     id: str
     title: str | None
-    description: str | None
-    type: Literal["Single", "Pool"]
-    url: str | None
-    auth_type: Literal["none", "api_key", "bearer", "managed_identity", "custom"]
-    header_name: str | None
-    named_value: str | None
-    circuit_breaker: CircuitBreaker | None
-    has_circuit_breaker: bool
+    # The Azure OpenAI deployment URL, or the OpenAI-compatible base URL.
+    url: str
+    provider: Literal["azure", "openai"]
+    # The model an OpenAI-compatible member is asked for; the deployment for Azure members.
+    model: str
+    auth_type: MemberAuthType | Literal["custom"]
+    # Pools it is a member of; empty until a pool using it is saved.
+    pools: list[str]
     managed: bool
     protected: bool
-    etag: str | None
 
 
 class PoolMemberWrite(StrictModel):
     backend_id: str = Field(pattern=RESOURCE_ID_PATTERN)
-    # 0-based here; APIM stores ``priority + 1``.
+    # 0-based here; LiteLLM's ``order`` is ``priority + 1``.
     priority: int = Field(ge=0, le=99)
     weight: int = Field(ge=0, le=100)
+
+
+DEFAULT_RETRIES = 1
+DEFAULT_TIMEOUT_SECONDS = 120
 
 
 class PoolWrite(StrictModel):
     title: str | None = Field(default=None, max_length=300)
     description: str | None = Field(default=None, max_length=1500)
     members: list[PoolMemberWrite] = Field(min_length=2, max_length=30)
-    session_affinity: bool = False
-    # The pool's circuit breaker: saving writes it to every member this app manages (APIM
-    # keeps breakers on member backends). ``None`` leaves the members' rules as they are.
+    # Written to every member row. ``None`` keeps what the pool has (the defaults when new).
     circuit_breaker: CircuitBreaker | None = None
-    # ``None`` creates a new pool; otherwise the update must match the current ETag.
+    # Further attempts LiteLLM makes for a failed request, on the same or another member.
+    retries: int | None = Field(default=None, ge=0, le=10)
+    # How long one attempt may take before LiteLLM gives up on that member.
+    timeout_seconds: int | None = Field(default=None, ge=1, le=600)
+    # ``None`` creates a new pool; otherwise it must match the pool as loaded.
     etag: str | None = None
 
     @model_validator(mode="after")
     def validate_members(self) -> PoolWrite:
         backend_ids = [member.backend_id.casefold() for member in self.members]
         if len(backend_ids) != len(set(backend_ids)):
-            raise ValueError("a backend pool cannot repeat a backend")
+            raise ValueError("a pool cannot repeat a member")
         priority_weights: dict[int, int] = {}
         for member in self.members:
             priority_weights[member.priority] = (
                 priority_weights.get(member.priority, 0) + member.weight
             )
         if any(total == 0 for total in priority_weights.values()):
-            raise ValueError("every backend priority group needs a positive weight")
+            raise ValueError("every member priority group needs a positive weight")
         return self
 
 
@@ -170,10 +139,14 @@ class PoolView(StrictModel):
     title: str | None
     description: str | None
     members: list[PoolMemberView]
-    session_affinity: bool
-    session_cookie_name: str | None
+    circuit_breaker: CircuitBreaker | None
+    retries: int | None
+    timeout_seconds: int | None
+    # Other names clients may send for this pool (LiteLLM model group aliases).
+    aliases: list[str]
     managed: bool
     protected: bool
+    # A hash of the pool's rows: LiteLLM has no ETags, so a save compares this instead.
     etag: str | None
 
 
@@ -200,71 +173,53 @@ class ModelCheck(StrictModel):
     message: str | None
 
 
-class ApiBindingWrite(StrictModel):
-    pool_id: str = Field(pattern=RESOURCE_ID_PATTERN)
-    # The app's default retry on 429: two attempts, one second apart, the first at once.
-    retry_on_429: bool = True
-    max_attempts_per_request: int = Field(default=2, ge=2, le=10)
-    retry_interval_seconds: int = Field(default=1, ge=0, le=30)
-    first_fast_retry: bool = True
-    backend_timeout_seconds: int = Field(default=120, ge=1, le=240)
-    managed_identity_resource: str | None = Field(
-        default=None, max_length=300, pattern=r"^[A-Za-z0-9:/._-]+$"
-    )
-    etag: str | None = None
+class AliasWrite(StrictModel):
+    """Another model name that reaches the pool, e.g. the deployment name clients already send."""
+
+    name: str = Field(pattern=MODEL_NAME_PATTERN)
 
 
-# An APIM API path: no leading slash, segments of URL-safe characters.
-API_PATH_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._~-]*(?:/[A-Za-z0-9._~-]+)*$"
-
-
-class PoolApiCreate(StrictModel):
-    """Creates an HTTP API for a pool and binds it, so clients get an endpoint right away."""
-
-    # Defaults to the pool ID.
-    api_id: str | None = Field(default=None, pattern=RESOURCE_ID_PATTERN)
-    path: str = Field(max_length=400, pattern=API_PATH_PATTERN)
-    # Defaults to the pool title.
-    display_name: str | None = Field(default=None, min_length=1, max_length=300)
-
-    @field_validator("path", mode="before")
-    @classmethod
-    def strip_slashes(cls, value: object) -> object:
-        # "/gpt-4o/" and "gpt-4o" are the same API path.
-        return value.strip().strip("/") if isinstance(value, str) else value
-
-
-class ApiBinding(StrictModel):
+class AliasView(StrictModel):
+    name: str
     pool_id: str
-    retry_on_429: bool
-    # Read back from the managed retry block; ``None`` when 429 retry is off.
-    max_attempts_per_request: int | None
-    retry_interval_seconds: int | None
-    first_fast_retry: bool | None
-    backend_timeout_seconds: int | None
-    managed_identity_resource: str | None
-
-
-class ApiView(StrictModel):
-    id: str
-    display_name: str
-    path: str
-    binding: ApiBinding | None
-    # A ``set-backend-service`` outside this app's managed block would override the pool.
-    foreign_backend_selection: bool
-    # Created by this app (description starts with the managed marker).
+    # Added by this app for the pool; others were set on the gateway some other way.
     managed: bool
-    # How clients authenticate to the API: APIM subscription key and its header name.
-    subscription_required: bool
-    subscription_key_header: str
-    etag: str | None
 
 
-class RemovalApi(StrictModel):
+class PoolEndpoint(StrictModel):
+    """How clients call a pool: the gateway's OpenAI-compatible base URL and a model name."""
+
+    pool_id: str
+    # ``<gateway>/v1``; None while the gateway has no URL yet.
+    base_url: str | None
+    # The pool ID first, then its aliases.
+    model_names: list[str]
+    aliases: list[AliasView]
+
+
+class ConfigView(StrictModel):
+    """The pool as LiteLLM ``config.yaml`` would describe it; member secrets are left out."""
+
+    pool_id: str
+    yaml: str | None
+
+
+class ConfigPreview(StrictModel):
+    """What saving the pool would write, computed without changing the gateway."""
+
+    current: str | None
+    proposed: str
+
+
+class RemovalAlias(StrictModel):
+    name: str
+    pool_id: str
+
+
+class RemovalKey(StrictModel):
+    # LiteLLM's ID of the key (a hash; the key itself can't be read back).
     id: str
-    display_name: str
-    path: str
-    # The pool it is bound to; None for an API this app created that is no longer bound.
+    alias: str | None
     pool_id: str | None
 
 
@@ -272,12 +227,12 @@ class RemovalPlan(StrictModel):
     """What removing pools takes with it, shown before the user confirms. Nothing is written."""
 
     pools: list[str]
-    # APIs this app created for those pools, deleted along with their policy.
-    delete_apis: list[RemovalApi]
-    # Other APIs bound to them; unbinding restores their original policy byte for byte.
-    unbind_apis: list[RemovalApi]
-    # Members this app created that no remaining pool uses, deleted with their credential.
-    delete_members: list[str]
+    # Aliases this app added for those pools.
+    delete_aliases: list[RemovalAlias]
+    # Other aliases that point at them; they are removed too, so none is left dangling.
+    unbind_aliases: list[RemovalAlias]
+    # Test keys this app created for those pools.
+    delete_keys: list[RemovalKey]
     # Cleanup only: pools this app didn't create, which it leaves alone.
     kept_pools: list[str]
     # Why the plan can't run; removal refuses while this is not empty.
@@ -285,74 +240,76 @@ class RemovalPlan(StrictModel):
 
 
 class RemovalConfirm(StrictModel):
-    """The plan the user reviewed. Removal recomputes it and refuses to delete or unbind
-    anything that is not listed here, e.g. an API bound to the pool in the meantime."""
+    """The plan the user reviewed. Removal recomputes it and refuses to delete anything that is
+    not listed here, e.g. an alias added to the pool in the meantime."""
 
     pools: list[str] = Field(max_length=500)
-    delete_apis: list[str] = Field(max_length=500)
-    unbind_apis: list[str] = Field(max_length=500)
-    # Single-pool removal: the pool's ETag as loaded, for a conditional delete.
+    delete_aliases: list[str] = Field(max_length=500)
+    unbind_aliases: list[str] = Field(max_length=500)
+    delete_keys: list[str] = Field(max_length=500)
+    # Single-pool removal: the pool's ETag as loaded.
     etag: str | None = None
 
 
 class CleanupConfirm(RemovalConfirm):
-    # The APIM service name typed again; checked here too, not only in the UI.
-    confirm_name: str = Field(min_length=1, max_length=50)
+    # The gateway name typed again; checked here too, not only in the UI.
+    confirm_name: str = Field(min_length=1, max_length=64)
 
 
 class RemovalResult(StrictModel):
     pools: list[str]
-    deleted_apis: list[str]
-    unbound_apis: list[str]
-    deleted_members: list[str]
+    deleted_aliases: list[str]
+    unbound_aliases: list[str]
+    deleted_keys: list[str]
 
 
-class PolicyView(StrictModel):
-    api_id: str
-    # ``None`` when the API has no API-level policy and only inherits ``<base />``.
-    xml: str | None
-    etag: str | None
-
-
-class PolicyPreview(StrictModel):
-    """What binding would write, computed without changing the API policy."""
-
-    current: str | None
-    proposed: str
+GatewayKind = Literal["aca", "external"]
 
 
 class Capabilities(StrictModel):
-    apim_name: str
-    resource_group: str
-    session_affinity_supported: bool
+    gateway_name: str
+    # ``aca``: a Container App (created here or not); ``external``: any other LiteLLM proxy
+    # the user connected by URL, e.g. on AKS.
+    gateway_kind: GatewayKind
+    resource_group: str | None
     id_prefix: str
     protected_prefixes: list[str]
-    # Managed identity that calls managed-identity members; it needs a data-plane role on them.
-    # ARM ID of the APIM service, for links to the Azure portal.
-    apim_resource_id: str
-    apim_principal_id: str | None
-    # Base URL clients call, e.g. https://<apim>.azure-api.net.
+    # ARM ID of the Container App, for links to the Azure portal; None for external gateways.
+    gateway_resource_id: str | None
+    # Identity the gateway calls managed-identity members as; it needs a data-plane role there.
+    gateway_principal_id: str | None
+    # Base URL of the gateway, e.g. https://<app>.<env>.<region>.azurecontainerapps.io.
     gateway_url: str | None
+    litellm_version: str | None
+    # Application Insights component that receives the gateway's OpenTelemetry spans.
+    app_insights_id: str | None
     discovery_subscriptions: list[str]
 
 
-class ListPrice(StrictModel):
-    """The service tier's retail price (Azure Retail Prices API), before discounts and tax."""
+CostItemKind = Literal["container_apps", "environment", "postgres", "redis"]
 
-    # As Azure prices it, e.g. "Basic v2".
-    tier: str
-    units: int
-    # Per unit; None for tiers billed only per call (Consumption).
-    hourly: float | None
-    # All units over an average month of 730 hours.
-    monthly: float | None
-    # Requests beyond what the tier includes; None when the tier has no such charge.
-    per_10k_calls: float | None
+
+class CostItem(StrictModel):
+    kind: CostItemKind
+    # What is priced, e.g. "1.25 vCPU, 2.5 GiB x 1 replica" or "B1MS + 32 GB".
+    detail: str
+    # Per month (730 hours): Container Apps bill less while replicas are idle, so a range.
+    monthly_low: float
+    monthly_high: float
+
+
+class ListPrice(StrictModel):
+    """The gateway's retail price estimate (Azure Retail Prices API), before discounts, free
+    grants and tax, and without log ingestion."""
+
+    items: list[CostItem]
+    monthly_low: float
+    monthly_high: float
     currency: str
 
 
 class MonthToDate(StrictModel):
-    """What the service cost this month so far, from Cost Management (it lags a few hours)."""
+    """What the gateway cost this month so far, from Cost Management (it lags a few hours)."""
 
     amount: float
     # None when Azure has recorded no charge yet.
@@ -362,22 +319,22 @@ class MonthToDate(StrictModel):
 
 
 # Why this month's spend is missing: no delegated Azure token (deployed), no access to the
-# resource group's costs, a subscription type without cost data, or Cost Management failed.
-CostNote = Literal["no_token", "forbidden", "unsupported", "unavailable"]
+# resource group's costs, a subscription type without cost data, Cost Management failed, or an
+# external gateway this app can't see the bill of.
+CostNote = Literal["no_token", "forbidden", "unsupported", "unavailable", "external"]
 
 
 class ServiceCost(StrictModel):
-    sku: str
-    units: int
-    location: str
-    # None when the Retail Prices API is unreachable or doesn't list the tier there.
+    profile: str | None
+    location: str | None
+    # None when the Retail Prices API is unreachable or the gateway runs elsewhere.
     list_price: ListPrice | None
     month_to_date: MonthToDate | None
     month_to_date_note: CostNote | None
     # Azure's own message when month_to_date failed.
     detail: str | None
-    # Cost analysis for the service's resource group in the Azure portal.
-    portal_url: str
+    # Cost analysis for the gateway's resource group in the Azure portal.
+    portal_url: str | None
 
 
 class Principal(StrictModel):
@@ -406,7 +363,7 @@ class PublicConfig(StrictModel):
 
 
 class DeploymentView(StrictModel):
-    """An Azure OpenAI / Foundry deployment that can become a member backend."""
+    """An Azure OpenAI / Foundry deployment that can become a pool member."""
 
     account_id: str
     account_name: str
@@ -420,7 +377,7 @@ class DeploymentView(StrictModel):
     backend_url: str
     local_auth_disabled: bool
     suggested_backend_id: str
-    # Existing APIM backend already pointing at this deployment, if any.
+    # Member already pointing at this deployment, if any.
     backend_id: str | None
 
 
@@ -431,11 +388,10 @@ class DeploymentRef(StrictModel):
 
 class DeploymentImport(StrictModel):
     deployments: list[DeploymentRef] = Field(min_length=1, max_length=30)
-    circuit_breaker: CircuitBreaker | None = Field(default_factory=CircuitBreaker)
 
 
 class DeploymentImportResult(StrictModel):
-    # Backend IDs in request order, whether newly created or already present.
+    # Member IDs in request order, whether newly added or already present.
     backend_ids: list[str]
     created: list[str]
 
@@ -522,19 +478,21 @@ SetupFix = Literal[
     "sign_in",
     "consent",
     "refresh_token",
-    "select_apim",
-    "enable_apim_identity",
+    "select_gateway",
+    # An external gateway whose master key isn't known here (yet).
+    "connect_gateway",
     "grant_foundry_access",
 ]
 SetupKind = Literal[
     "sign_in",
     "azure_token",
-    "apim_target",
-    "apim_access",
+    "gateway_target",
+    "gateway_access",
+    "gateway_health",
     "discovery",
-    "app_apim",
+    "app_gateway",
     "app_discovery",
-    "apim_identity",
+    "gateway_identity",
     "foundry_access",
 ]
 
@@ -594,7 +552,7 @@ class SetupReport(StrictModel):
     checks: list[SetupCheck]
     # Nothing needs action; blocked or pending checks are not ready either.
     ready: bool
-    # The app can at least read the APIM service, so the rest of the UI works.
+    # The app can reach the gateway's admin API, so the rest of the UI works.
     can_operate: bool
     local_sign_in: LocalSignIn | None = None
 
@@ -602,11 +560,12 @@ class SetupReport(StrictModel):
 # What a setup report is doing, in the order it does it; each step calls ARM.
 SetupStepKind = Literal[
     "sign_in",
-    "apim_target",
-    "apim_access",
-    "app_apim",
+    "gateway_target",
+    "gateway_access",
+    "app_gateway",
+    "gateway_health",
     "discovery",
-    "apim_identity",
+    "gateway_identity",
     "members",
     "foundry_access",
 ]
@@ -660,32 +619,34 @@ _ACCOUNT_ID = re.compile(
 )
 
 
-# -- choosing or creating the APIM service ---------------------------------------------------
+# -- choosing, deploying or connecting the gateway -----------------------------------------
 
 _GUID = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 # Resource group names: letters, digits, underscores, hyphens, periods and parentheses; no
 # trailing period.
 _RESOURCE_GROUP = r"^[-\w.()]{0,89}[-\w()]$"
-# APIM service names become <name>.azure-api.net: a letter first, no trailing hyphen.
-APIM_NAME_PATTERN = r"^[A-Za-z](?:[A-Za-z0-9-]{0,48}[A-Za-z0-9])?$"
-# Tiers offered when creating a service. Consumption has no backend circuit breaker, which
-# imported members use; classic Basic/Standard/Premium are slow to create and cost more.
-ApimSku = Literal["BasicV2", "StandardV2", "Developer"]
+# Container App names: lower case letters, digits and hyphens, a letter first, no trailing or
+# double hyphen; the template derives resource names (psql-<name>-..., id-<name>) from it.
+GATEWAY_NAME_PATTERN = r"^[a-z](?:[a-z0-9]|-[a-z0-9]){1,30}$"
+# ``dev``: one replica and no Redis; ``production``: 2-5 replicas sharing cooldowns in Redis.
+GatewayProfile = Literal["dev", "production"]
 # ``browser``: the public app, where each user's browser remembers their own choice.
-# ``guest``: the public app's read-only guest view, which shows one configured service.
+# ``guest``: the public app's read-only guest view, which shows one configured gateway.
 TargetSource = Literal["environment", "saved", "browser", "guest", "none"]
 
 
 class TargetView(StrictModel):
-    """The APIM service the app manages and where that choice comes from."""
+    """The gateway the app manages and where that choice comes from."""
 
+    gateway_name: str | None
+    gateway_kind: GatewayKind | None
     subscription_id: str | None
     resource_group: str | None
-    apim_name: str | None
+    # External gateways only; a Container App's URL is read from Azure.
+    gateway_url: str | None
     tenant_id: str | None
     source: TargetSource
-    # Locally without a fixed service in the environment, and always in the public app; never in
-    # the Easy Auth deployment.
+    # Locally without a fixed gateway in the environment; never in the Easy Auth deployment.
     can_change: bool
 
 
@@ -702,16 +663,19 @@ class SubscriptionView(StrictModel):
     state: str
 
 
-class ApimServiceView(StrictModel):
+class GatewayView(StrictModel):
+    """A LiteLLM gateway on Container Apps in a subscription, or one being deployed."""
+
     id: str
     name: str
     resource_group: str
     location: str
-    sku: str
+    url: str | None
+    profile: GatewayProfile | None
     provisioning_state: str | None
-    # Created by this app (the managed-by tag).
+    # Deployed by this app (the managed-by tag).
     managed: bool
-    # Whether the signed-in user may do every APIM read and write the app makes; None if unknown.
+    # Whether the signed-in user may read the app and its master key; None if unknown.
     can_manage: bool | None
     missing: list[str] = Field(default_factory=list)
 
@@ -721,31 +685,79 @@ class ResourceGroupView(StrictModel):
     location: str
 
 
-class ApimCreateOptions(StrictModel):
+class GatewayCreateOptions(StrictModel):
     resource_groups: list[ResourceGroupView]
-    # Regions offering each tier in this subscription.
-    locations: dict[ApimSku, list[str]]
-    # Microsoft.ApiManagement is registered; otherwise creating registers it first.
-    provider_registered: bool
+    # Regions where this subscription can create Container Apps environments.
+    locations: list[str]
+    # Resource providers the template needs that are not registered yet; creating registers them.
+    unregistered_providers: list[str]
 
 
 class TargetSelect(StrictModel):
     tenant_id: str | None = Field(default=None, pattern=_GUID)
     subscription_id: str = Field(pattern=_GUID)
     resource_group: str = Field(pattern=_RESOURCE_GROUP)
-    apim_name: str = Field(pattern=APIM_NAME_PATTERN)
+    gateway_name: str = Field(min_length=2, max_length=32, pattern=r"^[a-z0-9-]+$")
 
 
-class ApimCreate(StrictModel):
+class GatewayCreate(StrictModel):
     tenant_id: str | None = Field(default=None, pattern=_GUID)
     subscription_id: str = Field(pattern=_GUID)
     # Created in ``location`` when it does not exist yet.
     resource_group: str = Field(pattern=_RESOURCE_GROUP)
     location: str = Field(pattern=r"^[a-z0-9]{2,40}$")
-    name: str = Field(pattern=APIM_NAME_PATTERN)
-    sku: ApimSku = "BasicV2"
-    publisher_email: str = Field(pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$", max_length=100)
-    publisher_name: str = Field(min_length=1, max_length=100)
+    name: str = Field(max_length=32, pattern=GATEWAY_NAME_PATTERN)
+    profile: GatewayProfile = "dev"
+
+
+class GatewayConnect(StrictModel):
+    """A LiteLLM proxy this app didn't deploy (e.g. on AKS), reached by URL and master key."""
+
+    tenant_id: str | None = Field(default=None, pattern=_GUID)
+    # Searched for Foundry deployments; the gateway itself needs no subscription.
+    subscription_id: str = Field(pattern=_GUID)
+    name: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9 ._-]*$")
+    url: HttpUrl
+    master_key: SecretStr = Field(min_length=8, max_length=512)
+    # The managed identity's object ID the gateway calls Foundry as, for the access check.
+    principal_id: str | None = Field(default=None, pattern=_GUID)
+    # Application Insights component its OpenTelemetry spans go to, for the Monitor tab.
+    app_insights_id: str | None = Field(
+        default=None,
+        max_length=500,
+        pattern=r"^/subscriptions/[^/]+/resourceGroups/[^/]+/providers/Microsoft\.Insights/components/[^/]+$",
+    )
+
+
+class DeployStep(StrictModel):
+    resource_type: str
+    name: str
+    # ARM's provisioningState of the deployment operation: Running, Succeeded, Failed, ...
+    state: str
+    error: str | None = None
+
+
+class GatewayDeployStatus(StrictModel):
+    """How far deploying a gateway has got (its ARM deployment)."""
+
+    name: str
+    state: Literal["none", "running", "succeeded", "failed"]
+    started_at: str | None
+    steps: list[DeployStep]
+    error: str | None
+
+
+class AksBundleFile(StrictModel):
+    path: str
+    content: str
+
+
+class AksBundle(StrictModel):
+    """Files that deploy the gateway on an existing AKS cluster with LiteLLM's Helm chart."""
+
+    name: str
+    namespace: str
+    files: list[AksBundleFile]
 
 
 class SignInRequest(StrictModel):
@@ -754,38 +766,43 @@ class SignInRequest(StrictModel):
     tenant_id: str | None = Field(default=None, pattern=_GUID)
 
 
-# -- trying a pool API -----------------------------------------------------------------------
+# -- trying a pool -----------------------------------------------------------------------------
 
-# Which APIs an APIM subscription opens: this API, a product containing it, or every API.
-KeyScope = Literal["api", "product", "all_apis"]
-# Path below the API, e.g. chat/completions. Plain segments only, so it stays under the API.
+# Path below the gateway's /v1, e.g. chat/completions. Plain segments only.
 _TEST_PATH = re.compile(r"[A-Za-z0-9_~-][A-Za-z0-9._~-]*(?:/[A-Za-z0-9_~-][A-Za-z0-9._~-]*)*")
-DEFAULT_TEST_API_VERSION = "2025-04-01-preview"
 MAX_TEST_BODY = 64 * 1024
+# ``pool``: the key may call the pool (or one of its aliases); ``all``: every model.
+KeyScope = Literal["pool", "all"]
 
 
-class SubscriptionKeyView(StrictModel):
-    """An APIM subscription whose key works for an API. The key itself is read separately."""
+class VirtualKeyView(StrictModel):
+    """A LiteLLM virtual key that can call the pool. LiteLLM keeps only a hash of the key, so
+    this is all that can be shown of it afterwards."""
 
+    # LiteLLM's ID of the key (``token``, a hash).
     id: str
-    display_name: str
+    alias: str | None
+    # How LiteLLM abbreviates the key, e.g. ``sk-...Ab12``.
+    key_name: str | None
     scope: KeyScope
-    product: str | None
-    state: str
-    # The test key this app creates for the API.
+    models: list[str]
+    blocked: bool
+    expires: str | None
+    spend: float | None
+    # The test key this app creates for the pool.
     managed: bool
 
 
-class SubscriptionSecret(StrictModel):
-    primary_key: str
+class VirtualKeySecret(StrictModel):
+    """A key just created; the only time it can be shown."""
+
+    key: str
+    view: VirtualKeyView
 
 
 class ApiTestRequest(StrictModel):
     path: str = Field(default="chat/completions", max_length=200)
-    api_version: str | None = Field(
-        default=DEFAULT_TEST_API_VERSION, pattern=r"^[A-Za-z0-9._-]{1,40}$"
-    )
-    subscription_key: SecretStr | None = Field(default=None, min_length=1, max_length=256)
+    key: SecretStr | None = Field(default=None, min_length=1, max_length=256)
     body: dict[str, Any]
 
     @field_validator("path")
@@ -809,7 +826,8 @@ class ApiTestResult(StrictModel):
     elapsed_ms: int
     # The URL called, without the key.
     url: str
-    # Response headers that explain the result: request IDs, region, rate limits, Retry-After.
+    # Response headers that explain the result: which member answered, retries and fallbacks,
+    # rate limits, Retry-After.
     headers: dict[str, str]
     body: str
     # The body was longer than the app returns.
@@ -836,24 +854,30 @@ class LatencyPoint(StrictModel):
 
 
 class GatewayMetrics(StrictModel):
-    """What clients of the pool's APIs saw, from APIM's metrics (filtered by ApiId)."""
+    """What clients of the pool saw, from the gateway's OpenTelemetry spans in Application
+    Insights: one span per attempt, grouped into requests by their trace."""
 
     requests: int
     success: int
-    # 429 answered to clients: every member was throttled, even after retries.
+    # 429 answered to clients: every member was throttled or cooling down.
     throttled: int
     client_errors: int
     server_errors: int
-    # Share of requests APIM didn't answer with a 5xx; None without traffic.
+    # Requests that succeeded only because LiteLLM retried on another member.
+    failovers: int
+    # Share of requests not answered with a 5xx; None without traffic.
     availability: float | None
+    # Average time from the first attempt's start to the last one's end.
     duration_ms: float | None
+    # Average of the attempts that succeeded: the members' own time.
     backend_duration_ms: float | None
     traffic: list[TrafficPoint]
     latency: list[LatencyPoint]
 
 
 class MemberMetrics(StrictModel):
-    """A member's Foundry deployment, from its Azure OpenAI metrics: all callers, not only APIM."""
+    """A member: the gateway's attempts on it (spans), and its Foundry deployment's own metrics,
+    which count every caller of the deployment, not only this gateway."""
 
     backend_id: str
     # None when the member isn't a Foundry deployment, so it has no deployment metrics.
@@ -870,6 +894,10 @@ class MemberMetrics(StrictModel):
     # The share the pool's priority and weight give this member, 0 for standby members.
     expected_share: float
     error: str | None
+    # From the gateway's spans; None without Application Insights.
+    gateway_attempts: int | None = None
+    gateway_failures: int | None = None
+    gateway_throttled: int | None = None
 
 
 class PoolMetrics(StrictModel):
@@ -878,50 +906,33 @@ class PoolMetrics(StrictModel):
     interval: str
     start: str
     end: str
-    api_ids: list[str]
+    # The names the pool is called by (its ID and aliases).
+    model_names: list[str]
     gateway: GatewayMetrics | None
-    # Why gateway metrics are missing, e.g. no metrics/read permission.
+    # Why gateway metrics are missing: "no_app_insights", or Azure's message.
     gateway_error: str | None
     members: list[MemberMetrics]
 
 
-# -- deleting and restoring an APIM service (local) ----------------------------------------
+# -- deleting a gateway (local) -------------------------------------------------------------
 
 
-class ServiceDeleteCheck(StrictModel):
-    """What deleting a service would take with it, shown before the user confirms."""
+class GatewayDeleteCheck(StrictModel):
+    """What deleting a gateway would remove, shown before the user confirms."""
 
     name: str
     resource_group: str
     location: str
-    sku: str
-    # The service the app manages now; deleting it sends setup back to choosing one.
+    # The gateway the app manages now; deleting it sends setup back to choosing one.
     current: bool
-    pools: int
-    members: int
-    apis: int
+    # False when its deployment failed before the Container App existed: only what that
+    # deployment created is left to delete.
+    deployed: bool
+    pools: int | None
+    # Resources tagged as this gateway's, which are deleted with it (never the resource group).
+    resources: list[str]
 
 
-class ServiceDelete(TargetSelect):
-    # The service name typed again; checked here too, not only in the UI.
-    confirm_name: str = Field(min_length=1, max_length=50)
-
-
-class DeletedServiceView(StrictModel):
-    """A soft-deleted APIM service Azure still keeps (48 hours) and can restore."""
-
-    name: str
-    # Short location name (eastus2), as the deletedservices endpoints address it.
-    location: str
-    display_location: str
-    resource_group: str
-    service_id: str
-    deletion_date: str | None
-    scheduled_purge_date: str | None
-
-
-class ServiceRestore(StrictModel):
-    tenant_id: str | None = Field(default=None, pattern=_GUID)
-    subscription_id: str = Field(pattern=_GUID)
-    location: str = Field(pattern=r"^[a-z0-9]{2,40}$")
-    name: str = Field(pattern=APIM_NAME_PATTERN)
+class GatewayDelete(TargetSelect):
+    # The gateway name typed again; checked here too, not only in the UI.
+    confirm_name: str = Field(min_length=1, max_length=64)

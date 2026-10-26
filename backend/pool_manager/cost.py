@@ -1,19 +1,24 @@
-"""What the APIM service costs: this month's actual spend and its tier's list price.
+"""What the gateway costs: this month's actual spend and a list price estimate.
 
-Actual spend comes from Cost Management (``Microsoft.CostManagement/query`` on the service's
-resource group, filtered to the service) and is read with the signed-in user's own token, like
-subscription keys, so the app identity gets no billing access. Azure refreshes it every few hours.
-The list price comes from the public Azure Retail Prices API, which needs no sign-in: the tier's
-hourly unit price times the service's units over an average month (730 hours), in USD.
+Actual spend comes from Cost Management (``Microsoft.CostManagement/query`` on the gateway's
+resource group, filtered to the resources tagged ``ai-gateway: <name>``, which the deploy
+template puts on everything it creates) and is read with the signed-in user's own token, so the
+app identity gets no billing access. Azure refreshes it every few hours.
+
+The estimate comes from the public Azure Retail Prices API, which needs no sign-in, for what
+the template deploys: Container Apps replicas (busy at the active rate, quiet at the idle rate,
+so a range), the environment, Postgres Flexible Server and, for production, Azure Managed Redis.
+It leaves out the monthly free grant, log ingestion and discounts.
 
 Neither is ever a blocker: a missing permission or an unreachable API becomes a note in the
-service panel. Spend is cached for an hour per caller, prices for a day per region.
+gateway panel. Spend is cached for an hour per caller, prices for a day per region.
 """
 
 from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from threading import Lock
 from typing import Any
@@ -22,7 +27,8 @@ import httpx
 
 from .arm import ArmClient, ArmError, segment
 from .config import Settings
-from .models import CostNote, ListPrice, MonthToDate, ServiceCost
+from .gateway import GATEWAY_TAG, GatewayInfo, GatewayUnavailable
+from .models import CostItem, CostNote, ListPrice, MonthToDate, ServiceCost
 from .service import PoolManagerService
 
 logger = logging.getLogger(__name__)
@@ -30,21 +36,21 @@ logger = logging.getLogger(__name__)
 COST_API_VERSION = "2026-06-01"
 RETAIL_PRICES_URL = "https://prices.azure.com/api/retail/prices"
 HOURS_PER_MONTH = 730
-# ARM SKU names and how the Retail Prices API names their tiers ("<tier> Unit", "<tier> Calls").
-RETAIL_TIERS = {
-    "Consumption": "Consumption",
-    "Developer": "Developer",
-    "Basic": "Basic",
-    "Standard": "Standard",
-    "Premium": "Premium",
-    "Isolated": "Isolated",
-    "BasicV2": "Basic v2",
-    "StandardV2": "Standard v2",
-    "PremiumV2": "Premium v2",
+SECONDS_PER_MONTH = HOURS_PER_MONTH * 3600
+# What each profile of the template deploys besides the Container App.
+POSTGRES_SKU = {"dev": "B1MS", "production": "B2S"}
+POSTGRES_STORAGE_GB = 32
+# Azure Managed Redis Balanced B0, with high availability (two instances).
+REDIS_SKU, REDIS_INSTANCES = "B0", 2
+# One query per service; each lists every meter of the region.
+_SERVICES = {
+    "aca": "Azure Container Apps",
+    "postgres": "Azure Database for PostgreSQL",
+    "redis": "Redis Cache",
 }
 _SPEND_SECONDS = 3600.0
 _PRICES_SECONDS = 86400.0
-_MAX_PRICE_PAGES = 5
+_MAX_PRICE_PAGES = 10
 # Cost Management's answers for subscriptions it has no data for (free, sponsored, CSP, ...).
 _UNSUPPORTED = frozenset(
     {"SubscriptionTypeNotSupported", "BillingAccessDenied", "IndirectCostDisabled"}
@@ -53,38 +59,94 @@ _COST_COLUMNS = ("totalcost", "cost", "pretaxcost")
 
 
 def region_name(location: str) -> str:
-    """ARM's short region name: APIM reports ``East US 2``, prices use ``eastus2``."""
+    """ARM's short region name: ``East US 2`` becomes ``eastus2``."""
     return location.replace(" ", "").casefold()
 
 
-def list_price(items: list[dict[str, Any]], sku: str, units: int) -> ListPrice | None:
-    """The tier's price from a region's API Management meters; None if they don't list it."""
-    tier = RETAIL_TIERS.get(sku, sku)
-    hourly = next(
-        (
-            float(item.get("retailPrice") or 0)
-            for item in items
-            if item.get("meterName") == f"{tier} Unit"
-            and "hour" in str(item.get("unitOfMeasure") or "").casefold()
-        ),
-        None,
-    )
-    # Calls are tiered: the included requests cost 0, the rest the highest tier's price.
-    calls = [
-        float(item.get("retailPrice") or 0)
-        for item in items
-        if item.get("meterName") == f"{tier} Calls"
-    ]
-    per_10k = max(calls) if calls and max(calls) > 0 else None
-    if hourly is None and per_10k is None:
+def _meter(items: list[dict[str, Any]], match: Callable[[dict[str, Any]], bool]) -> float | None:
+    found = [float(item.get("retailPrice") or 0) for item in items if match(item)]
+    return max(found) if found else None
+
+
+def list_price(
+    prices: dict[str, list[dict[str, Any]]], info: GatewayInfo, profile: str
+) -> ListPrice | None:
+    """The estimate from a region's meters; None if a meter it needs is missing."""
+    aca = prices.get("aca") or []
+
+    def standard(meter: str) -> float | None:
+        return _meter(aca, lambda i: i.get("skuName") == "Standard" and i.get("meterName") == meter)
+
+    cpu_active = standard("Standard vCPU Active Usage")
+    cpu_idle = standard("Standard vCPU Idle Usage")
+    mem_active = standard("Standard Memory Active Usage")
+    mem_idle = standard("Standard Memory Idle Usage")
+    if None in {cpu_active, cpu_idle, mem_active, mem_idle} or info.cpu is None:
         return None
-    currency = str(next((item.get("currencyCode") for item in items), None) or "USD")
+    assert cpu_active is not None and cpu_idle is not None
+    assert mem_active is not None and mem_idle is not None
+    cpu, memory = info.cpu, info.memory_gib or 0.0
+    low_replicas = max(info.min_replicas or 1, 1)
+    high_replicas = max(info.max_replicas or low_replicas, low_replicas)
+    items = [
+        CostItem(
+            kind="container_apps",
+            detail=f"{cpu:g} vCPU, {memory:g} GiB x {low_replicas}-{high_replicas} replicas"
+            if high_replicas != low_replicas
+            else f"{cpu:g} vCPU, {memory:g} GiB x {low_replicas} replica",
+            # Quiet: the minimum replicas at the idle rate. Busy: every replica at the active rate.
+            monthly_low=round(
+                (cpu * cpu_idle + memory * mem_idle) * SECONDS_PER_MONTH * low_replicas, 2
+            ),
+            monthly_high=round(
+                (cpu * cpu_active + memory * mem_active) * SECONDS_PER_MONTH * high_replicas, 2
+            ),
+        )
+    ]
+    postgres = prices.get("postgres") or []
+    sku = POSTGRES_SKU.get(profile, "B1MS")
+    compute = _meter(
+        postgres, lambda i: i.get("meterName") == sku and "Compute" in str(i.get("productName"))
+    )
+    storage = _meter(
+        postgres,
+        lambda i: (
+            i.get("meterName") == "Storage Data Stored" and "Flex" in str(i.get("productName"))
+        ),
+    )
+    if compute is not None:
+        monthly = compute * HOURS_PER_MONTH + (storage or 0) * POSTGRES_STORAGE_GB
+        items.append(
+            CostItem(
+                kind="postgres",
+                detail=f"{sku} + {POSTGRES_STORAGE_GB} GB",
+                monthly_low=round(monthly, 2),
+                monthly_high=round(monthly, 2),
+            )
+        )
+    if profile == "production":
+        redis = _meter(
+            prices.get("redis") or [],
+            lambda i: (
+                i.get("skuName") == REDIS_SKU
+                and "Managed Redis - Balanced" in str(i.get("productName"))
+            ),
+        )
+        if redis is not None:
+            monthly = redis * HOURS_PER_MONTH * REDIS_INSTANCES
+            items.append(
+                CostItem(
+                    kind="redis",
+                    detail=f"Balanced {REDIS_SKU} x {REDIS_INSTANCES}",
+                    monthly_low=round(monthly, 2),
+                    monthly_high=round(monthly, 2),
+                )
+            )
+    currency = str(next((item.get("currencyCode") for item in aca), None) or "USD")
     return ListPrice(
-        tier=tier,
-        units=units,
-        hourly=hourly,
-        monthly=round(hourly * HOURS_PER_MONTH * units, 2) if hourly is not None else None,
-        per_10k_calls=per_10k,
+        items=items,
+        monthly_low=round(sum(item.monthly_low for item in items), 2),
+        monthly_high=round(sum(item.monthly_high for item in items), 2),
         currency=currency,
     )
 
@@ -119,7 +181,7 @@ class CostReader:
         self._http = httpx.Client(transport=transport, timeout=httpx.Timeout(15.0))
         self._clock = clock
         self._lock = Lock()
-        self._prices: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+        self._prices: dict[tuple[str, str], tuple[float, list[dict[str, Any]]]] = {}
         self._spend: dict[str, tuple[float, MonthToDate]] = {}
 
     def close(self) -> None:
@@ -134,12 +196,30 @@ class CostReader:
         )
 
     def get(self, user: ArmClient | None, caller: str, *, refresh: bool = False) -> ServiceCost:
-        sku, units, location = self._service.service_plan()
-        price: ListPrice | None = None
+        if self._settings.external:
+            return ServiceCost(
+                profile=None,
+                location=None,
+                list_price=None,
+                month_to_date=None,
+                month_to_date_note="external",
+                detail=None,
+                portal_url=None,
+            )
+        info: GatewayInfo | None = None
         try:
-            price = list_price(self._region_prices(region_name(location), refresh), sku, units)
-        except (httpx.HTTPError, ValueError) as error:
-            logger.info("Cannot read Azure retail prices: %s", error)
+            info = self._service.gateway.info()
+        except GatewayUnavailable as error:
+            logger.info("Cannot read the gateway for its cost: %s", error.message)
+        profile = (info.tags.get("ai-gateway-profile") if info else None) or "dev"
+        price: ListPrice | None = None
+        if info is not None and info.location:
+            try:
+                region = region_name(info.location)
+                prices = {key: self._region_prices(key, region, refresh) for key in _SERVICES}
+                price = list_price(prices, info, profile)
+            except (httpx.HTTPError, ValueError) as error:
+                logger.info("Cannot read Azure retail prices: %s", error)
         spend: MonthToDate | None = None
         note: CostNote | None = None
         detail: str | None = None
@@ -156,11 +236,10 @@ class CostReader:
                     note = "unsupported"
                 else:
                     note = "unavailable"
-                logger.info("Cannot read the APIM service's cost: %s", error.message)
+                logger.info("Cannot read the gateway's cost: %s", error.message)
         return ServiceCost(
-            sku=sku,
-            units=units,
-            location=location,
+            profile=profile,
+            location=info.location if info else None,
             list_price=price,
             month_to_date=spend,
             month_to_date_note=note,
@@ -168,13 +247,13 @@ class CostReader:
             portal_url=f"https://portal.azure.com/#resource{self._group_scope}/costanalysis",
         )
 
-    def _region_prices(self, region: str, refresh: bool) -> list[dict[str, Any]]:
+    def _region_prices(self, key: str, region: str, refresh: bool) -> list[dict[str, Any]]:
         with self._lock:
-            cached = self._prices.get(region)
+            cached = self._prices.get((key, region))
         if cached and not refresh and self._clock() - cached[0] < _PRICES_SECONDS:
             return cached[1]
         query = (
-            f"serviceName eq 'API Management' and armRegionName eq '{region}' "
+            f"serviceName eq '{_SERVICES[key]}' and armRegionName eq '{region}' "
             "and priceType eq 'Consumption'"
         )
         items: list[dict[str, Any]] = []
@@ -192,7 +271,7 @@ class CostReader:
             if url and not url.startswith("https://prices.azure.com/"):
                 break
         with self._lock:
-            self._prices[region] = (self._clock(), items)
+            self._prices[(key, region)] = (self._clock(), items)
         return items
 
     def _month_to_date(self, user: ArmClient, caller: str, refresh: bool) -> MonthToDate:
@@ -211,12 +290,12 @@ class CostReader:
                 "dataset": {
                     "granularity": "None",
                     "aggregation": {"totalCost": {"name": "Cost", "function": "Sum"}},
-                    # Cost Management keeps resource IDs in lower case.
+                    # Everything the template deployed for this gateway carries the tag.
                     "filter": {
-                        "dimensions": {
-                            "name": "ResourceId",
+                        "tags": {
+                            "name": GATEWAY_TAG,
                             "operator": "In",
-                            "values": [user.resource_id.casefold()],
+                            "values": [self._settings.gateway_name],
                         }
                     },
                 },

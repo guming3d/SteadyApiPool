@@ -13,13 +13,13 @@ test("steps keep their order, subject and counts", () => {
     running: true,
     steps: [
       { kind: "sign_in", state: "done", subject: null, done: null, total: null },
-      { kind: "apim_target", state: "done", subject: "apim-prod", done: null, total: null },
+      { kind: "gateway_target", state: "done", subject: "gw-prod", done: null, total: null },
       { kind: "foundry_access", state: "running", subject: null, done: 3, total: 7 },
     ],
   })
   assert.deepEqual(rows, [
     { key: "sign_in", running: false },
-    { key: "apim_target", running: false, subject: "apim-prod" },
+    { key: "gateway_target", running: false, subject: "gw-prod" },
     { key: "foundry_access", running: true, count: { done: 3, total: 7 } },
   ])
 })

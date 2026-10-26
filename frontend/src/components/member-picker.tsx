@@ -1,12 +1,12 @@
 // Adds members to a pool draft: discovered deployments of the pool's model (imported on the way
-// in), existing backends that are not Foundry deployments, or a new custom endpoint.
+// in), members of other pools that are not Foundry deployments, or a new custom endpoint.
 import { CircleAlert, ListPlus, LoaderCircle, Plus, RefreshCw } from "lucide-react"
 import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 
 import { api, keys, queries } from "../api"
 import { fill, useI18n } from "../i18n"
-import type { CircuitBreaker, DeploymentView } from "../types"
+import type { DeploymentView } from "../types"
 import { modelName, refKey } from "./deployments-page"
 import { MemberBackendDialog } from "./member-backend-dialog"
 import { Button, Dialog, ErrorText } from "./ui"
@@ -15,7 +15,6 @@ export function AddMembersDialog({
   model,
   memberIds,
   room,
-  breaker,
   onAdd,
   onClose,
 }: {
@@ -25,8 +24,6 @@ export function AddMembersDialog({
   memberIds: ReadonlySet<string>
   /** How many members can still be added (30 max). */
   room: number
-  /** The pool's circuit breaker, given to a new custom endpoint. */
-  breaker: CircuitBreaker
   onAdd: (backendIds: string[]) => void
   onClose: () => void
 }) {
@@ -67,8 +64,9 @@ export function AddMembersDialog({
       || Number(inPool(left)) - Number(inPool(right))
       || left.account_name.localeCompare(right.account_name) || left.deployment.localeCompare(right.deployment))
   const deploymentBackendIds = new Set(all.flatMap((view) => view.backend_id ? [view.backend_id.toLowerCase()] : []))
-  const others = (backends.data ?? []).filter((backend) =>
-    !memberIds.has(backend.id.toLowerCase()) && !deploymentBackendIds.has(backend.id.toLowerCase()))
+  // Rows this app didn't write can't join a pool (the backend refuses them).
+  const others = (backends.data ?? []).filter((backend) => backend.managed
+    && !memberIds.has(backend.id.toLowerCase()) && !deploymentBackendIds.has(backend.id.toLowerCase()))
   const count = picked.size + pickedBackends.size
   const full = count >= room
   const busy = add.isPending
@@ -143,7 +141,6 @@ export function AddMembersDialog({
     {/* A new endpoint lands ticked in the list above, alongside any other picks. */}
     {customOpen && <MemberBackendDialog
       backend={null}
-      breaker={breaker}
       onSaved={(saved) => {
         setPickedBackends((current) => new Set(current).add(saved.id))
         setOthersOpen(true)

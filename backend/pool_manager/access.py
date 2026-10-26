@@ -2,17 +2,19 @@
 
 Three identities matter:
 
-- The *operator* calls ARM for every pool operation: the user's ``az login`` locally, the
-  app's managed identity in the Easy Auth deployment, and in the public app the user again,
-  through the token exchanged for them (entra.py).
-- The *user* acts for fixes (enabling APIM's identity, granting it a role on Foundry) with
-  their own Azure rights. Deployed, that is the ARM token Easy Auth obtained for them; the app
-  identity never gets permission to change role assignments.
-- APIM's own *managed identity* calls the Foundry members and needs a data-plane role on each.
+- The *operator* reads the gateway through ARM (its Container App and master key) and calls
+  Foundry discovery: the user's ``az login`` locally, the app's managed identity in the Easy
+  Auth deployment.
+- The *user* acts for fixes (granting the gateway's identity a role on Foundry) with their own
+  Azure rights. Deployed, that is the ARM token Easy Auth obtained for them; the app identity
+  never gets permission to change role assignments.
+- The gateway's own *managed identity* (user-assigned, AZURE_CLIENT_ID in LiteLLM) calls the
+  Foundry members and needs a data-plane role on each.
 
 Effective permissions come from ``Microsoft.Authorization/permissions`` (what the caller may do
 at a scope), so a check never needs more than read access. Fixes are limited to one role
-(Cognitive Services OpenAI User), granted to APIM's identity on accounts this app knows about.
+(Cognitive Services OpenAI User), granted to the gateway's identity on accounts this app knows
+about.
 """
 
 from __future__ import annotations
@@ -31,6 +33,9 @@ from typing import Any, Literal, Protocol
 
 from .arm import ArmClient, ArmError, jwt_claims, segment
 from .config import Settings
+from .gateway import GatewayUnavailable
+from .gateway_deploy import GatewayDeployer
+from .litellm import LiteLLMError
 from .models import (
     AdminRequest,
     DeviceCodePrompt,
@@ -52,51 +57,39 @@ logger = logging.getLogger(__name__)
 
 AUTHORIZATION_API_VERSION = "2022-04-01"
 
-_APIM = "Microsoft.ApiManagement/service"
-# Mirrors infra/modules/apim-rbac.bicep.
-APIM_READ_ACTIONS = (
-    f"{_APIM}/read",
-    f"{_APIM}/backends/read",
-    f"{_APIM}/namedValues/read",
-    f"{_APIM}/apis/read",
-    f"{_APIM}/apis/policies/read",
+# Reading the gateway's Container App and its master key is all the app needs in Azure to
+# manage pools: everything else goes through LiteLLM's admin API. Mirrors
+# infra/modules/gateway-rbac.bicep.
+GATEWAY_ACTIONS = (
+    "Microsoft.App/containerApps/read",
+    "Microsoft.App/containerApps/listSecrets/action",
 )
-APIM_WRITE_ACTIONS = (
-    f"{_APIM}/backends/write",
-    f"{_APIM}/backends/delete",
-    f"{_APIM}/namedValues/write",
-    f"{_APIM}/namedValues/delete",
-    f"{_APIM}/apis/write",
-    # Only APIs this app created, when their pool is removed.
-    f"{_APIM}/apis/delete",
-    f"{_APIM}/apis/operations/write",
-    f"{_APIM}/apis/policies/write",
-)
-APIM_SERVICE_WRITE = f"{_APIM}/write"
 # Mirrors infra/modules/discovery-rbac.bicep.
 DISCOVERY_ACTIONS = (
     "Microsoft.CognitiveServices/accounts/read",
     "Microsoft.CognitiveServices/accounts/deployments/read",
 )
 ROLE_ASSIGNMENT_WRITE = "Microsoft.Authorization/roleAssignments/write"
-# What APIM calls on a member. Every inference role (OpenAI User, Cognitive Services User,
+# What the gateway calls on a member. Every inference role (OpenAI User, Cognitive Services User,
 # Azure AI User, ...) allows it, so the check reads role definitions instead of hard-coding them.
 INFERENCE_DATA_ACTION = (
     "Microsoft.CognitiveServices/accounts/OpenAI/deployments/chat/completions/action"
 )
 OPENAI_USER_ROLE = "Cognitive Services OpenAI User"
 OPENAI_USER_ROLE_ID = "5e0bd9bd-7b93-4f28-af87-19fc36ad61bd"
-APIM_ROLE = "APIM Backend Pool Manager"
-APIM_FALLBACK_ROLE = "API Management Service Contributor"
-DISCOVERY_ROLE = "APIM Backend Pool Deployment Reader"
+GATEWAY_ROLE = "AI Gateway Pool Manager"
+GATEWAY_FALLBACK_ROLE = "Container Apps Contributor"
+DISCOVERY_ROLE = "AI Gateway Pool Deployment Reader"
 DISCOVERY_FALLBACK_ROLE = "Reader"
 ARM_AUDIENCES = frozenset({"https://management.azure.com", "https://management.core.windows.net"})
 
 _CACHE_SECONDS = 300.0
 _WORKERS = 8
 _NOT_READY: frozenset[SetupStatus] = frozenset({"action", "blocked", "pending"})
-# The APIM service's provisioningState after a create or update Azure could not finish.
+# The gateway's Container App (or its deployment) after Azure could not finish it.
 _FAILED = "Failed"
+# Its first deployment failed before the Container App existed: there is nothing to check yet.
+_DEPLOY_FAILED = "DeployFailed"
 
 Permissions = list[Mapping[str, Any]]
 
@@ -241,6 +234,7 @@ class AccessChecker:
         self._service = service
         self._discovered_accounts = discovered_accounts
         self._credential = credential
+        self._deployer = GatewayDeployer(settings)
         self._lock = Lock()
         self._writers: dict[str, tuple[float, bool]] = {}
         self._roles: dict[str, Permissions] = {}
@@ -289,7 +283,8 @@ class AccessChecker:
     # -- write access for the deployed app ----------------------------------------------
 
     def user_can_write(self, token: UserToken) -> bool:
-        """Whether the user's own roles allow every APIM read and write the app makes."""
+        """Whether the user's own roles let them read the gateway and its master key, which is
+        what managing its pools takes."""
         # Keyed by the token itself: its claims are not verified here, only ARM verifies them.
         key = hashlib.sha256(token.token.encode()).hexdigest()
         with self._lock:
@@ -298,12 +293,13 @@ class AccessChecker:
             return cached[1]
         arm = self.user_arm(token)
         allowed = False
-        if arm is not None:
+        # An external gateway has no Azure resource to hold roles on: owners only.
+        if arm is not None and not self._settings.external:
             try:
                 permissions = self._permissions(arm, self._arm.resource_id)
-                allowed = not missing(permissions, (*APIM_READ_ACTIONS, *APIM_WRITE_ACTIONS))
+                allowed = not missing(permissions, GATEWAY_ACTIONS)
             except ArmError as error:
-                logger.info("Cannot read the user's APIM permissions: %s", error.message)
+                logger.info("Cannot read the user's gateway permissions: %s", error.message)
         with self._lock:
             self._writers[key] = (time.monotonic(), allowed)
         return allowed
@@ -313,7 +309,7 @@ class AccessChecker:
             self._writers.clear()
             self._roles.clear()
             self._role_names.clear()
-        self._service.forget_service()
+        self._service.gateway.forget()
         # "Check again" also retries sign-in tools that were missing a minute ago.
         forget_misses = getattr(self._credential, "forget_misses", None)
         if callable(forget_misses):
@@ -344,8 +340,8 @@ class AccessChecker:
         self, token: UserToken | None, *, principal: str | None, owner: bool, tracker: _Tracker
     ) -> SetupReport:
         if self._settings.guest:
-            # Nothing to sign in to or fix: the service is the one the deployment shows guests.
-            tracker.step("apim_target", subject=self._settings.apim_name or None)
+            # Nothing to sign in to or fix: the gateway is the one the deployment shows guests.
+            tracker.step("gateway_target", subject=self._settings.gateway_name or None)
             target = self._target()
             return self._finish("guest", None, [target], target.status == "ok")
         checks: list[SetupCheck] = []
@@ -363,41 +359,47 @@ class AccessChecker:
             if token_check.status != "ok":
                 user = None
 
-        tracker.step("apim_target", subject=self._settings.apim_name or None)
+        tracker.step("gateway_target", subject=self._settings.gateway_name or None)
         target = self._target()
         checks.append(target)
-        # A failed update usually leaves the service running, so let the access checks below
-        # decide whether the app can work with it; a failed create fails those too.
+        # A failed update usually leaves the gateway running, so let the checks below decide
+        # whether the app can work with it; a failed deployment fails those too.
         if target.status in _NOT_READY and target.detail != _FAILED:
             return self._finish(self._mode, identity, checks, False)
 
-        tracker.step("apim_access")
-        apim_check, user_permissions = self._user_apim(user, identity, owner)
-        checks.append(apim_check)
+        tracker.step("gateway_access")
+        access_check = self._user_gateway(user, identity, owner)
+        checks.append(access_check)
         discovery_total = len(self._settings.discovery_subscription_list)
+        discovery_kind: SetupKind = "discovery"
+        discovery_identity = identity
         if self._settings.operator_is_user:
-            can_operate = apim_check.status != "blocked"
-            tracker.step("discovery", total=discovery_total)
-            checks.extend(self._discovery(self._arm, identity, kind="discovery", tick=tracker.tick))
+            can_operate = access_check.status != "blocked"
         else:
-            tracker.step("app_apim")
-            app_check, app_identity = self._app_apim()
+            tracker.step("app_gateway")
+            app_check, discovery_identity = self._app_gateway()
             checks.append(app_check)
             can_operate = app_check.status != "blocked"
-            tracker.step("discovery", total=discovery_total)
-            checks.extend(
-                self._discovery(self._arm, app_identity, kind="app_discovery", tick=tracker.tick)
-            )
+            discovery_kind = "app_discovery"
+        if can_operate:
+            tracker.step("gateway_health", subject=self._settings.gateway_name or None)
+            health = self._health()
+            checks.append(health)
+            can_operate = health.status == "ok"
+        tracker.step("discovery", total=discovery_total)
+        checks.extend(
+            self._discovery(self._arm, discovery_identity, kind=discovery_kind, tick=tracker.tick)
+        )
 
-        tracker.step("apim_identity")
-        identity_check, principal_id = self._apim_identity(user_permissions)
+        tracker.step("gateway_identity")
+        identity_check, principal_id = self._gateway_identity()
         checks.append(identity_check)
         if can_operate:
             tracker.step("members")
             try:
                 accounts = self._service.foundry_accounts()
             except ServiceError as error:
-                logger.warning("Cannot list member backends: %s", error.message)
+                logger.warning("Cannot list pool members: %s", error.message)
                 accounts = []
             if accounts:
                 tracker.step("foundry_access", total=len(accounts))
@@ -430,31 +432,59 @@ class AccessChecker:
         )
 
     def _target(self) -> SetupCheck:
-        """Which APIM service the app manages, and whether it has finished provisioning."""
+        """Which gateway the app manages, and whether it has finished deploying."""
         settings = self._settings
-        fix: SetupFix | None = "select_apim" if settings.can_choose_target else None
-        kind: SetupKind = "apim_target"
+        fix: SetupFix | None = "select_gateway" if settings.can_choose_target else None
+        kind: SetupKind = "gateway_target"
         if not settings.has_target:
             return SetupCheck(id=kind, kind=kind, status="action", fix=fix)
-        subject = settings.apim_name
+        subject = settings.gateway_name
+        if settings.external:
+            # Nothing in Azure to look at; the health check reaches the gateway itself.
+            return SetupCheck(id=kind, kind=kind, subject=subject, status="ok")
         try:
-            found = self._arm.get_json("", api_version=settings.api_version)
-        except ArmError as error:
-            # Missing read access is reported by the APIM access check that follows.
+            found = self._arm.get_json("", api_version=settings.container_apps_api_version)
+            state = (
+                str((found[0].get("properties") or {}).get("provisioningState") or "")
+                if found
+                else ""
+            )
+            deployment = (
+                self._deployer.status(
+                    self._arm, settings.subscription_id, settings.resource_group, subject
+                )
+                if found is None or state.casefold() in {"inprogress", "failed"}
+                else None
+            )
+        except (ArmError, ServiceError) as error:
+            # Missing read access is reported by the gateway access check that follows.
             return SetupCheck(
                 id=kind, kind=kind, subject=subject, status="unknown", detail=error.message
+            )
+        if deployment is not None and deployment.state == "running":
+            return SetupCheck(
+                id=kind,
+                kind=kind,
+                subject=subject,
+                status="pending",
+                detail="Deploying",
+                started_at=deployment.started_at,
+            )
+        if deployment is not None and deployment.state == "failed":
+            return SetupCheck(
+                id=kind,
+                kind=kind,
+                subject=subject,
+                status="action",
+                detail=_FAILED if found else _DEPLOY_FAILED,
+                missing=[deployment.error] if deployment.error else [],
+                fix=fix,
             )
         if found is None:
             return SetupCheck(
                 id=kind, kind=kind, subject=subject, status="blocked", detail="not_found", fix=fix
             )
-        # Only a new service is unusable while provisioning (v2 tiers take minutes, Developer
-        # 30-40); an existing one keeps working while it is "Updating".
-        properties = found[0].get("properties") or {}
-        state = str(properties.get("provisioningState") or "")
-        if state.casefold() in {"created", "activating"}:
-            # properties.createdAtUtc stays 0001-01-01 until the service is up; ARM's own
-            # systemData has the real time.
+        if state.casefold() == "inprogress":
             started = (found[0].get("systemData") or {}).get("createdAt")
             return SetupCheck(
                 id=kind,
@@ -469,6 +499,34 @@ class AccessChecker:
                 id=kind, kind=kind, subject=subject, status="action", detail=_FAILED, fix=fix
             )
         return SetupCheck(id=kind, kind=kind, subject=subject, status="ok")
+
+    def _health(self) -> SetupCheck:
+        """The gateway itself: reachable, its database connected, the master key accepted."""
+        kind: SetupKind = "gateway_health"
+        subject = self._settings.gateway_name
+
+        def check(status: SetupStatus, **values: Any) -> SetupCheck:
+            return SetupCheck(id=kind, kind=kind, subject=subject, status=status, **values)
+
+        fix: SetupFix | None = (
+            "connect_gateway"
+            if self._settings.external and self._settings.can_choose_target
+            else None
+        )
+        try:
+            client = self._service.gateway.client()
+            health = client.readiness()
+            client.models()  # Needs the master key; readiness does not.
+        except GatewayUnavailable as error:
+            return check("blocked", detail=error.message, fix=fix if error.status == 409 else None)
+        except LiteLLMError as error:
+            if error.status in {401, 403}:
+                return check("blocked", detail="master_key_refused", fix=fix)
+            return check("blocked", detail=error.message)
+        database = str(health.get("db") or "")
+        if database and database.casefold() != "connected":
+            return check("blocked", detail=f"database {database}")
+        return check("ok", detail=str(health.get("litellm_version") or "") or None)
 
     def _local_sign_in(self) -> tuple[SetupCheck, SetupIdentity | None]:
         """The operator's own sign-in: locally the developer's, in the public app the user's
@@ -489,7 +547,8 @@ class AccessChecker:
         tenant = self._arm.subscription_tenant()
         if tenant and identity.tenant_id and tenant.casefold() != identity.tenant_id.casefold():
             detail = (
-                f"signed in to tenant {identity.tenant_id}; the APIM subscription is in {tenant}"
+                f"signed in to tenant {identity.tenant_id}; "
+                f"the gateway's subscription is in {tenant}"
             )
             # The public app signs the browser in again to this tenant.
             check = SetupCheck(
@@ -513,7 +572,7 @@ class AccessChecker:
             if not self._settings.delegated_access:
                 # Only an administrator can turn this on; see README "Delegated Azure access".
                 request = AdminRequest(
-                    assignee=self._settings.apim_name,
+                    assignee=self._settings.gateway_name,
                     assignee_id=None,
                     role=None,
                     scope=None,
@@ -537,76 +596,74 @@ class AccessChecker:
             return check("action", "refresh_token"), identity
         return check("ok"), identity
 
-    def _user_apim(
+    def _gateway_request(
+        self, identity: SetupIdentity | None, principal_type: str, *, command: str | None = None
+    ) -> AdminRequest:
+        role = self._custom_role(GATEWAY_ROLE, self._resource_group_scope) or GATEWAY_FALLBACK_ROLE
+        return self._role_request(
+            identity, principal_type, role, self._arm.resource_id, command=command
+        )
+
+    def _user_gateway(
         self, arm: ArmClient | None, identity: SetupIdentity | None, owner: bool
-    ) -> tuple[SetupCheck, Permissions | None]:
-        scope = self._arm.resource_id
+    ) -> SetupCheck:
+        kind: SetupKind = "gateway_access"
+        granted: Literal["owners", "azure_rbac"] | None
+        if self._settings.external:
+            # The master key is the access; the health check tries it.
+            granted = "owners" if owner and not self._settings.operator_is_user else None
+            return SetupCheck(id=kind, kind=kind, status="ok", granted_by=granted)
         if arm is None:
             if owner:
-                check = SetupCheck(
-                    id="apim_access", kind="apim_access", status="ok", granted_by="owners"
-                )
-                return check, None
-            return SetupCheck(id="apim_access", kind="apim_access", status="unknown"), None
+                return SetupCheck(id=kind, kind=kind, status="ok", granted_by="owners")
+            return SetupCheck(id=kind, kind=kind, status="unknown")
         try:
-            permissions = self._permissions(arm, scope)
+            permissions = self._permissions(arm, self._arm.resource_id)
         except ArmError as error:
             status: SetupStatus = "blocked" if self._settings.operator_is_user else "unknown"
-            return SetupCheck(
-                id="apim_access", kind="apim_access", status=status, detail=error.message
-            ), None
-        read = missing(permissions, APIM_READ_ACTIONS)
-        write = missing(permissions, APIM_WRITE_ACTIONS)
-        request = self._role_request(
-            identity,
-            "User",
-            self._custom_role(APIM_ROLE, self._resource_group_scope) or APIM_FALLBACK_ROLE,
-            scope,
-        )
+            return SetupCheck(id=kind, kind=kind, status=status, detail=error.message)
+        gaps = missing(permissions, GATEWAY_ACTIONS)
         if self._settings.operator_is_user:
-            status = "blocked" if read else "action" if write else "ok"
+            # Without the master key nothing can be managed.
             return SetupCheck(
-                id="apim_access",
-                kind="apim_access",
-                status=status,
-                missing=[*read, *write],
-                request=request if status != "ok" else None,
-            ), permissions
+                id=kind,
+                kind=kind,
+                status="blocked" if gaps else "ok",
+                missing=gaps,
+                request=self._gateway_request(identity, "User") if gaps else None,
+            )
         # Deployed, the app identity does the work; the user only needs leave to change things.
-        granted: Literal["owners", "azure_rbac"] | None = (
-            "owners" if owner else "azure_rbac" if not read and not write else None
-        )
+        granted = "owners" if owner else "azure_rbac" if not gaps else None
         return SetupCheck(
-            id="apim_access",
-            kind="apim_access",
+            id=kind,
+            kind=kind,
             status="ok" if granted else "action",
-            missing=[] if granted else [*read, *write],
-            request=None if granted else request,
+            missing=[] if granted else gaps,
+            request=None if granted else self._gateway_request(identity, "User"),
             granted_by=granted,
-        ), permissions
+        )
 
-    def _app_apim(self) -> tuple[SetupCheck, SetupIdentity | None]:
+    def _app_gateway(self) -> tuple[SetupCheck, SetupIdentity | None]:
+        kind: SetupKind = "app_gateway"
         try:
             identity = _identity(self._arm.token_claims())
+            if self._settings.external:
+                return SetupCheck(id=kind, kind=kind, status="ok"), identity
             permissions = self._permissions(self._arm, self._arm.resource_id)
         except ArmError as error:
-            return SetupCheck(
-                id="app_apim", kind="app_apim", status="blocked", detail=error.message
-            ), None
-        read = missing(permissions, APIM_READ_ACTIONS)
-        write = missing(permissions, APIM_WRITE_ACTIONS)
-        status: SetupStatus = "blocked" if read else "action" if write else "ok"
-        request = None
-        if status != "ok":
-            request = self._role_request(
-                identity,
-                "ServicePrincipal",
-                self._custom_role(APIM_ROLE, self._resource_group_scope) or APIM_FALLBACK_ROLE,
-                self._arm.resource_id,
-                command="azd provision",
-            )
+            return SetupCheck(id=kind, kind=kind, status="blocked", detail=error.message), None
+        gaps = missing(permissions, GATEWAY_ACTIONS)
+        request = (
+            self._gateway_request(identity, "ServicePrincipal", command="azd provision")
+            if gaps
+            else None
+        )
         return SetupCheck(
-            id="app_apim", kind="app_apim", status=status, missing=[*read, *write], request=request
+            id=kind,
+            kind=kind,
+            status="blocked" if gaps else "ok",
+            missing=gaps,
+            request=request,
         ), identity
 
     def _discovery(
@@ -668,33 +725,50 @@ class AccessChecker:
         with ThreadPoolExecutor(max_workers=min(_WORKERS, len(subscriptions))) as executor:
             return list(executor.map(counted, subscriptions))
 
-    def _apim_identity(self, user_permissions: Permissions | None) -> tuple[SetupCheck, str | None]:
+    def _principal(self) -> str | None:
         try:
-            identity = self._service.apim_identity()
-        except ArmError as error:
-            return SetupCheck(
-                id="apim_identity", kind="apim_identity", status="unknown", detail=error.message
-            ), None
-        principal = str(identity.get("principalId") or "") or None
+            return self._service.gateway.info().principal_id
+        except GatewayUnavailable as error:
+            logger.info("Cannot read the gateway's identity: %s", error.message)
+            return None
+
+    def _gateway_identity(self) -> tuple[SetupCheck, str | None]:
+        kind: SetupKind = "gateway_identity"
+        try:
+            principal = self._service.gateway.info().principal_id
+        except GatewayUnavailable as error:
+            return SetupCheck(id=kind, kind=kind, status="unknown", detail=error.message), None
         if principal:
-            return SetupCheck(id="apim_identity", kind="apim_identity", status="ok"), principal
-        if str(identity.get("provisioningState") or "").casefold() in {"updating", "activating"}:
-            return SetupCheck(id="apim_identity", kind="apim_identity", status="pending"), None
-        can_enable = user_permissions is not None and allows(user_permissions, APIM_SERVICE_WRITE)
+            return SetupCheck(id=kind, kind=kind, status="ok", subject=principal), principal
+        settings = self._settings
+        if settings.external:
+            # Without it Foundry access can't be checked; the gateway may still work.
+            return SetupCheck(
+                id=kind,
+                kind=kind,
+                status="action",
+                detail="external_unknown",
+                fix="connect_gateway" if settings.can_choose_target else None,
+            ), None
         scope = self._arm.resource_id
+        group, name = settings.resource_group, settings.gateway_name
         return SetupCheck(
-            id="apim_identity",
-            kind="apim_identity",
+            id=kind,
+            kind=kind,
             status="action",
-            fix="enable_apim_identity" if can_enable else None,
             request=AdminRequest(
-                assignee=self._settings.apim_name,
+                assignee=name,
                 assignee_id=None,
                 role=None,
                 scope=scope,
-                command=f"az apim update -g {self._settings.resource_group} "
-                f"-n {self._settings.apim_name} --enable-managed-identity true",
-                portal_url=_portal(scope),
+                command=(
+                    f"az identity create -g {group} -n id-{name}\n"
+                    f"az containerapp identity assign -g {group} -n {name} "
+                    f"--user-assigned id-{name}\n"
+                    f"az containerapp update -g {group} -n {name} "
+                    "--set-env-vars AZURE_CLIENT_ID=<the identity's client ID>"
+                ),
+                portal_url=_portal(scope, "identity"),
             ),
         ), None
 
@@ -835,7 +909,7 @@ class AccessChecker:
 
     def _foundry_request(self, account: str, principal: str) -> AdminRequest:
         return AdminRequest(
-            assignee=f"{self._settings.apim_name} (APIM managed identity)",
+            assignee=f"{self._settings.gateway_name} (gateway managed identity)",
             assignee_id=principal,
             role=OPENAI_USER_ROLE,
             scope=account,
@@ -848,12 +922,9 @@ class AccessChecker:
     # -- fixes --------------------------------------------------------------------------
 
     def foundry_checks(self, token: UserToken | None, account_ids: list[str]) -> list[SetupCheck]:
-        """Read-only: whether APIM's identity can call these accounts, e.g. before importing."""
-        try:
-            principal = str(self._service.apim_identity().get("principalId") or "") or None
-        except ArmError as error:
-            raise ServiceError(502, f"Cannot read the APIM service: {error.message}") from error
-        return self._foundry(account_ids, principal, self.user_arm(token))
+        """Read-only: whether the gateway's identity can call these accounts, e.g. before
+        importing them."""
+        return self._foundry(account_ids, self._principal(), self.user_arm(token))
 
     def grant_foundry_access(
         self, token: UserToken | None, account_ids: list[str], actor: str
@@ -866,12 +937,9 @@ class AccessChecker:
             raise ServiceError(
                 400, f"Not a member or discovered Foundry account: {', '.join(unknown)}"
             )
-        try:
-            principal = str(self._service.apim_identity().get("principalId") or "") or None
-        except ArmError as error:
-            raise ServiceError(502, f"Cannot read the APIM service: {error.message}") from error
+        principal = self._principal()
         if principal is None:
-            raise ServiceError(409, "Enable the APIM managed identity first")
+            raise ServiceError(409, "The gateway has no managed identity to grant access to")
         for account in account_ids:
             subscription = account.split("/")[2]
             name = uuid.uuid5(
@@ -904,7 +972,7 @@ class AccessChecker:
                     ) from error
                 raise ServiceError(502, f"Assigning the role failed: {error.message}") from error
             logger.info(
-                "%s granted %s to APIM identity %s on %s",
+                "%s granted %s to gateway identity %s on %s",
                 actor,
                 OPENAI_USER_ROLE,
                 principal,
@@ -912,41 +980,9 @@ class AccessChecker:
             )
         return self._foundry(account_ids, principal, user)
 
-    def enable_apim_identity(self, token: UserToken | None, actor: str) -> SetupCheck:
-        user = self.require_user(token)
-        try:
-            identity = self._service.apim_identity()
-            if identity.get("principalId"):
-                return SetupCheck(id="apim_identity", kind="apim_identity", status="ok")
-            current = str(identity.get("type") or "None")
-            assigned = dict(identity.get("userAssignedIdentities") or {})
-            # Keep any user-assigned identities; PATCH replaces the whole identity block.
-            body: dict[str, Any] = {
-                "type": "SystemAssigned, UserAssigned"
-                if "userassigned" in current.casefold()
-                else "SystemAssigned"
-            }
-            if assigned:
-                body["userAssignedIdentities"] = {key: {} for key in assigned}
-            user.request(
-                "PATCH", "", api_version=self._settings.api_version, json_body={"identity": body}
-            )
-        except ArmError as error:
-            if error.status in {401, 403}:
-                raise ServiceError(
-                    403, f"Your Azure account cannot change the APIM service: {error.message}"
-                ) from error
-            raise ServiceError(502, f"Enabling the identity failed: {error.message}") from error
-        logger.info(
-            "%s enabled the system-assigned identity of %s", actor, self._settings.apim_name
-        )
-        self._service.forget_service()
-        check, _ = self._apim_identity(None)
-        return check
-
     def sign_in(self, tenant_id: str | None = None) -> None:
         """Local only: opens the browser sign-in on this machine and waits for it. Without a
-        tenant it signs in to the APIM service's tenant, or the home tenant if there is none."""
+        tenant it signs in to the gateway's tenant, or the home tenant if there is none."""
         if not self.local or self._credential is None:
             raise ServiceError(400, "Browser sign-in is only available when running locally")
         tenant = tenant_id or self._settings.tenant_id or self._arm.subscription_tenant()

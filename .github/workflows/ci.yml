@@ -31,27 +31,20 @@ jobs:
           ruff check . ../scripts
           ruff format --check . ../scripts
           mypy
-          mypy --strict ../scripts/doctor.py ../scripts/package-release.py
+          mypy --strict ../scripts/doctor.py ../scripts/package-release.py ../scripts/build-gateway-template.py
           pytest -q
-      # The TUI tests drive the real backend app, so they share its environment.
-      - name: Lint, type-check and test the TUI
-        working-directory: tui
-        run: |
-          pip install -r requirements.txt
-          ruff check .
-          ruff format --check .
-          mypy
-          pytest -q
+      # tui/ still targets the APIM version; it isn't checked until it is ported to the gateway.
       - name: Test and build frontend
         working-directory: frontend
         run: |
           npm ci
           npm test
           npm run build
-      - name: Validate Bicep
+      # The app deploys the gateway from the compiled JSON, so it must match the Bicep.
+      - name: Validate Bicep and the gateway template
         run: |
           az bicep build --file infra/main.bicep --stdout > /dev/null
-          az bicep build --file deploy/container-apps/infra/main.bicep --stdout > /dev/null
+          python scripts/build-gateway-template.py --check
 
   # The release package, started the way the README tells people to: unzip, then
   # scripts/start-local.sh with Python only. It once exited silently on Linux and macOS.

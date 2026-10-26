@@ -13,19 +13,12 @@ from fastapi.testclient import TestClient
 
 from pool_manager.access import AccessChecker, allows, user_token
 from pool_manager.app import app
-from tests.fake_apim import OPENAI_USER, SERVICE, TENANT, FakeApim
-from tests.test_app import WRITE, _client, _import, _seed_gpt6, _settings
+from tests.fake_azure import GATEWAY_APP, GATEWAY_PRINCIPAL, OPENAI_USER, TENANT, FakeAzure
+from tests.fake_litellm import MASTER_KEY, URL
+from tests.test_app import WRITE, _client, _settings, import_members, seed
 
-APIM = "Microsoft.ApiManagement/service"
-READ = [f"{APIM}/read", f"{APIM}/*/read"]
-WRITE_ACTIONS = [
-    f"{APIM}/backends/*",
-    f"{APIM}/namedValues/*",
-    f"{APIM}/apis/write",
-    f"{APIM}/apis/delete",
-    f"{APIM}/apis/operations/write",
-    f"{APIM}/apis/policies/write",
-]
+READ = ["Microsoft.App/containerApps/read", "*/read"]
+SECRETS = ["Microsoft.App/containerApps/listSecrets/action"]
 
 
 def _jwt(**claims: Any) -> str:
@@ -44,13 +37,13 @@ def _jwt(**claims: Any) -> str:
 
 
 @pytest.fixture
-def apim() -> FakeApim:
-    return FakeApim()
+def azure() -> FakeAzure:
+    return FakeAzure()
 
 
 @pytest.fixture
-def client(apim: FakeApim) -> Iterator[TestClient]:
-    yield _client(apim, _settings())
+def client(azure: FakeAzure) -> Iterator[TestClient]:
+    yield _client(azure, _settings())
     app.dependency_overrides.clear()
 
 
@@ -60,203 +53,327 @@ def _checks(client: TestClient, **headers: str) -> dict[str, dict[str, Any]]:
     return {check["id"]: check for check in response.json()["checks"]}
 
 
-def _mi_members(client: TestClient, apim: FakeApim) -> tuple[str, str]:
-    """Imports two managed-identity members on two accounts; the first already has the role."""
-    east, sweden = _seed_gpt6(apim)
-    _import(client, [(east, "gpt-6-astra"), (sweden, "gpt-6-astra-dz")])
-    apim.grant_openai_user(east)
-    return east, sweden
+def _members(client: TestClient, azure: FakeAzure) -> tuple[str, str]:
+    """A pool of two managed-identity members on two accounts; only the first has the role."""
+    east, west = seed(azure)
+    azure.role_assignments = [
+        item for item in azure.role_assignments if item["properties"]["scope"] != west
+    ]
+    members = import_members(client, [east, west])
+    body = {
+        "members": [{"backend_id": m, "priority": 0, "weight": 1} for m in members],
+    }
+    assert client.put("/api/pools/gpt6", json=body, headers=WRITE).status_code == 200
+    return east, west
 
 
-def test_local_report_with_full_access(client: TestClient, apim: FakeApim) -> None:
-    east, sweden = _mi_members(client, apim)
+def test_local_report_with_full_access(client: TestClient, azure: FakeAzure) -> None:
+    east, west = _members(client, azure)
     report = client.get("/api/setup").json()
 
     assert report["mode"] == "local"
     assert report["can_operate"] is True
     checks = {check["id"]: check for check in report["checks"]}
     assert checks["sign_in"]["status"] == "ok"
-    assert checks["apim_access"]["status"] == "ok"
+    assert checks["gateway_target"]["status"] == "ok"
+    assert checks["gateway_access"]["status"] == "ok"
+    assert checks["gateway_health"] == {
+        **checks["gateway_health"],
+        "status": "ok",
+        "detail": "1.106.4",
+    }
     assert checks["discovery:sub"]["status"] == "ok"
-    assert checks["apim_identity"]["status"] == "ok"
+    assert checks["gateway_identity"] == {
+        **checks["gateway_identity"],
+        "status": "ok",
+        "subject": GATEWAY_PRINCIPAL,
+    }
     assert checks[f"foundry_access:{east.casefold()}"]["status"] == "ok"
     # The other account lacks the role, and the signed-in user may assign it.
-    sweden_check = checks[f"foundry_access:{sweden.casefold()}"]
-    assert sweden_check["status"] == "action"
-    assert sweden_check["fix"] == "grant_foundry_access"
-    assert "--assignee-object-id apim-mi" in sweden_check["request"]["command"]
-    assert sweden_check["request"]["role"] == "Cognitive Services OpenAI User"
+    west_check = checks[f"foundry_access:{west.casefold()}"]
+    assert west_check["status"] == "action"
+    assert west_check["fix"] == "grant_foundry_access"
+    assert f"--assignee-object-id {GATEWAY_PRINCIPAL}" in west_check["request"]["command"]
+    assert west_check["request"]["role"] == "Cognitive Services OpenAI User"
     assert report["ready"] is False
 
 
 def test_progress_follows_the_report(
-    client: TestClient, apim: FakeApim, monkeypatch: pytest.MonkeyPatch
+    client: TestClient, azure: FakeAzure, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _mi_members(client, apim)
+    _members(client, azure)
     seen: dict[str, Any] = {}
-    original = AccessChecker._apim_identity
+    original = AccessChecker._gateway_identity
 
-    def spy(self: AccessChecker, *args: Any) -> Any:
+    def spy(self: AccessChecker) -> Any:
         seen["identity"] = self.progress("local-developer").model_dump()
-        return original(self, *args)
+        return original(self)
 
-    monkeypatch.setattr(AccessChecker, "_apim_identity", spy)
+    monkeypatch.setattr(AccessChecker, "_gateway_identity", spy)
     assert client.get("/api/setup").status_code == 200
 
     steps = seen["identity"]["steps"]
     assert seen["identity"]["running"] is True
     assert [(step["kind"], step["state"]) for step in steps] == [
         ("sign_in", "done"),
-        ("apim_target", "done"),
-        ("apim_access", "done"),
+        ("gateway_target", "done"),
+        ("gateway_access", "done"),
+        ("gateway_health", "done"),
         ("discovery", "done"),
-        ("apim_identity", "running"),
+        ("gateway_identity", "running"),
     ]
-    assert steps[1]["subject"] == "apim"
-    assert (steps[3]["done"], steps[3]["total"]) == (1, 1)
+    assert steps[1]["subject"] == "gw"
+    assert (steps[4]["done"], steps[4]["total"]) == (1, 1)
     # Nothing is kept once the report is sent.
     assert client.get("/api/setup/progress").json() == {"running": False, "steps": []}
 
 
-def test_progress_counts_foundry_accounts(
-    client: TestClient, apim: FakeApim, monkeypatch: pytest.MonkeyPatch
+def test_without_the_master_key_nothing_can_be_managed(
+    client: TestClient, azure: FakeAzure
 ) -> None:
-    _mi_members(client, apim)
-    seen: list[Any] = []
-    original = AccessChecker._finish
+    azure.allow("app", GATEWAY_APP, *READ)
+    report = client.get("/api/setup").json()
+    checks = {check["id"]: check for check in report["checks"]}
 
-    def spy(self: AccessChecker, *args: Any) -> Any:
-        seen.append(self.progress("local-developer").steps[-2:])
-        return original(self, *args)
-
-    monkeypatch.setattr(AccessChecker, "_finish", spy)
-    client.get("/api/setup")
-    members, foundry = seen[0]
-    assert (members.kind, members.state) == ("members", "done")
-    assert (foundry.kind, foundry.done, foundry.total) == ("foundry_access", 2, 2)
-
-
-def test_read_only_and_no_access_are_reported(client: TestClient, apim: FakeApim) -> None:
-    apim.allow("app", SERVICE, *READ)
-    check = _checks(client)["apim_access"]
-    assert check["status"] == "action"
-    assert f"{APIM}/backends/write" in check["missing"]
-    assert f'--scope "{SERVICE}"' in check["request"]["command"]
-    assert check["request"]["role"] == "API Management Service Contributor"
-    assert check["request"]["portal_url"].endswith(f"{SERVICE}/users")
-
-    apim.permissions.clear()
-    apim.allow("app", "/subscriptions/sub/resourceGroups/other", "*")
-    report = client.get("/api/setup?refresh=true").json()
-    access = next(item for item in report["checks"] if item["id"] == "apim_access")
+    access = checks["gateway_access"]
     assert access["status"] == "blocked"
+    assert access["missing"] == SECRETS
+    assert f'--scope "{GATEWAY_APP}"' in access["request"]["command"]
+    assert access["request"]["role"] == "Container Apps Contributor"
     assert report["can_operate"] is False
+    assert "gateway_health" not in checks
 
 
-def test_custom_role_is_suggested_when_provisioned(client: TestClient, apim: FakeApim) -> None:
+def test_custom_role_is_suggested_when_provisioned(client: TestClient, azure: FakeAzure) -> None:
     custom = (
         "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Authorization/roleDefinitions/c1"
     )
-    apim.role_definitions[custom.casefold()] = {
+    azure.role_definitions[custom.casefold()] = {
         "id": custom,
-        "properties": {"roleName": "APIM Backend Pool Manager abc123", "type": "CustomRole"},
+        "properties": {"roleName": "AI Gateway Pool Manager abc123", "type": "CustomRole"},
     }
-    apim.allow("app", SERVICE, *READ)
-    assert _checks(client)["apim_access"]["request"]["role"] == "APIM Backend Pool Manager abc123"
+    azure.allow("app", GATEWAY_APP, *READ)
+    assert _checks(client)["gateway_access"]["request"]["role"] == "AI Gateway Pool Manager abc123"
 
 
-def test_discovery_counts_resource_group_access(client: TestClient, apim: FakeApim) -> None:
-    _seed_gpt6(apim)
-    apim.allow("app", SERVICE, "*")
-    apim.allow("app", "/subscriptions/sub/resourceGroups/rg-ai", "*")
+def test_an_unhealthy_gateway_blocks_the_rest(client: TestClient, azure: FakeAzure) -> None:
+    azure.litellm.db = "Not connected"
+    report = client.get("/api/setup").json()
+    health = next(check for check in report["checks"] if check["id"] == "gateway_health")
+
+    assert health["status"] == "blocked"
+    assert health["detail"] == "database Not connected"
+    assert report["can_operate"] is False
+
+    azure.litellm.db = "connected"
+    azure.litellm.master_key = "rotated"
+    health = _checks(client)["gateway_health"]
+    assert (health["status"], health["detail"]) == ("blocked", "master_key_refused")
+
+
+def test_a_deploying_gateway_is_pending(azure: FakeAzure) -> None:
+    azure.add_resource_group("rg-new")
+    client = _client(
+        azure, _settings(subscription_id="sub", resource_group="rg-new", gateway_name="fresh")
+    )
+    try:
+        azure.arm_deployments[
+            "/subscriptions/sub/resourcegroups/rg-new/providers/"
+            "microsoft.resources/deployments/ai-gateway-fresh"
+        ] = {
+            "id": "x",
+            "properties": {"provisioningState": "Running", "timestamp": "2026-10-26T09:00:00Z"},
+            "operations": [],
+        }
+        report = client.get("/api/setup").json()
+    finally:
+        app.dependency_overrides.clear()
+
+    target = report["checks"][1]
+    assert (target["id"], target["status"], target["detail"]) == (
+        "gateway_target",
+        "pending",
+        "Deploying",
+    )
+    assert target["started_at"] == "2026-10-26T09:00:00Z"
+    assert report["can_operate"] is False
+
+
+def test_a_failed_first_deployment_stops_setup_there(azure: FakeAzure) -> None:
+    azure.add_resource_group("rg-new")
+    client = _client(
+        azure, _settings(subscription_id="sub", resource_group="rg-new", gateway_name="fresh")
+    )
+    try:
+        azure.arm_deployments[
+            "/subscriptions/sub/resourcegroups/rg-new/providers/"
+            "microsoft.resources/deployments/ai-gateway-fresh"
+        ] = {
+            "id": "x",
+            "properties": {
+                "provisioningState": "Failed",
+                "error": {"code": "ParameterOutOfRange", "message": "Version should be in: []"},
+            },
+            "operations": [],
+        }
+        report = client.get("/api/setup").json()
+    finally:
+        app.dependency_overrides.clear()
+
+    # No Container App yet, so there is no gateway to reach or check access to.
+    assert [check["id"] for check in report["checks"]] == ["sign_in", "gateway_target"]
+    target = report["checks"][1]
+    assert (target["status"], target["detail"]) == ("action", "DeployFailed")
+    assert target["missing"] == ["ParameterOutOfRange: Version should be in: []"]
+    assert report["can_operate"] is False
+
+
+def test_a_missing_gateway_is_blocked(azure: FakeAzure) -> None:
+    client = _client(azure, _settings(gateway_name="gone"))
+    try:
+        target = _checks(client)["gateway_target"]
+    finally:
+        app.dependency_overrides.clear()
+
+    assert (target["status"], target["detail"]) == ("blocked", "not_found")
+
+
+def test_discovery_counts_resource_group_access(client: TestClient, azure: FakeAzure) -> None:
+    seed(azure)
+    azure.allow("app", GATEWAY_APP, "*")
+    azure.allow("app", "/subscriptions/sub/resourceGroups/rg-ai", "*")
     # No subscription-level role, but listing finds accounts the user can see.
     assert _checks(client)["discovery:sub"]["status"] == "ok"
 
-    apim.accounts.clear()
+    azure.accounts.clear()
     check = _checks(client)["discovery:sub"]
     assert check["status"] == "action"
     assert check["request"]["role"] == "Reader"
 
 
-def test_grant_foundry_access(client: TestClient, apim: FakeApim) -> None:
-    _, sweden = _mi_members(client, apim)
-    body = {"account_ids": [sweden]}
+def test_grant_foundry_access(client: TestClient, azure: FakeAzure) -> None:
+    _, west = _members(client, azure)
+    body = {"account_ids": [west]}
     assert client.post("/api/setup/foundry-access/grant", json=body).status_code == 403  # CSRF
 
     response = client.post("/api/setup/foundry-access/grant", json=body, headers=WRITE)
     assert response.status_code == 200, response.text
     assert [check["status"] for check in response.json()] == ["ok"]
-    granted = apim.role_assignments[-1]["properties"]
+    granted = azure.role_assignments[-1]["properties"]
     assert granted == {
         "roleDefinitionId": OPENAI_USER,
-        "principalId": "apim-mi",
+        "principalId": GATEWAY_PRINCIPAL,
         "principalType": "ServicePrincipal",
-        "scope": sweden,
+        "scope": west,
     }
     # Granting again is a no-op, not an error.
+    count = len(azure.role_assignments)
     again = client.post("/api/setup/foundry-access/grant", json=body, headers=WRITE)
     assert again.status_code == 200
-    assert len(apim.role_assignments) == 2
+    assert len(azure.role_assignments) == count
 
 
-def test_grant_is_limited_to_known_accounts(client: TestClient, apim: FakeApim) -> None:
-    _mi_members(client, apim)
+def test_grant_is_limited_to_known_accounts(client: TestClient, azure: FakeAzure) -> None:
+    _members(client, azure)
     other = "/subscriptions/sub/resourceGroups/x/providers/Microsoft.CognitiveServices/accounts/y"
     response = client.post(
         "/api/setup/foundry-access/grant", json={"account_ids": [other]}, headers=WRITE
     )
     assert response.status_code == 400
-    assert not [item for item in apim.role_assignments if item["properties"]["scope"] == other]
+    assert not [item for item in azure.role_assignments if item["properties"]["scope"] == other]
 
 
-def test_grant_needs_permission_to_assign_roles(client: TestClient, apim: FakeApim) -> None:
-    _, sweden = _mi_members(client, apim)
-    apim.allow("app", "/subscriptions/sub", "*/read", f"{APIM}/*")
-    check = _checks(client)[f"foundry_access:{sweden.casefold()}"]
+def test_grant_needs_permission_to_assign_roles(client: TestClient, azure: FakeAzure) -> None:
+    _, west = _members(client, azure)
+    azure.allow("app", "/subscriptions/sub", "*/read", "Microsoft.App/*")
+    check = _checks(client)[f"foundry_access:{west.casefold()}"]
     assert check["status"] == "action"
     assert check["fix"] is None  # Only an admin request.
     response = client.post(
-        "/api/setup/foundry-access/grant", json={"account_ids": [sweden]}, headers=WRITE
+        "/api/setup/foundry-access/grant", json={"account_ids": [west]}, headers=WRITE
     )
     assert response.status_code == 403
-    assert "cannot assign roles on aoai-sweden" in response.json()["detail"]
+    assert "cannot assign roles on aoai-west" in response.json()["detail"]
 
 
-def test_foundry_access_check_for_selected_accounts(client: TestClient, apim: FakeApim) -> None:
-    east, sweden = _seed_gpt6(apim)
-    apim.grant_openai_user(east)
-    response = client.post("/api/setup/foundry-access", json={"account_ids": [east, sweden]})
+def test_foundry_access_check_for_selected_accounts(client: TestClient, azure: FakeAzure) -> None:
+    east, west = seed(azure)
+    azure.role_assignments = [
+        item for item in azure.role_assignments if item["properties"]["scope"] != west
+    ]
+    response = client.post("/api/setup/foundry-access", json={"account_ids": [east, west]})
     assert [check["status"] for check in response.json()] == ["ok", "action"]
     bad = client.post("/api/setup/foundry-access", json={"account_ids": ["not-an-id"]})
     assert bad.status_code == 422
 
 
-def test_enable_apim_identity(client: TestClient, apim: FakeApim) -> None:
-    apim.service_principal = None
-    check = _checks(client)["apim_identity"]
+def test_a_gateway_without_an_identity(azure: FakeAzure) -> None:
+    azure.add_gateway("gw", principal=None)
+    client = _client(azure, _settings())
+    try:
+        check = _checks(client)["gateway_identity"]
+    finally:
+        app.dependency_overrides.clear()
+
     assert check["status"] == "action"
-    assert check["fix"] == "enable_apim_identity"
-    assert "--enable-managed-identity true" in check["request"]["command"]
-
-    response = client.post("/api/setup/apim-identity", headers=WRITE)
-    assert response.status_code == 200, response.text
-    assert response.json()["status"] == "ok"
-    patch = next(request for request in apim.requests if request.method == "PATCH")
-    assert json.loads(patch.content) == {"identity": {"type": "SystemAssigned"}}
-    assert client.get("/api/capabilities").json()["apim_principal_id"] == "apim-mi-new"
+    assert check["fix"] is None
+    assert "az containerapp identity assign -g rg -n gw" in check["request"]["command"]
 
 
-def test_enable_apim_identity_needs_service_write(client: TestClient, apim: FakeApim) -> None:
-    apim.service_principal = None
-    apim.allow("app", SERVICE, *READ, *WRITE_ACTIONS)
-    assert _checks(client)["apim_identity"]["fix"] is None
-    assert client.post("/api/setup/apim-identity", headers=WRITE).status_code == 403
+# -- external gateways ------------------------------------------------------------------------
 
 
-def test_identity_being_enabled_is_pending(client: TestClient, apim: FakeApim) -> None:
-    apim.service_principal = None
-    apim.service_provisioning = "Updating"
-    assert _checks(client)["apim_identity"]["status"] == "pending"
+def _external(**overrides: Any) -> dict[str, Any]:
+    return {
+        "resource_group": "",
+        "gateway_name": "aks-gateway",
+        "gateway_url": URL,
+        **overrides,
+    }
+
+
+def test_an_external_gateway_needs_its_key(azure: FakeAzure) -> None:
+    client = _client(azure, _settings(**_external()))
+    try:
+        checks = _checks(client)
+    finally:
+        app.dependency_overrides.clear()
+
+    assert checks["gateway_target"]["status"] == "ok"
+    assert checks["gateway_access"]["status"] == "ok"
+    health = checks["gateway_health"]
+    assert health["status"] == "blocked"
+    assert "master key" in health["detail"]
+
+
+def test_an_external_gateway_with_its_key(azure: FakeAzure) -> None:
+    client = _client(
+        azure, _settings(**_external(gateway_master_key=MASTER_KEY, gateway_principal_id="aks"))
+    )
+    try:
+        report = client.get("/api/setup").json()
+    finally:
+        app.dependency_overrides.clear()
+
+    checks = {check["id"]: check for check in report["checks"]}
+    assert report["can_operate"] is True
+    assert checks["gateway_health"]["status"] == "ok"
+    assert checks["gateway_identity"]["subject"] == "aks"
+    # Nothing was asked of a Container App: there is none.
+    assert not [r for r in azure.requests if "containerApps" in r.url.path]
+
+
+def test_an_external_gateway_without_its_identity(azure: FakeAzure) -> None:
+    client = _client(azure, _settings(**_external(gateway_master_key=MASTER_KEY)))
+    try:
+        check = _checks(client)["gateway_identity"]
+    finally:
+        app.dependency_overrides.clear()
+
+    assert (check["status"], check["detail"]) == ("action", "external_unknown")
+
+
+# -- signing in -----------------------------------------------------------------------------
 
 
 class _SignIn:
@@ -265,7 +382,7 @@ class _SignIn:
     def __init__(self) -> None:
         self.calls: list[tuple[str | None, str]] = []
 
-    def get_token(self, *_: str) -> Any:
+    def get_token(self, *_: str, **__: Any) -> Any:
         if not self.calls:
             raise RuntimeError("Please run 'az login' to set up an account.\nmore detail")
         return type("Token", (), {"token": "token", "expires_on": 4_102_444_800})()
@@ -274,9 +391,9 @@ class _SignIn:
         self.calls.append((tenant_id, scope))
 
 
-def test_local_sign_in(apim: FakeApim) -> None:
+def test_local_sign_in(azure: FakeAzure) -> None:
     credential = _SignIn()
-    client = _client(apim, _settings(), sign_in=credential, credential=credential)
+    client = _client(azure, _settings(), sign_in=credential, credential=credential)
     try:
         report = client.get("/api/setup").json()
         assert report["can_operate"] is False
@@ -294,15 +411,15 @@ def test_local_sign_in(apim: FakeApim) -> None:
         app.dependency_overrides.clear()
 
 
-def test_wrong_tenant_asks_to_sign_in_again(apim: FakeApim) -> None:
+def test_wrong_tenant_asks_to_sign_in_again(azure: FakeAzure) -> None:
     token = _jwt(tid="11111111-1111-1111-1111-111111111111")
-    apim.callers[token] = "app"
+    azure.callers[token] = "app"
     credential = type(
         "Credential",
         (),
-        {"get_token": lambda self, *_: type("T", (), {"token": token, "expires_on": 4e9})()},
+        {"get_token": lambda self, *_, **__: type("T", (), {"token": token, "expires_on": 4e9})()},
     )()
-    client = _client(apim, _settings(), credential=credential, sign_in=_SignIn())
+    client = _client(azure, _settings(), credential=credential, sign_in=_SignIn())
     try:
         check = _checks(client)["sign_in"]
         assert check["status"] == "action"
@@ -316,35 +433,38 @@ def test_wrong_tenant_asks_to_sign_in_again(apim: FakeApim) -> None:
 
 
 @pytest.fixture
-def deployed(apim: FakeApim) -> Iterator[TestClient]:
+def deployed(azure: FakeAzure) -> Iterator[TestClient]:
     yield _client(
-        apim, _settings(auth_mode="easy_auth", owners="owner@contoso.com", delegated_access=True)
+        azure, _settings(auth_mode="easy_auth", owners="owner@contoso.com", delegated_access=True)
     )
     app.dependency_overrides.clear()
 
 
-def _user(apim: FakeApim, *actions: str, **claims: Any) -> dict[str, str]:
+def _user(azure: FakeAzure, *actions: str, **claims: Any) -> dict[str, str]:
     token = _jwt(**claims)
-    apim.callers[token] = "user"
-    apim.allow("user", SERVICE, *actions)
+    azure.callers[token] = "user"
+    azure.allow("user", GATEWAY_APP, *actions)
     return {"X-MS-CLIENT-PRINCIPAL-NAME": "dev@contoso.com", "X-MS-TOKEN-AAD-ACCESS-TOKEN": token}
 
 
-def test_deployed_user_with_azure_roles_can_write(deployed: TestClient, apim: FakeApim) -> None:
-    headers = _user(apim, *READ, *WRITE_ACTIONS)
+def test_deployed_user_with_azure_roles_can_write(deployed: TestClient, azure: FakeAzure) -> None:
+    headers = _user(azure, *READ, *SECRETS)
     assert deployed.get("/api/me", headers=headers).json()["can_write"] is True
-    body = {"url": "https://a.example.com", "auth": {"type": "none"}}
+    body = {
+        "url": "https://a.openai.azure.com/openai/deployments/x",
+        "auth": {"type": "managed_identity"},
+    }
     response = deployed.put("/api/backends/pool-a", json=body, headers={**headers, **WRITE})
     assert response.status_code == 200, response.text
 
     checks = _checks(deployed, **headers)
     assert checks["azure_token"]["status"] == "ok"
-    assert checks["apim_access"] == {
-        **checks["apim_access"],
+    assert checks["gateway_access"] == {
+        **checks["gateway_access"],
         "status": "ok",
         "granted_by": "azure_rbac",
     }
-    assert checks["app_apim"]["status"] == "ok"
+    assert checks["app_gateway"]["status"] == "ok"
     assert checks["app_discovery:sub"]["status"] == "ok"
     report = deployed.get("/api/setup", headers=headers).json()
     assert report["mode"] == "deployed"
@@ -355,23 +475,23 @@ def test_deployed_user_with_azure_roles_can_write(deployed: TestClient, apim: Fa
     }
 
 
-def test_deployed_progress_needs_sign_in(deployed: TestClient, apim: FakeApim) -> None:
+def test_deployed_progress_needs_sign_in(deployed: TestClient, azure: FakeAzure) -> None:
     assert deployed.get("/api/setup/progress").status_code == 401
-    response = deployed.get("/api/setup/progress", headers=_user(apim, *READ))
+    response = deployed.get("/api/setup/progress", headers=_user(azure, *READ))
     assert response.json() == {"running": False, "steps": []}
     # Unlike other reads, the poll doesn't ask Azure whether the caller may write.
-    assert not apim.requests
+    assert not azure.requests
 
 
-def test_deployed_reader_stays_read_only(deployed: TestClient, apim: FakeApim) -> None:
-    headers = _user(apim, *READ)
+def test_deployed_reader_stays_read_only(deployed: TestClient, azure: FakeAzure) -> None:
+    headers = _user(azure, *READ)
     assert deployed.get("/api/me", headers=headers).json()["can_write"] is False
-    body = {"url": "https://a.example.com", "auth": {"type": "none"}}
+    body = {"url": "https://a.openai.azure.com/openai/deployments/x"}
     assert (
         deployed.put("/api/backends/pool-a", json=body, headers={**headers, **WRITE}).status_code
         == 403
     )
-    check = _checks(deployed, **headers)["apim_access"]
+    check = _checks(deployed, **headers)["gateway_access"]
     assert check["status"] == "action"
     assert (
         "--assignee-object-id user-oid --assignee-principal-type User"
@@ -379,29 +499,44 @@ def test_deployed_reader_stays_read_only(deployed: TestClient, apim: FakeApim) -
     )
 
 
-def test_rbac_writers_can_be_turned_off(apim: FakeApim) -> None:
-    client = _client(apim, _settings(auth_mode="easy_auth", rbac_writers=False))
+def test_the_app_identity_needs_the_master_key(deployed: TestClient, azure: FakeAzure) -> None:
+    headers = _user(azure, *READ, *SECRETS)
+    azure.allow("app", GATEWAY_APP, *READ)
+    report = deployed.get("/api/setup", headers=headers).json()
+    app_check = next(check for check in report["checks"] if check["id"] == "app_gateway")
+
+    assert app_check["status"] == "blocked"
+    assert "azd provision" in app_check["request"]["command"]
+    assert report["can_operate"] is False
+
+
+def test_rbac_writers_can_be_turned_off(azure: FakeAzure) -> None:
+    client = _client(azure, _settings(auth_mode="easy_auth", rbac_writers=False))
     try:
-        headers = _user(apim, *READ, *WRITE_ACTIONS)
+        headers = _user(azure, *READ, *SECRETS)
         assert client.get("/api/me", headers=headers).json()["can_write"] is False
     finally:
         app.dependency_overrides.clear()
 
 
-def test_deployed_without_a_token_asks_for_consent(deployed: TestClient, apim: FakeApim) -> None:
+def test_deployed_without_a_token_asks_for_consent(deployed: TestClient, azure: FakeAzure) -> None:
     reader = {"X-MS-CLIENT-PRINCIPAL-NAME": "reader@contoso.com"}
     checks = _checks(deployed, **reader)
     assert checks["azure_token"]["fix"] == "consent"
-    assert checks["apim_access"]["status"] == "unknown"
+    assert checks["gateway_access"]["status"] == "unknown"
     owner = {"X-MS-CLIENT-PRINCIPAL-NAME": "owner@contoso.com"}
-    assert _checks(deployed, **owner)["apim_access"]["granted_by"] == "owners"
+    assert _checks(deployed, **owner)["gateway_access"]["granted_by"] == "owners"
     # Fixes need the user's own token.
-    response = deployed.post("/api/setup/apim-identity", headers={**owner, **WRITE})
+    response = deployed.post(
+        "/api/setup/foundry-access/grant",
+        json={"account_ids": [seed(azure)[0]]},
+        headers={**owner, **WRITE},
+    )
     assert response.status_code == 401
 
 
-def test_delegated_access_off_needs_an_admin(apim: FakeApim) -> None:
-    client = _client(apim, _settings(auth_mode="easy_auth"))
+def test_delegated_access_off_needs_an_admin(azure: FakeAzure) -> None:
+    client = _client(azure, _settings(auth_mode="easy_auth"))
     try:
         check = _checks(client, **{"X-MS-CLIENT-PRINCIPAL-NAME": "a@contoso.com"})["azure_token"]
         assert check["fix"] is None
@@ -410,47 +545,51 @@ def test_delegated_access_off_needs_an_admin(apim: FakeApim) -> None:
         app.dependency_overrides.clear()
 
 
-def test_deployed_token_problems(deployed: TestClient, apim: FakeApim) -> None:
-    expired = _user(apim, *READ, exp=int(time.time()) - 10)
+def test_deployed_token_problems(deployed: TestClient, azure: FakeAzure) -> None:
+    expired = _user(azure, *READ, exp=int(time.time()) - 10)
     assert _checks(deployed, **expired)["azure_token"]["fix"] == "refresh_token"
-    graph = _user(apim, *READ, aud="https://graph.microsoft.com")
+    graph = _user(azure, *READ, aud="https://graph.microsoft.com")
     check = _checks(deployed, **graph)["azure_token"]
     assert check["fix"] == "consent"
     assert "graph.microsoft.com" in check["detail"]
 
 
-def test_deployed_grant_runs_as_the_user(deployed: TestClient, apim: FakeApim) -> None:
-    owner_client = _client(apim, _settings())  # Import as the app first.
-    _, sweden = _mi_members(owner_client, apim)
+def test_deployed_grant_runs_as_the_user(azure: FakeAzure) -> None:
+    local = _client(azure, _settings())  # Create the pool as the app first.
+    _, west = _members(local, azure)
+    app.dependency_overrides.clear()
     deployed = _client(
-        apim, _settings(auth_mode="easy_auth", owners="owner@contoso.com", delegated_access=True)
+        azure, _settings(auth_mode="easy_auth", owners="owner@contoso.com", delegated_access=True)
     )
-    headers = _user(apim, *READ)
-    apim.allow("user", sweden, "Microsoft.Authorization/roleAssignments/write")
-    check = _checks(deployed, **headers)[f"foundry_access:{sweden.casefold()}"]
-    assert check["fix"] == "grant_foundry_access"
+    try:
+        headers = _user(azure, *READ)
+        azure.allow("user", west, "Microsoft.Authorization/roleAssignments/write")
+        check = _checks(deployed, **headers)[f"foundry_access:{west.casefold()}"]
+        assert check["fix"] == "grant_foundry_access"
 
-    response = deployed.post(
-        "/api/setup/foundry-access/grant",
-        json={"account_ids": [sweden]},
-        headers={**headers, **WRITE},
-    )
+        response = deployed.post(
+            "/api/setup/foundry-access/grant",
+            json={"account_ids": [west]},
+            headers={**headers, **WRITE},
+        )
+    finally:
+        app.dependency_overrides.clear()
     assert response.status_code == 200, response.text
     put = next(
         request
-        for request in apim.requests
+        for request in azure.requests
         if request.method == "PUT" and "roleAssignments" in request.url.path
     )
     assert put.headers["Authorization"] == f"Bearer {headers['X-MS-TOKEN-AAD-ACCESS-TOKEN']}"
 
 
 def test_permission_matching() -> None:
-    entries = [{"actions": ["Microsoft.ApiManagement/*"], "notActions": ["*/delete"]}]
-    assert allows(entries, "Microsoft.ApiManagement/service/backends/write")
-    assert allows(entries, "microsoft.apimanagement/service/read")
-    assert not allows(entries, "Microsoft.ApiManagement/service/backends/delete")
+    entries = [{"actions": ["Microsoft.App/*"], "notActions": ["*/delete"]}]
+    assert allows(entries, "Microsoft.App/containerApps/listSecrets/action")
+    assert allows(entries, "microsoft.app/containerapps/read")
+    assert not allows(entries, "Microsoft.App/containerApps/delete")
     # Another assignment can still allow what the first one excludes.
-    assert allows([*entries, {"actions": ["*"]}], "Microsoft.ApiManagement/service/backends/delete")
+    assert allows([*entries, {"actions": ["*"]}], "Microsoft.App/containerApps/delete")
     data = [{"dataActions": ["Microsoft.CognitiveServices/*"]}]
     assert allows(
         data,
@@ -460,8 +599,8 @@ def test_permission_matching() -> None:
     assert not allows(data, "Microsoft.CognitiveServices/accounts/read")
 
 
-def test_a_token_for_someone_else_is_ignored(deployed: TestClient, apim: FakeApim) -> None:
-    writer = _user(apim, *READ, *WRITE_ACTIONS, oid="owner-oid")
+def test_a_token_for_someone_else_is_ignored(deployed: TestClient, azure: FakeAzure) -> None:
+    writer = _user(azure, *READ, *SECRETS, oid="owner-oid")
     # A reader replays a token whose oid is not their own principal ID.
     headers = {**writer, "X-MS-CLIENT-PRINCIPAL-ID": "reader-oid"}
     assert deployed.get("/api/me", headers=headers).json()["can_write"] is False
@@ -469,13 +608,13 @@ def test_a_token_for_someone_else_is_ignored(deployed: TestClient, apim: FakeApi
     assert user_token({**writer, "X-MS-CLIENT-PRINCIPAL-ID": "OWNER-OID"}) is not None
 
 
-def test_forged_claims_do_not_reuse_a_cached_answer(deployed: TestClient, apim: FakeApim) -> None:
-    owner = _user(apim, *READ, *WRITE_ACTIONS, oid="same-oid")
+def test_forged_claims_do_not_reuse_a_cached_answer(deployed: TestClient, azure: FakeAzure) -> None:
+    owner = _user(azure, *READ, *SECRETS, oid="same-oid")
     assert deployed.get("/api/me", headers=owner).json()["can_write"] is True
     # Same unverified oid, different token: ARM is asked again and says no.
     forged = _jwt(oid="same-oid", upn="forged")
-    apim.callers[forged] = "reader"
-    apim.allow("reader", SERVICE, *READ)
+    azure.callers[forged] = "reader"
+    azure.allow("reader", GATEWAY_APP, *READ)
     headers = {**owner, "X-MS-TOKEN-AAD-ACCESS-TOKEN": forged}
     assert deployed.get("/api/me", headers=headers).json()["can_write"] is False
 

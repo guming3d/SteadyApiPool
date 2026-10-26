@@ -1,12 +1,17 @@
-"""The pool dashboard: Azure Monitor platform metrics for a pool and its Foundry members.
+"""The pool dashboard: the gateway's own view of a pool, and its Foundry members' metrics.
 
-APIM's metrics have no backend dimension, so the pool's own numbers are those of the APIs bound
-to it (``Requests``, ``Duration`` and ``BackendDuration`` filtered by ``ApiId``): what its clients
-saw. Each member that is an Azure OpenAI / Foundry deployment adds that deployment's metrics
-(``ModelDeploymentName``). Those count every caller of the deployment, not only this pool.
+The gateway's view comes from LiteLLM's OpenTelemetry spans, which the gateway's collector sends
+to Application Insights: one span per attempt on a member (``chat <model>``), with the member's
+host and deployment, the outcome and the tokens. Spans of one client request share a trace
+(``operation_Id``), so the requests clients saw, and those a failover saved, are counted from
+them. LiteLLM's own spend logs are not used: they drop rows.
 
-Everything here is read-only and needs ``Microsoft.Insights/metrics/read`` on the APIM service
-and the member accounts. Results are cached for a minute per pool and range.
+Each member that is an Azure OpenAI / Foundry deployment adds that deployment's metrics
+(``ModelDeploymentName``). Those count every caller of the deployment, not only this gateway.
+
+Everything here is read-only: Log Analytics read on the Application Insights component, and
+``Microsoft.Insights/metrics/read`` on the member accounts. Results are cached for a minute per
+pool and range.
 """
 
 from __future__ import annotations
@@ -16,10 +21,14 @@ import time
 from collections import defaultdict
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from threading import Lock
 from typing import Any
+from urllib.parse import urlsplit
+
+import httpx
 
 from .arm import ArmClient, ArmError
 from .config import Settings
@@ -32,12 +41,18 @@ from .models import (
     PoolMetrics,
     TrafficPoint,
 )
-from .service import PoolManagerService
+from .resources import member_target
+from .service import PoolManagerService, ServiceError
 
 logger = logging.getLogger(__name__)
 
 METRICS_API_VERSION = "2023-10-01"
 METRICS_READ = "Microsoft.Insights/metrics/read"
+LOGS_URL = "https://api.loganalytics.azure.com/v1"
+LOGS_SCOPE = "https://api.loganalytics.io/.default"
+_LOGS_TIMEOUT = httpx.Timeout(60.0, connect=10.0)
+# Span names LiteLLM gives model calls.
+_MODEL_SPANS = ("chat ", "responses ", "embeddings ", "text_completion ", "completion ")
 # Window and grain per range; about 60-170 points each, inside Azure Monitor's limits.
 RANGES: dict[MetricsRange, tuple[timedelta, str]] = {
     "1h": (timedelta(hours=1), "PT1M"),
@@ -117,7 +132,7 @@ def _code_kind(code: str) -> str:
         return "throttled"
     if status >= 500:
         return "server_errors"
-    # 0: the client went away before APIM answered.
+    # 0: the client went away before an answer.
     if status >= 400 or status == 0:
         return "client_errors"
     return "success"
@@ -139,6 +154,89 @@ def expected_shares(members: list[PoolMemberView]) -> list[float]:
     ]
 
 
+def _kql_string(value: str) -> str:
+    return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
+def spans_query(names: list[str], start: str, end: str) -> str:
+    """The pool's attempts: LiteLLM's model-call spans for its model names."""
+    listed = ", ".join(_kql_string(name.casefold()) for name in names)
+    prefixes = " or ".join(f"name startswith {_kql_string(p)}" for p in _MODEL_SPANS)
+    return f"""union isfuzzy=true dependencies, requests
+| where timestamp between (datetime({start}) .. datetime({end}))
+| where {prefixes}
+| extend model = tolower(tostring(customDimensions["gen_ai.request.model"]))
+| where model in ({listed})
+| extend host = tolower(tostring(customDimensions["server.address"])),
+    target = tostring(customDimensions["litellm.provider.model"]),
+    code = tostring(customDimensions["litellm.provider.error.code"]),
+    tokens = toint(customDimensions["gen_ai.usage.total_tokens"])
+| extend failed = success == false or isnotempty(tostring(customDimensions["error.type"]))"""
+
+
+def requests_query(names: list[str], start: str, end: str, interval: str) -> str:
+    """Client requests per time bin, from the attempts of each trace. ``time`` is a KQL keyword,
+    so the column is quoted."""
+    # arg_max names its outputs after the columns it takes: the last attempt's code arrives as
+    # last_code because it is called that before.
+    return f"""{spans_query(names, start, end)}
+| extend last_code = code
+| summarize attempts = count(), ok = countif(not(failed)),
+    arg_max(timestamp, last_code), started = min(timestamp),
+    ended = max(timestamp + duration * 1ms), backend = avgif(duration, not(failed))
+    by operation_Id
+| extend outcome = case(ok > 0, "success", last_code == "429", "throttled",
+    last_code startswith "4", "client_errors", "server_errors")
+| summarize success = countif(outcome == "success"), throttled = countif(outcome == "throttled"),
+    client_errors = countif(outcome == "client_errors"),
+    server_errors = countif(outcome == "server_errors"),
+    failovers = countif(ok > 0 and attempts > ok),
+    duration_ms = avg((ended - started) / 1ms), backend_ms = avg(backend)
+    by ['time'] = bin(started, {interval})
+| order by ['time'] asc"""
+
+
+def members_query(names: list[str], start: str, end: str) -> str:
+    """The gateway's attempts on each member (host and deployment)."""
+    return f"""{spans_query(names, start, end)}
+| summarize attempts = count(), failures = countif(failed), throttled = countif(code == "429")
+    by host, target"""
+
+
+# Bin sizes per range for KQL (the same grain as the Azure Monitor charts).
+_KQL_BINS = {"PT1M": "1m", "PT5M": "5m", "PT15M": "15m", "PT1H": "1h"}
+
+
+def _innermost(error: object) -> str | None:
+    """Log Analytics nests the useful part ("Query could not be parsed at ...") under
+    ``innererror``; the top message is only "The request had some invalid properties"."""
+    message = None
+    while isinstance(error, dict):
+        message = str(error.get("message") or "") or message
+        error = error.get("innererror")
+    return message
+
+
+def _rows(body: dict[str, Any]) -> list[dict[str, Any]]:
+    tables = body.get("tables") or []
+    if not tables:
+        return []
+    columns = [str(column.get("name")) for column in tables[0].get("columns") or []]
+    return [dict(zip(columns, row, strict=False)) for row in tables[0].get("rows") or []]
+
+
+def _number(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    return float(value)
+
+
+def _stamp(value: object) -> str:
+    """KQL's ISO timestamps, in the same form as Azure Monitor's (no fraction)."""
+    text = str(value or "")
+    return text.split(".")[0].rstrip("Z") + "Z" if text else text
+
+
 def _error_text(error: ArmError, what: str) -> str:
     if error.status in {401, 403}:
         return f"Cannot read metrics of {what}: {METRICS_READ} is needed (Monitoring Reader has it)"
@@ -152,10 +250,18 @@ def _weighted(values: list[tuple[float, float]]) -> float | None:
 
 
 class PoolMonitor:
-    def __init__(self, settings: Settings, arm: ArmClient, service: PoolManagerService) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        arm: ArmClient,
+        service: PoolManagerService,
+        *,
+        transport: httpx.BaseTransport | None = None,
+    ) -> None:
         self._settings = settings
         self._arm = arm
         self._service = service
+        self._http = httpx.Client(timeout=_LOGS_TIMEOUT, transport=transport)
         self._lock = Lock()
         self._cache: dict[tuple[str, str], tuple[float, PoolMetrics]] = {}
 
@@ -171,12 +277,9 @@ class PoolMonitor:
         return metrics
 
     def _collect(self, pool_id: str, range_: MetricsRange) -> PoolMetrics:
-        pool = self._service.get_pool(pool_id)
-        api_ids = sorted(
-            api.id
-            for api in self._service.list_apis()
-            if api.binding and api.binding.pool_id.casefold() == pool.id.casefold()
-        )
+        endpoint = self._service.endpoint(pool_id)
+        pool = self._service.get_pool(endpoint.pool_id)
+        names = endpoint.model_names
         span, interval = RANGES[range_]
         end = datetime.now(UTC).replace(second=0, microsecond=0)
         start = end - span
@@ -189,10 +292,14 @@ class PoolMonitor:
         deployments = (
             {member.backend_id: member.deployment_id for member in models.members} if models else {}
         )
+        app_insights = self._app_insights()
+        bounds = (f"{start:%Y-%m-%dT%H:%M:%SZ}", f"{end:%Y-%m-%dT%H:%M:%SZ}")
 
         with ThreadPoolExecutor(max_workers=_WORKERS) as executor:
             gateway_future = (
-                executor.submit(self._gateway, api_ids, window, interval) if api_ids else None
+                executor.submit(self._gateway, app_insights, names, *bounds, interval)
+                if app_insights
+                else None
             )
             accounts = sorted(
                 {
@@ -209,13 +316,20 @@ class PoolMonitor:
                 )
             )
             gateway: GatewayMetrics | None = None
-            gateway_error: str | None = None
+            attempts: dict[tuple[str, str], dict[str, int]] = {}
+            gateway_error: str | None = None if app_insights else "no_app_insights"
             if gateway_future is not None:
                 try:
-                    gateway = gateway_future.result()
+                    gateway, attempts = gateway_future.result()
                 except ArmError as error:
-                    gateway_error = _error_text(error, self._settings.apim_name)
+                    # "forbidden" is shown with the role it needs; anything else as Azure said.
+                    gateway_error = (
+                        "forbidden"
+                        if error.status in {401, 403}
+                        else f"Cannot read the gateway's spans: {error.message}"
+                    )
                     logger.info("Gateway metrics for pool %s: %s", pool_id, error.message)
+        members_by_id = {view.id.casefold(): view for view in self._service.list_backends()}
 
         members: list[MemberMetrics] = []
         for member, share in zip(pool.members, expected_shares(pool.members), strict=True):
@@ -234,6 +348,7 @@ class PoolMonitor:
                 if not values.get("requests"):
                     # Azure reports a 0 ms average for an idle deployment; no requests, no latency.
                     values = {**values, "latency_ms": None}
+            seen = self._attempts(members_by_id.get(member.backend_id.casefold()), attempts)
             members.append(
                 MemberMetrics(
                     backend_id=member.backend_id,
@@ -247,6 +362,9 @@ class PoolMonitor:
                     utilization_pct=values.get("utilization_pct"),
                     expected_share=share,
                     error=problem,
+                    gateway_attempts=seen.get("attempts") if gateway else None,
+                    gateway_failures=seen.get("failures") if gateway else None,
+                    gateway_throttled=seen.get("throttled") if gateway else None,
                 )
             )
         return PoolMetrics(
@@ -255,103 +373,118 @@ class PoolMonitor:
             interval=interval,
             start=f"{start:%Y-%m-%dT%H:%M:%SZ}",
             end=f"{end:%Y-%m-%dT%H:%M:%SZ}",
-            api_ids=api_ids,
+            model_names=names,
             gateway=gateway,
             gateway_error=gateway_error,
             members=members,
         )
 
-    # -- APIM ----------------------------------------------------------------------------
+    # -- the gateway's spans -----------------------------------------------------------
 
-    def _gateway(self, api_ids: list[str], window: str, interval: str) -> GatewayMetrics:
-        apim = self._arm.resource_id
-        counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
-        stamps_seen: set[str] = set()
-        api_requests: dict[tuple[str, str], int] = defaultdict(int)
-        latency: dict[str, dict[str, list[tuple[float, float]]]] = defaultdict(
-            lambda: {"Duration": [], "BackendDuration": []}
+    def _app_insights(self) -> str | None:
+        try:
+            return self._service.capabilities().app_insights_id
+        except ServiceError as error:
+            logger.info("Cannot read the gateway's Application Insights: %s", error.message)
+            return None
+
+    def _logs(self, resource_id: str, query: str, start: str, end: str) -> list[dict[str, Any]]:
+        """A KQL query on the component's logs (Log Analytics' resource-centric query API)."""
+        token = self._arm.token_for(LOGS_SCOPE)
+        try:
+            response = self._http.post(
+                f"{LOGS_URL}{resource_id}/query",
+                json={"query": query, "timespan": f"{start}/{end}"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        except httpx.HTTPError as error:
+            raise ArmError(502, "LogsUnreachable", str(error)) from error
+        if response.status_code >= 400:
+            message = response.text[:500]
+            with suppress(ValueError):
+                message = _innermost(response.json().get("error")) or message
+            raise ArmError(response.status_code, "LogsQueryFailed", message)
+        body: dict[str, Any] = response.json()
+        return _rows(body)
+
+    def _gateway(
+        self, app_insights: str, names: list[str], start: str, end: str, interval: str
+    ) -> tuple[GatewayMetrics, dict[tuple[str, str], dict[str, int]]]:
+        bins = self._logs(
+            app_insights,
+            requests_query(names, start, end, _KQL_BINS.get(interval, "5m")),
+            start,
+            end,
         )
-        for api_id in api_ids:
-            api_filter = f"ApiId eq '{_quote(api_id)}'"
-            for series in _query(
-                self._arm,
-                apim,
-                ["Requests"],
-                "Total",
-                window,
-                interval,
-                f"{api_filter} and GatewayResponseCode eq '*'",
-            ):
-                kind = _code_kind(series.dimensions.get("gatewayresponsecode", ""))
-                for stamp, value in series.points:
-                    count = round(value or 0)
-                    counts[stamp][kind] += count
-                    stamps_seen.add(stamp)
-                    api_requests[(api_id, stamp)] += count
-            # Unsplit, so every point of the window is present; the time axis comes from here.
-            for series in _query(
-                self._arm,
-                apim,
-                ["Duration", "BackendDuration"],
-                "Average",
-                window,
-                interval,
-                api_filter,
-            ):
-                for stamp, value in series.points:
-                    stamps_seen.add(stamp)
-                    if value is not None and series.metric in latency[stamp]:
-                        # Weighted by requests, so a quiet API doesn't skew a busy one; a lone
-                        # API keeps its own average.
-                        weight = api_requests.get((api_id, stamp), 0) or (
-                            1 if len(api_ids) == 1 else 0
-                        )
-                        latency[stamp][series.metric].append((float(value), float(weight)))
-
-        stamps = sorted(stamps_seen)
+        per_member = self._logs(app_insights, members_query(names, start, end), start, end)
         traffic = [
             TrafficPoint(
-                time=stamp,
-                success=counts[stamp]["success"],
-                throttled=counts[stamp]["throttled"],
-                client_errors=counts[stamp]["client_errors"],
-                server_errors=counts[stamp]["server_errors"],
+                time=_stamp(row.get("time")),
+                success=int(_number(row.get("success")) or 0),
+                throttled=int(_number(row.get("throttled")) or 0),
+                client_errors=int(_number(row.get("client_errors")) or 0),
+                server_errors=int(_number(row.get("server_errors")) or 0),
             )
-            for stamp in stamps
+            for row in bins
         ]
         totals = {
             kind: sum(getattr(point, kind) for point in traffic)
             for kind in ("success", "throttled", "client_errors", "server_errors")
         }
         requests = sum(totals.values())
+        counts = [float(sum(getattr(point, kind) for kind in totals)) for point in traffic]
 
-        def overall(metric: str) -> float | None:
-            pairs: list[tuple[float, float]] = []
-            for stamp in stamps:
-                value = _weighted(latency[stamp][metric])
-                weight = sum(api_requests.get((api, stamp), 0) for api in api_ids)
-                if value is not None and weight:
-                    pairs.append((value, float(weight)))
-            return _weighted(pairs)
+        def overall(column: str) -> float | None:
+            return _weighted(
+                [
+                    (value, weight)
+                    for row, weight in zip(bins, counts, strict=True)
+                    if (value := _number(row.get(column))) is not None and weight
+                ]
+            )
 
-        return GatewayMetrics(
+        gateway = GatewayMetrics(
             requests=requests,
             success=totals["success"],
             throttled=totals["throttled"],
             client_errors=totals["client_errors"],
             server_errors=totals["server_errors"],
+            failovers=int(sum(_number(row.get("failovers")) or 0 for row in bins)),
             availability=(requests - totals["server_errors"]) / requests if requests else None,
-            duration_ms=overall("Duration"),
-            backend_duration_ms=overall("BackendDuration"),
+            duration_ms=overall("duration_ms"),
+            backend_duration_ms=overall("backend_ms"),
             traffic=traffic,
             latency=[
                 LatencyPoint(
-                    time=stamp,
-                    overall_ms=_weighted(latency[stamp]["Duration"]),
-                    backend_ms=_weighted(latency[stamp]["BackendDuration"]),
+                    time=_stamp(row.get("time")),
+                    overall_ms=_number(row.get("duration_ms")),
+                    backend_ms=_number(row.get("backend_ms")),
                 )
-                for stamp in stamps
+                for row in bins
             ],
+        )
+        attempts = {
+            (str(row.get("host") or ""), str(row.get("target") or "").casefold()): {
+                "attempts": int(_number(row.get("attempts")) or 0),
+                "failures": int(_number(row.get("failures")) or 0),
+                "throttled": int(_number(row.get("throttled")) or 0),
+            }
+            for row in per_member
+        }
+        return gateway, attempts
+
+    @staticmethod
+    def _attempts(member: Any, attempts: dict[tuple[str, str], dict[str, int]]) -> dict[str, int]:
+        """The gateway's attempts on a member, matched by host and provider/model."""
+        if member is None:
+            return {"attempts": 0, "failures": 0, "throttled": 0}
+        try:
+            provider, _, model = member_target(member.url, member.model)
+        except ValueError:
+            return {"attempts": 0, "failures": 0, "throttled": 0}
+        host = (urlsplit(member.url).hostname or "").casefold()
+        return attempts.get(
+            (host, f"{provider}/{model}".casefold()), {"attempts": 0, "failures": 0, "throttled": 0}
         )
 
     # -- Foundry -------------------------------------------------------------------------

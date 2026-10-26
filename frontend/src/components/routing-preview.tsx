@@ -1,9 +1,10 @@
-// Live diagram of what APIM does with the pool draft, with a failure simulator. Layout follows
-// images/apim-backend-pool-failover.gif: client → APIM gateway (pool hub) → members → deployments.
+// Live diagram of what the LiteLLM gateway does with the pool draft, with a failure simulator.
+// Layout: client → gateway (pool hub) → members → deployments.
 import { Cloud, Pause, Play, RotateCcw } from "lucide-react"
 import { useEffect, useId, useMemo, useState } from "react"
 
 import { fill, useI18n, type MessageKey } from "../i18n"
+import { draftSettings } from "../pool-breaker"
 import { memberRole } from "../pool-changes"
 import { deploymentMode } from "../pool-modes"
 import {
@@ -15,20 +16,9 @@ import {
   type Outcome,
   type Phase,
   type SimInput,
-  type SimRetry,
 } from "../routing-sim"
-import type { ApiView, BackendView, CircuitBreaker, PoolWrite } from "../types"
+import type { BackendView, PoolWrite } from "../types"
 import { Button } from "./ui"
-
-// A rule this app cannot parse (for example percentage based); assume it counts every failure.
-const UNPARSED_BREAKER: CircuitBreaker = {
-  failure_count: 1,
-  interval_seconds: 60,
-  trip_duration_seconds: 60,
-  accept_retry_after: false,
-  status_code_ranges: [{ minimum: 400, maximum: 599 }],
-  error_reasons: ["BackendConnectionFailure", "Timeout"],
-}
 
 // Slow enough to follow one request end to end; each phase lets a dot finish its trip.
 const PHASE_MS = 5600
@@ -55,22 +45,6 @@ const HUB_RING = 21
 
 const clip = (text: string, max: number) => text.length > max ? `${text.slice(0, max - 1)}…` : text
 
-function breakerOf(backend: BackendView | undefined) {
-  if (!backend) return null
-  return backend.circuit_breaker ?? (backend.has_circuit_breaker ? UNPARSED_BREAKER : null)
-}
-
-/** The retry the first bound API applies; the diagram shows one request path. */
-function retryOf(apis: ApiView[]): SimRetry | null {
-  const binding = apis[0]?.binding
-  if (!binding?.retry_on_429) return null
-  return {
-    attempts: binding.max_attempts_per_request ?? 2,
-    interval: binding.retry_interval_seconds ?? 1,
-    firstFast: binding.first_fast_retry ?? true,
-  }
-}
-
 type Tone = "ok" | "idle" | "trip" | "error"
 
 function tone(result: MemberResult): Tone {
@@ -82,16 +56,17 @@ function tone(result: MemberResult): Tone {
 export function RoutingPreview({
   draft,
   backendById,
-  boundApis,
-  apimName,
+  modelName,
+  gatewayName,
   dirty,
   pendingIds,
 }: {
   draft: PoolWrite
   /** Keyed by lower-case backend ID. */
   backendById: Map<string, BackendView>
-  boundApis: ApiView[]
-  apimName?: string
+  /** What clients send as the model: the pool ID. */
+  modelName: string
+  gatewayName?: string
   dirty: boolean
   /** Lower-case IDs of draft members that are not in the published pool yet. */
   pendingIds: ReadonlySet<string>
@@ -121,11 +96,11 @@ export function RoutingPreview({
 
   const backendOf = (backendId: string) => backendById.get(backendId.toLowerCase())
   const label = (backendId: string) => backendOf(backendId)?.title || backendId
+  const settings = draftSettings(draft)
   const input: SimInput = {
-    members: draft.members.map((member) => ({ ...member, breaker: breakerOf(backendOf(member.backend_id)) })),
-    retry: retryOf(boundApis),
-    bound: boundApis.length > 0,
-    sessionAffinity: draft.session_affinity,
+    members: draft.members,
+    breaker: settings.circuit_breaker,
+    retries: settings.retries,
     failing,
     kind,
   }
@@ -153,11 +128,10 @@ export function RoutingPreview({
   const gateBottom = TOP + count * rowH + 40
   const height = gateBottom + 16
   const rowY = (index: number) => TOP + rowH * (index + 0.5)
-  const bound = boundApis.length > 0
+  // Clients reach a pool by its name as soon as it is published; there is nothing to bind.
+  const bound = true
   const mode = draft.members.length ? deploymentMode(draft.members) : null
-  const retry = input.retry
-  const hubTone: Tone = !bound ? "idle" : result.outcome === "ok" ? "ok" : result.outcome === "down" ? "error" : "trip"
-  const firstApi = boundApis[0]
+  const hubTone: Tone = result.outcome === "ok" ? "ok" : result.outcome === "down" ? "error" : "trip"
 
   // Hub to member as a level-in, level-out curve; the request dots ride the same curve.
   const bend = (index: number, endX: number) =>
@@ -169,9 +143,8 @@ export function RoutingPreview({
     `M ${X.targetL} ${rowY(index)} L ${X.pillL} ${rowY(index)} C ${X.pillL - BEND} ${rowY(index)} ${X.hub + BEND} ${hubY} ${X.hub} ${hubY}`
 
   const status = (item: MemberResult): string => {
-    const breaker = input.members.find((member) => member.backend_id === item.backend_id)?.breaker
     if (!backendOf(item.backend_id)) return t.statusMissing
-    if (item.state === "tripped") return fill(t.statusTripped, { trip: breaker?.trip_duration_seconds ?? "—" })
+    if (item.state === "tripped") return fill(t.statusTripped, { cooldown: settings.circuit_breaker.cooldown_seconds })
     if (item.failing) {
       return item.share > 0 ? fill(t.statusFailing, { code: kind === "throttle" ? "429" : "5xx" }) : t.statusFailingIdle
     }
@@ -220,18 +193,20 @@ export function RoutingPreview({
           <rect x={X.clientL} y={hubY - 28} width={X.clientR - X.clientL} height={56} rx={10} />
           <text x={(X.clientL + X.clientR) / 2} y={hubY - 4} textAnchor="middle" className="rp-title">{t.client}</text>
           <text x={(X.clientL + X.clientR) / 2} y={hubY + 14} textAnchor="middle" className="rp-sub">
-            {firstApi ? clip(`/${firstApi.path}${boundApis.length > 1 ? ` +${boundApis.length - 1}` : ""}`, 16) : t.unbound}
+            {clip(modelName, 16)}
           </text>
         </g>
 
         <rect x={X.gateL} y={14} width={X.gateR - X.gateL} height={gateBottom - 14} rx={16} className="rp-gateway" />
         <Cloud x={X.gateL + 16} y={26} size={22} strokeWidth={1.75} className="rp-cloud" />
         <text x={X.gateL + 46} y={42} className="rp-title">{t.gateway}</text>
-        {apimName && <text x={X.gateL + 46} y={60} className="rp-sub">{clip(apimName, 40)}</text>}
+        {gatewayName && <text x={X.gateL + 46} y={60} className="rp-sub">{clip(gatewayName, 40)}</text>}
         <text x={(X.gateL + X.gateR) / 2} y={gateBottom - 14} textAnchor="middle" className="rp-sub">
-          {!bound ? t.gatewayUnbound : retry
-            ? fill(retry.firstFast ? t.retrySummaryFast : t.retrySummary, { attempts: retry.attempts, interval: retry.interval })
-            : t.retryOff}
+          {fill(settings.retries ? t.retrySummary : t.retryOff, {
+            retries: settings.retries,
+            count: settings.circuit_breaker.allowed_fails + 1,
+            cooldown: settings.circuit_breaker.cooldown_seconds,
+          })}
         </text>
 
         <circle cx={X.hub} cy={hubY} r={Math.min(count * rowH / 2 + 24, 104)} fill={`url(#${markerPrefix}-glow)`} />

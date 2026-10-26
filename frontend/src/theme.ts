@@ -4,7 +4,7 @@
 export type ThemePreference = "system" | "light" | "dark"
 export type ThemeMode = "light" | "dark"
 
-export const THEME_STORAGE_KEY = "apim-backend-pool:theme"
+export const THEME_STORAGE_KEY = "ai-gateway-pool:theme"
 export const THEME_PREFERENCES: readonly ThemePreference[] = ["system", "light", "dark"]
 
 export function parsePreference(stored: string | null): ThemePreference {

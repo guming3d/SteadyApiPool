@@ -1,19 +1,13 @@
-// "How to call this pool": what a client needs to call the APIM API bound to the pool, with
-// code generated for that API, and the setup that otherwise makes the first call fail.
+// "How to call this pool": what a client needs to call the pool through the gateway, with code
+// generated for it, and the setup that otherwise makes the first call fail.
 import { Check, CircleAlert, Copy, Terminal } from "lucide-react"
 import { useState } from "react"
 
-import {
-  callSnippet,
-  DEFAULT_API_VERSION,
-  KEY_PLACEHOLDER,
-  SNIPPET_LANGUAGES,
-  type SnippetLanguage,
-} from "../call-snippets"
+import { callSnippet, KEY_PLACEHOLDER, SNIPPET_LANGUAGES, type SnippetLanguage } from "../call-snippets"
 import { fill, useI18n } from "../i18n"
-import type { ApiView, Capabilities } from "../types"
-import { endpointUrl } from "./api-bindings"
+import type { Capabilities, PoolEndpoint } from "../types"
 import { KeyStep, TryIt } from "./api-tester"
+import { baseUrlOf } from "./pool-endpoint"
 import { FoundryAccessNotice, useOpenSetup } from "./setup-wizard"
 
 const LANGUAGE_LABEL: Record<SnippetLanguage, string> = {
@@ -44,48 +38,35 @@ function CodeBlock({ code, label }: { code: string; label: string }) {
 }
 
 export function CallGuide({
-  apis,
+  endpoint,
   capabilities,
-  model,
-  sessionAffinity,
+  canWrite,
+  usesIdentity,
   accountIds,
 }: {
-  /** APIs bound to this pool. */
-  apis: ApiView[]
+  endpoint: PoolEndpoint | undefined
   capabilities: Capabilities | undefined
-  /** The pool's model as read from Azure, if known. */
-  model: string | null
-  sessionAffinity: boolean
+  canWrite: boolean
+  /** Some members are Foundry deployments the gateway calls as its managed identity. */
+  usesIdentity: boolean
   /** Cognitive Services accounts of the pool's Foundry members. */
   accountIds: string[]
 }) {
   const { t, locale } = useI18n()
   const openSetup = useOpenSetup()
-  const [apiId, setApiId] = useState<string | null>(null)
   const [language, setLanguage] = useState<SnippetLanguage>("python")
-  const [apiVersion, setApiVersion] = useState(DEFAULT_API_VERSION)
-  // Per API, since a key usually opens only its own API. Never stored beyond this page.
-  const [keysByApi, setKeysByApi] = useState<Record<string, string>>({})
+  const [model, setModel] = useState<string | null>(null)
+  // Kept in this page's memory only.
+  const [key, setKey] = useState("")
   const [keyInCode, setKeyInCode] = useState(false)
 
   const header = <header className="section-header"><b className="call-title"><Terminal size={14} />{t.callGuideTitle}</b></header>
-  if (!apis.length) {
-    return <section className="call-guide">{header}<div className="state">{t.callGuideNoApi}</div></section>
-  }
+  if (!endpoint) return <section className="call-guide">{header}</section>
 
-  const api = apis.find((item) => item.id === apiId) ?? apis[0]!
-  const baseUrl = endpointUrl(capabilities?.gateway_url, api.path)
-  const keyHeader = api.subscription_required ? api.subscription_key_header : null
-  const modelName = model ?? "<model>"
-  const key = keysByApi[api.id] ?? ""
-  const setKey = (value: string) => setKeysByApi((current) => ({ ...current, [api.id]: value }))
-  const code = callSnippet(language, {
-    baseUrl, keyHeader, apiVersion: apiVersion.trim() || DEFAULT_API_VERSION, model: modelName,
-    key: keyInCode && key ? key : undefined,
-  })
-  const usesIdentity = Boolean(api.binding?.managed_identity_resource)
-  const principalId = capabilities?.apim_principal_id ?? null
-  const portalUrl = capabilities ? `https://portal.azure.com/#resource${capabilities.apim_resource_id}/overview` : null
+  const baseUrl = baseUrlOf(endpoint, capabilities?.gateway_url)
+  const modelName = model && endpoint.model_names.includes(model) ? model : endpoint.pool_id
+  const code = callSnippet(language, { baseUrl, model: modelName, key: keyInCode && key ? key : undefined })
+  const principalId = capabilities?.gateway_principal_id ?? null
 
   return <section className="call-guide">
     {header}
@@ -101,31 +82,29 @@ export function CallGuide({
         : <FoundryAccessNotice accountIds={accountIds} />}
     </div>}
 
-    {apis.length > 1 && <div className="segment" role="group" aria-label={t.api}>
-      {apis.map((item) => <button key={item.id} type="button" className={item.id === api.id ? "active" : ""} aria-pressed={item.id === api.id} onClick={() => setApiId(item.id)}>/{item.path}</button>)}
+    {endpoint.model_names.length > 1 && <div className="segment" role="group" aria-label={t.modelName}>
+      {endpoint.model_names.map((item) => <button key={item} type="button" className={item === modelName ? "active" : ""} aria-pressed={item === modelName} onClick={() => setModel(item)}>{item}</button>)}
     </div>}
 
     <dl className="call-facts">
       <div><dt>{t.baseUrl}</dt><dd><code>{baseUrl}</code><CopyButton text={baseUrl} label={t.baseUrl} /></dd></div>
-      <div><dt>{t.auth}</dt><dd>{keyHeader ? <code>{keyHeader}</code> : "—"}</dd></div>
-      <div><dt>api-version</dt><dd><input value={apiVersion} onChange={(event) => setApiVersion(event.target.value)} aria-label="api-version" /></dd></div>
+      <div><dt>{t.modelName}</dt><dd><code>{modelName}</code><CopyButton text={modelName} label={t.modelName} /></dd></div>
+      <div><dt>{t.auth}</dt><dd><code>Authorization: Bearer &lt;key&gt;</code></dd></div>
     </dl>
 
     <ol className="call-steps">
       <li>
         <b>{t.callStepKey}</b>
-        {keyHeader
-          ? <KeyStep key={api.id} api={api} portalUrl={portalUrl} apimName={capabilities?.apim_name ?? "APIM"} value={key} onChange={setKey} />
-          : <p>{t.callStepKeyNone}</p>}
+        <KeyStep poolId={endpoint.pool_id} canWrite={canWrite} value={key} onChange={setKey} />
       </li>
       <li>
         <b>{t.callStepTry}</b>
-        <TryIt key={api.id} api={api} apiVersion={apiVersion} subscriptionKey={key} model={modelName} />
+        <TryIt poolId={endpoint.pool_id} baseUrl={baseUrl} virtualKey={key} model={modelName} />
       </li>
       <li>
         <b>{t.callStepRequest}</b>
         <p>{fill(t.callStepRequestBody, { placeholder: KEY_PLACEHOLDER }, locale)}</p>
-        {keyHeader && key && <label className="check"><input type="checkbox" checked={keyInCode} onChange={(event) => setKeyInCode(event.target.checked)} />{t.keyInCode}</label>}
+        {key && <label className="check"><input type="checkbox" checked={keyInCode} onChange={(event) => setKeyInCode(event.target.checked)} />{t.keyInCode}</label>}
         <div className="segment code-tabs" role="tablist">
           {SNIPPET_LANGUAGES.map((candidate) => <button key={candidate} type="button" role="tab" aria-selected={candidate === language} className={candidate === language ? "active" : ""} onClick={() => setLanguage(candidate)}>{LANGUAGE_LABEL[candidate]}</button>)}
         </div>
@@ -136,10 +115,10 @@ export function CallGuide({
       <summary>{t.callStepNotes}</summary>
       <ul>
         <li>{fill(t.callNoteModel, { model: modelName }, locale)}</li>
-        {api.binding?.retry_on_429 && <li>{t.callNoteRetry}</li>}
-        <li>{t.callNote503}</li>
+        <li>{t.callNoteRetry}</li>
+        <li>{t.callNote429}</li>
         <li>{t.callNoteStream}</li>
-        {sessionAffinity && <li>{t.callNoteAffinity}</li>}
+        <li>{t.callNoteResponses}</li>
       </ul>
     </details>
   </section>

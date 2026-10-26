@@ -3,17 +3,17 @@ import test from "node:test"
 
 import {
   addMember,
-  API_PATH_PATTERN,
   appendMembers,
   changeWeight,
   deploymentMode,
   draftIssues,
   membersForMode,
-  poolPayload,
+  MODEL_NAME_PATTERN,
+  POOL_ID_PATTERN,
   primaryFirst,
   removeMember,
   setPrimary,
-  suggestApiPath,
+  suggestPoolId,
   trafficShare,
 } from "../src/pool-modes.ts"
 
@@ -64,7 +64,7 @@ test("removing or changing the primary keeps failover valid", () => {
   assert.equal(deploymentMode(setPrimary(failover, "c", "failover")), "failover")
 })
 
-test("weights clamp to APIM's 1..100 and shares round", () => {
+test("weights clamp to 1..100 and shares round", () => {
   const members = changeWeight([member("a"), member("b")], "a", 500)
   assert.equal(members[0].weight, 100)
   assert.equal(changeWeight(members, "a", 0)[0].weight, 1)
@@ -72,16 +72,9 @@ test("weights clamp to APIM's 1..100 and shares round", () => {
 })
 
 test("drafts need 2-30 members and distinct weights in weighted mode", () => {
-  assert.deepEqual(draftIssues({ members: [member("a")], session_affinity: false }, "failover"), ["members"])
-  assert.deepEqual(draftIssues({ members: [member("a"), member("b")], session_affinity: false }, "weighted"), ["weights"])
-  assert.deepEqual(draftIssues({ members: [member("a", 0, 2), member("b")], session_affinity: false }, "weighted"), [])
-})
-
-test("unsupported affinity cannot silently downgrade to ordinary balancing", () => {
-  const draft = { members: [member("a"), member("b")], session_affinity: true }
-  assert.throws(() => poolPayload(draft, false))
-  assert.equal(poolPayload({ ...draft, session_affinity: false }, false).session_affinity, false)
-  assert.equal(poolPayload(draft, true).session_affinity, true)
+  assert.deepEqual(draftIssues({ members: [member("a")] }, "failover"), ["members"])
+  assert.deepEqual(draftIssues({ members: [member("a"), member("b")] }, "weighted"), ["weights"])
+  assert.deepEqual(draftIssues({ members: [member("a", 0, 2), member("b")] }, "weighted"), [])
 })
 
 test("reloaded pools keep the written primary when priorities tie", () => {
@@ -89,14 +82,17 @@ test("reloaded pools keep the written primary when priorities tie", () => {
   assert.deepEqual(primaryFirst([member("b", 1), member("a", 0)]).map((m) => m.backend_id), ["a", "b"])
 })
 
-test("new pool APIs get a readable path that passes APIM's path rule", () => {
-  assert.equal(suggestApiPath("gpt-4.1", "pool-gpt-4-1", "pool-"), "gpt-4.1")
-  assert.equal(suggestApiPath("  GPT 4o Mini! ", "x", "pool-"), "gpt-4o-mini")
-  assert.equal(suggestApiPath(null, "pool-gpt-4o", "pool-"), "gpt-4o")
-  assert.equal(suggestApiPath("", "gpt-4o", "pool-"), "gpt-4o")
-  assert.equal(suggestApiPath("-._", "pool-", "pool-"), "pool")
-  for (const path of ["gpt-4.1", "gpt-4o-mini", "gpt-4o", "pool"]) assert.match(path, API_PATH_PATTERN)
-  assert.doesNotMatch("/gpt", API_PATH_PATTERN)
-  assert.doesNotMatch("a b", API_PATH_PATTERN)
+test("a new pool's ID comes from its model and is a valid model name", () => {
+  assert.equal(suggestPoolId("gpt-4.1"), "gpt-4-1")
+  assert.equal(suggestPoolId("  GPT 4o Mini! "), "gpt-4o-mini")
+  assert.equal(suggestPoolId(null), "pool")
+  assert.equal(suggestPoolId("gpt-4o", ["GPT-4o", "gpt-4o-2"]), "gpt-4o-3")
+  for (const id of ["gpt-4-1", "gpt-4o-mini", "pool"]) {
+    assert.match(id, POOL_ID_PATTERN)
+    assert.match(id, MODEL_NAME_PATTERN)
+  }
+  assert.match("gpt-4o-2024-11-20", MODEL_NAME_PATTERN)
+  assert.match("azure:gpt-4.1", MODEL_NAME_PATTERN)
+  assert.doesNotMatch("gpt 4o", MODEL_NAME_PATTERN)
+  assert.doesNotMatch("gpt.4", POOL_ID_PATTERN)
 })
-

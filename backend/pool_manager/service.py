@@ -1,62 +1,59 @@
-"""Backend pool operations against one APIM service."""
+"""Pool operations against one LiteLLM gateway.
+
+A pool is a LiteLLM model group: one row per member, all named after the pool. Saving a pool
+writes its rows (new ones first, then changes, then removals, so the pool never runs empty);
+LiteLLM has no ETags, so the pool's ETag is a hash of its rows and a save re-reads and compares
+it first. Rows this app didn't write are shown but never changed.
+"""
 
 from __future__ import annotations
 
-import hashlib
 import logging
-import re
 from collections.abc import Mapping
-from concurrent.futures import ThreadPoolExecutor
-from html import unescape
+from threading import Lock
 from typing import Any
 
-import httpx
-
-from .arm import ArmClient, ArmError, segment
+from .arm import ArmClient
 from .config import Settings
+from .gateway import GatewayConnection, GatewayUnavailable
+from .litellm import LiteLLMClient, LiteLLMError
 from .model_check import FoundryModelCheck
 from .models import (
-    ApiBindingWrite,
-    ApiView,
+    AliasView,
     BackendView,
     Capabilities,
-    CircuitBreaker,
     CleanupConfirm,
+    ConfigPreview,
+    ConfigView,
     MemberBackendWrite,
     ModelCheck,
-    PolicyPreview,
-    PolicyView,
-    PoolApiCreate,
+    PoolEndpoint,
     PoolView,
     PoolWrite,
-    RemovalApi,
+    RemovalAlias,
     RemovalConfirm,
+    RemovalKey,
     RemovalPlan,
     RemovalResult,
     is_valid_resource_id,
 )
-from .policy import PolicyConflict, apply_binding, read_binding, remove_binding
 from .resources import (
-    WILDCARD_OPERATION,
-    WILDCARD_OPERATION_ID,
-    api_pool_id,
-    api_properties,
-    circuit_breaker_properties,
-    credential_named_value_id,
+    Member,
+    config_yaml,
+    credential_name,
     is_managed,
     is_protected,
-    parse_backend,
+    member_target,
     parse_pool,
-    pool_properties,
-    single_backend_properties,
+    pool_row,
+    pool_settings,
+    row_member,
+    row_metadata,
+    row_model_id,
+    row_name,
 )
 
 logger = logging.getLogger(__name__)
-
-# Audience of the token APIM's managed identity sends to Azure OpenAI / Foundry members.
-COGNITIVE_SERVICES_RESOURCE = "https://cognitiveservices.azure.com"
-
-_POLICY_SCAN_WORKERS = 8
 
 
 class ServiceError(Exception):
@@ -66,63 +63,55 @@ class ServiceError(Exception):
         self.message = message
 
 
-def _translate(error: ArmError) -> ServiceError:
-    if error.status == 412:
-        return ServiceError(409, "The resource changed since it was loaded. Reload and retry.")
-    if error.status in {401, 403}:
-        return ServiceError(
-            502, f"The app identity is not authorized for this APIM operation: {error.message}"
-        )
-    if error.status in {400, 404, 409}:
+def translate_error(error: LiteLLMError | GatewayUnavailable) -> ServiceError:
+    if isinstance(error, GatewayUnavailable):
         return ServiceError(error.status, error.message)
-    return ServiceError(502, f"APIM returned {error.status} {error.code}: {error.message}")
+    if error.status in {401, 403}:
+        return ServiceError(502, f"The gateway refused the master key: {error.message}")
+    if error.status in {400, 404, 409, 422}:
+        return ServiceError(400 if error.status == 422 else error.status, error.message)
+    return ServiceError(502, f"The gateway returned {error.status}: {error.message}")
 
 
-def policy_response_value(response: httpx.Response) -> str:
-    """APIM returns the policy as raw XML
-    (sometimes entity-escaped) or, depending on the endpoint, inside a JSON envelope."""
-    if "json" in response.headers.get("content-type", "").casefold():
-        value = (response.json().get("properties") or {}).get("value")
-    else:
-        value = response.text
-        if value.lstrip().startswith("&lt;"):
-            value = unescape(value)
-    if not isinstance(value, str) or not value.strip():
-        raise ServiceError(502, "APIM returned an API policy without an XML value")
-    return value
+def test_key_alias(prefix: str, pool_id: str) -> str:
+    return f"{prefix}test-{pool_id}"
 
 
-def _api_path(api: Mapping[str, Any]) -> str:
-    return str((api.get("properties") or {}).get("path") or "").strip("/")
-
-
-def _default_api_id(pool_id: str, path: str, apis: list[dict[str, Any]]) -> str:
-    """The pool ID for a pool's first API (or a retry of it); ``<pool>-<path>`` for further ones."""
-    same_name = next(
-        (api for api in apis if str(api.get("name") or "").casefold() == pool_id.casefold()), None
-    )
-    if same_name is None or _api_path(same_name).casefold() == path.casefold():
-        return pool_id
-    slug = re.sub(r"-{2,}", "-", re.sub(r"[^A-Za-z0-9-]+", "-", f"{pool_id}-{path}")).strip("-")
-    if len(slug) <= 80:
-        return slug
-    digest = hashlib.sha256(f"{pool_id}/{path}".encode()).hexdigest()[:8]
-    return f"{slug[:71].rstrip('-')}-{digest}"
-
-
-def _concurrency_headers(etag: str | None) -> dict[str, str]:
-    return {"If-Match": etag} if etag else {"If-None-Match": "*"}
+def alias_target(value: object) -> str | None:
+    """The model group an alias points at: ``"pool"`` or ``{"model": "pool", ...}``."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, Mapping) and isinstance(value.get("model"), str):
+        return str(value["model"])
+    return None
 
 
 class PoolManagerService:
-    def __init__(self, settings: Settings, arm: ArmClient) -> None:
+    def __init__(self, settings: Settings, arm: ArmClient, gateway: GatewayConnection) -> None:
         self._settings = settings
         self._arm = arm
+        self.gateway = gateway
         self._protected = settings.protected_prefix_list
-        self._service: dict[str, Any] | None = None
         self._models = FoundryModelCheck(settings, arm)
+        # Members added (e.g. imported from Foundry) that no saved pool uses yet. In memory
+        # only: an api_key member's key lives here until a pool save stores it in LiteLLM.
+        self._pending: dict[str, Member] = {}
+        self._pending_lock = Lock()
 
     # -- helpers -----------------------------------------------------------------------
+
+    def client(self) -> LiteLLMClient:
+        """The gateway's admin client; ``ServiceError`` while it can't be reached."""
+        try:
+            return self.gateway.client()
+        except GatewayUnavailable as error:
+            raise translate_error(error) from error
+
+    def _rows(self) -> list[dict[str, Any]]:
+        try:
+            return self.client().models()
+        except LiteLLMError as error:
+            raise translate_error(error) from error
 
     def _require_id(self, resource_id: str) -> None:
         if not is_valid_resource_id(resource_id):
@@ -135,418 +124,463 @@ class PoolManagerService:
                 403, f"{resource_id} is owned by another control plane and is read-only here"
             )
 
-    def _backend_path(self, backend_id: str) -> str:
-        return f"/backends/{segment(backend_id)}"
+    @staticmethod
+    def _groups(rows: list[dict[str, Any]]) -> dict[str, tuple[str, list[dict[str, Any]]]]:
+        """Rows by lower-case model group, with the group's own spelling."""
+        groups: dict[str, tuple[str, list[dict[str, Any]]]] = {}
+        for row in rows:
+            name = row_name(row)
+            if name:
+                groups.setdefault(name.casefold(), (name, []))[1].append(row)
+        return groups
 
-    def _get_backend(self, backend_id: str) -> tuple[dict[str, Any], str | None] | None:
-        # The pool API version is a superset; it also returns ``pool.sessionAffinity``.
-        return self._arm.get_json(
-            self._backend_path(backend_id), api_version=self._settings.pool_api_version
-        )
-
-    def _all_backends(self) -> list[tuple[dict[str, Any], str | None]]:
-        return [
-            (item, None)
-            for item in self._arm.list("/backends", api_version=self._settings.pool_api_version)
-        ]
+    def _aliases(self) -> dict[str, str]:
+        """Every alias on the gateway, mapped to the model group it points at."""
+        try:
+            raw = self.client().router_settings().get("model_group_alias")
+        except LiteLLMError as error:
+            raise translate_error(error) from error
+        if not isinstance(raw, Mapping):
+            return {}
+        return {str(name): target for name, value in raw.items() if (target := alias_target(value))}
 
     # -- capabilities ------------------------------------------------------------------
 
     def capabilities(self) -> Capabilities:
+        try:
+            info = self.gateway.info()
+        except GatewayUnavailable as error:
+            raise translate_error(error) from error
         return Capabilities(
-            apim_name=self._settings.apim_name,
-            resource_group=self._settings.resource_group,
-            session_affinity_supported=self._settings.session_affinity_supported,
+            gateway_name=info.name,
+            gateway_kind="external" if self._settings.external else "aca",
+            resource_group=self._settings.resource_group or None,
             id_prefix=self._settings.id_prefix,
             protected_prefixes=self._protected,
-            apim_resource_id=self._arm.resource_id,
-            apim_principal_id=self._service_value("identity", "principalId"),
-            gateway_url=self._service_value("properties", "gatewayUrl"),
+            gateway_resource_id=info.resource_id,
+            gateway_principal_id=info.principal_id,
+            gateway_url=info.url,
+            litellm_version=self.gateway.version(),
+            app_insights_id=info.app_insights_id,
             discovery_subscriptions=self._settings.discovery_subscription_list,
         )
 
-    def _service_value(self, section: str, key: str) -> str | None:
-        """A field of the APIM service resource. It is cached once the service has a managed
-        identity; until then it is re-read, so enabling the identity shows up without a restart."""
-        if self._service is None or not (self._service.get("identity") or {}).get("principalId"):
-            try:
-                found = self._arm.get_json("", api_version=self._settings.api_version)
-            except ArmError as error:
-                logger.warning("Cannot read the APIM service: %s", error.message)
-                return None
-            self._service = found[0] if found else {}
-        return str((self._service.get(section) or {}).get(key) or "") or None
-
-    def service_plan(self) -> tuple[str, int, str]:
-        """The service's tier, units and region, e.g. ("BasicV2", 1, "East US 2")."""
-        if self._service is None:
-            self._service_value("sku", "name")  # Reads and caches the service resource.
-        service = self._service or {}
-        sku = service.get("sku") or {}
-        return (
-            str(sku.get("name") or ""),
-            int(sku.get("capacity") or 1),
-            str(service.get("location") or ""),
-        )
-
-    def apim_identity(self) -> dict[str, Any]:
-        """The APIM service's ``identity`` block and provisioning state, read fresh."""
-        found = self._arm.get_json("", api_version=self._settings.api_version)
-        self._service = found[0] if found else {}
-        identity = dict(self._service.get("identity") or {})
-        identity["provisioningState"] = (self._service.get("properties") or {}).get(
-            "provisioningState"
-        )
-        return identity
-
-    def forget_service(self) -> None:
-        """Re-read the APIM service next time, e.g. after its identity was enabled."""
-        self._service = None
-
     def foundry_accounts(self) -> list[str]:
-        """Foundry accounts behind members that authenticate with the APIM managed identity;
-        that identity needs a data-plane role on each of them."""
+        """Foundry accounts behind members the gateway calls with its managed identity; that
+        identity needs a data-plane role on each of them."""
         accounts: dict[str, str] = {}
         for view in self.list_backends():
-            if view.type == "Single" and view.auth_type == "managed_identity":
+            if view.provider == "azure" and view.auth_type == "managed_identity":
                 account = self._models.account_for_url(view.url)
                 if account:
                     accounts.setdefault(account.casefold(), account)
         return sorted(accounts.values(), key=str.casefold)
 
-    # -- member backends ---------------------------------------------------------------
+    # -- members -----------------------------------------------------------------------
+
+    def _members(self, rows: list[dict[str, Any]]) -> dict[str, Member]:
+        """Members of every pool, then the pending ones no pool uses yet, by lower-case ID."""
+        members: dict[str, Member] = {}
+        for row in rows:
+            member = row_member(row)
+            known = members.setdefault(member.id.casefold(), member)
+            if row_name(row) not in known.pools:
+                known.pools.append(row_name(row))
+        with self._pending_lock:
+            for key, member in list(self._pending.items()):
+                if key in members:
+                    # Saved into a pool since; the rows describe it now.
+                    if members[key].managed:
+                        del self._pending[key]
+                    continue
+                members[key] = Member(**{**member.__dict__, "pools": []})
+        return members
 
     def list_backends(self) -> list[BackendView]:
-        try:
-            views = [
-                parse_backend(body, etag, self._protected) for body, etag in self._all_backends()
-            ]
-        except ArmError as error:
-            raise _translate(error) from error
-        return sorted((view for view in views if view.type == "Single"), key=lambda v: v.id)
+        members = self._members(self._rows())
+        return sorted(
+            (member.view(self._protected) for member in members.values()), key=lambda v: v.id
+        )
 
     def get_backend(self, backend_id: str) -> BackendView:
         self._require_id(backend_id)
-        try:
-            found = self._get_backend(backend_id)
-        except ArmError as error:
-            raise _translate(error) from error
-        if found is None or (found[0].get("properties") or {}).get("type") == "Pool":
-            raise ServiceError(404, f"Backend {backend_id} was not found")
-        return parse_backend(found[0], found[1], self._protected)
+        member = self._members(self._rows()).get(backend_id.casefold())
+        if member is None:
+            raise ServiceError(404, f"Member {backend_id} was not found")
+        return member.view(self._protected)
 
     def put_backend(self, backend_id: str, write: MemberBackendWrite, actor: str) -> BackendView:
+        """Adds a member for pools to use, or changes one: every row of it is rewritten."""
         self._require_writable(backend_id)
         try:
-            existing = self._get_backend(backend_id)
-            if existing is None and write.etag:
-                raise ServiceError(404, f"Backend {backend_id} no longer exists")
-            if existing is not None:
-                properties = existing[0].get("properties") or {}
-                if write.etag is None:
-                    raise ServiceError(409, f"Backend {backend_id} already exists")
-                if properties.get("type") == "Pool" or not is_managed(properties):
-                    raise ServiceError(
-                        409, f"Backend {backend_id} was not created by this app and is read-only"
-                    )
-            previous = (
-                parse_backend(existing[0], existing[1], self._protected) if existing else None
-            )
-
-            named_value: str | None = None
-            if write.auth.type in {"api_key", "bearer"}:
-                if write.auth.secret is not None:
-                    named_value = credential_named_value_id(backend_id)
-                    self._put_named_value(named_value, write)
-                elif previous is not None and previous.named_value:
-                    named_value = previous.named_value
-                else:
-                    raise ServiceError(400, "A credential secret is required")
-
-            response = self._arm.request(
-                "PUT",
-                self._backend_path(backend_id),
-                api_version=self._settings.api_version,
-                json_body={"properties": single_backend_properties(write, backend_id, named_value)},
-                headers=_concurrency_headers(write.etag),
-            )
-            self._arm.wait(response)
-            if (
-                previous is not None
-                and previous.named_value
-                and previous.named_value != named_value
-            ):
-                self._delete_owned_named_value(backend_id, previous.named_value)
-        except ArmError as error:
-            raise _translate(error) from error
-        logger.info("%s wrote member backend %s", actor, backend_id)
-        return self.get_backend(backend_id)
-
-    def _put_named_value(self, named_value: str, write: MemberBackendWrite) -> None:
-        secret = write.auth.secret
-        assert secret is not None
-        properties: dict[str, Any] = {
-            "displayName": named_value,
-            "secret": True,
-            "tags": ["apim-backend-pool"],
-        }
-        if secret.value is not None:
-            properties["value"] = secret.value.get_secret_value()
-        else:
-            key_vault: dict[str, str] = {"secretIdentifier": str(secret.key_vault_secret_id)}
-            if secret.key_vault_identity_client_id:
-                key_vault["identityClientId"] = secret.key_vault_identity_client_id
-            properties["keyVault"] = key_vault
-        response = self._arm.request(
-            "PUT",
-            f"/namedValues/{segment(named_value)}",
-            api_version=self._settings.api_version,
-            json_body={"properties": properties},
+            provider, _, model = member_target(str(write.url), write.model)
+        except ValueError as error:
+            raise ServiceError(400, str(error)) from error
+        rows = self._rows()
+        current = self._members(rows).get(backend_id.casefold())
+        if current is not None and not current.managed:
+            raise ServiceError(409, f"Member {backend_id} was not added by this app")
+        member = Member(
+            id=current.id if current else backend_id,
+            title=write.title or (current.title if current else None),
+            url=str(write.url).rstrip("/"),
+            provider=provider,
+            model=model,
+            auth=write.auth.type,
+            # A pending member's key stays until a pool stores it.
+            secret=write.auth.secret or (current.secret if current else None),
         )
-        self._arm.wait(response)
+        stored = current is not None and current.auth == "api_key" and bool(current.pools)
+        if member.auth == "api_key" and member.secret is None and not stored:
+            raise ServiceError(400, "An API key is required")
+        in_rows = [row for row in rows if row_member(row).id.casefold() == member.id.casefold()]
+        if not in_rows:
+            with self._pending_lock:
+                self._pending[member.id.casefold()] = member
+            logger.info("%s added member %s", actor, member.id)
+            return member.view(self._protected)
+        client = self.client()
+        try:
+            self._store_credential(client, member)
+            for row in in_rows:
+                pool_id = row_name(row)
+                pool = parse_pool(pool_id, [r for r in rows if row_name(r) == pool_id], [])
+                entry = next(m for m in pool.members if m.backend_id == row_member(row).id)
+                position = [m.backend_id for m in pool.members].index(entry.backend_id)
+                body = pool_row(
+                    pool_id,
+                    member,
+                    priority=entry.priority,
+                    weight=entry.weight,
+                    position=position,
+                    settings=pool_settings(pool),
+                )
+                client.update_model(row_model_id(row), body)
+        except LiteLLMError as error:
+            raise translate_error(error) from error
+        logger.info("%s changed member %s in %d pool(s)", actor, member.id, len(in_rows))
+        return self.get_backend(member.id)
 
-    def _delete_owned_named_value(self, backend_id: str, named_value: str) -> None:
-        # Only the named value this app derived for the backend; never one shared by others.
-        if named_value != credential_named_value_id(backend_id):
+    def delete_backend(self, backend_id: str, actor: str) -> None:
+        """Forgets a member no pool uses yet; members in pools go when their pools drop them."""
+        self._require_writable(backend_id)
+        member = self._members(self._rows()).get(backend_id.casefold())
+        if member is None:
+            raise ServiceError(404, f"Member {backend_id} was not found")
+        if member.pools:
+            raise ServiceError(409, f"Member is in pool(s): {', '.join(member.pools)}")
+        with self._pending_lock:
+            self._pending.pop(backend_id.casefold(), None)
+        logger.info("%s removed member %s", actor, backend_id)
+
+    def _store_credential(self, client: LiteLLMClient, member: Member) -> None:
+        """Keeps an api_key member's key in a LiteLLM credential its rows refer to."""
+        if member.auth != "api_key" or member.secret is None:
             return
-        self._arm.request(
-            "DELETE",
-            f"/namedValues/{segment(named_value)}",
-            api_version=self._settings.api_version,
-            headers={"If-Match": "*"},
-            allow_not_found=True,
-        )
-
-    def delete_backend(self, backend_id: str, etag: str | None, actor: str) -> None:
-        self._require_writable(backend_id)
-        backend = self.get_backend(backend_id)
-        if not backend.managed:
-            raise ServiceError(409, f"Backend {backend_id} was not created by this app")
-        referencing = [
-            pool.id
-            for pool in self.list_pools()
-            if any(m.backend_id.casefold() == backend_id.casefold() for m in pool.members)
-        ]
-        if referencing:
-            raise ServiceError(409, f"Backend is a member of pool(s): {', '.join(referencing)}")
+        name = credential_name(member.id)
+        body = {
+            "credential_name": name,
+            "credential_values": {"api_key": member.secret.get_secret_value()},
+            "credential_info": {"managed_by": "AI Gateway Pool Manager", "member": member.id},
+        }
         try:
-            self._arm.request(
-                "DELETE",
-                self._backend_path(backend_id),
-                api_version=self._settings.api_version,
-                headers={"If-Match": etag or "*"},
-            )
-            if backend.named_value:
-                self._delete_owned_named_value(backend_id, backend.named_value)
-        except ArmError as error:
-            raise _translate(error) from error
-        logger.info("%s deleted member backend %s", actor, backend_id)
+            client.request("DELETE", f"/credentials/{name}")
+        except LiteLLMError as error:
+            if error.status not in {400, 404}:
+                raise
+        client.request("POST", "/credentials", json_body=body)
+        member.secret = None
+
+    def _delete_unused_credentials(self, client: LiteLLMClient, member_ids: list[str]) -> None:
+        """Deletes the credentials of members no row uses any more. Failures are logged."""
+        if not member_ids:
+            return
+        try:
+            in_use = {row_member(row).id.casefold() for row in client.models()}
+        except LiteLLMError as error:
+            logger.warning("Kept member credentials; cannot list models: %s", error.message)
+            return
+        for member_id in member_ids:
+            if member_id.casefold() in in_use:
+                continue
+            try:
+                client.request("DELETE", f"/credentials/{credential_name(member_id)}")
+            except LiteLLMError as error:
+                if error.status not in {400, 404}:
+                    logger.warning("Could not delete the key of %s: %s", member_id, error.message)
 
     # -- pools -------------------------------------------------------------------------
 
     def list_pools(self) -> list[PoolView]:
-        try:
-            pools = [
-                parse_pool(body, etag, self._protected)
-                for body, etag in self._all_backends()
-                if (body.get("properties") or {}).get("type") == "Pool"
-            ]
-        except ArmError as error:
-            raise _translate(error) from error
-        return sorted(pools, key=lambda pool: pool.id)
+        groups = self._groups(self._rows())
+        return sorted(
+            (parse_pool(name, rows, self._protected) for name, rows in groups.values()),
+            key=lambda pool: pool.id.casefold(),
+        )
+
+    def _pool_rows(
+        self, pool_id: str, rows: list[dict[str, Any]] | None = None
+    ) -> tuple[str, list[dict[str, Any]]] | None:
+        group = self._groups(rows if rows is not None else self._rows()).get(pool_id.casefold())
+        return group
 
     def get_pool(self, pool_id: str) -> PoolView:
         self._require_id(pool_id)
-        try:
-            found = self._get_backend(pool_id)
-        except ArmError as error:
-            raise _translate(error) from error
-        if found is None or (found[0].get("properties") or {}).get("type") != "Pool":
+        group = self._pool_rows(pool_id)
+        if group is None:
             raise ServiceError(404, f"Pool {pool_id} was not found")
-        return parse_pool(found[0], found[1], self._protected)
-
-    def _single_members(self, backend_ids: list[str]) -> list[BackendView]:
-        singles = {view.id.casefold(): view for view in self.list_backends()}
-        views = []
-        for backend_id in backend_ids:
-            view = singles.get(backend_id.casefold())
-            if view is None:
-                raise ServiceError(400, f"Member {backend_id} is not a Single backend in this APIM")
-            views.append(view)
-        return views
+        return parse_pool(group[0], group[1], self._protected)
 
     def check_models(self, backend_ids: list[str]) -> ModelCheck:
         """The model check ``put_pool`` enforces, without writing anything."""
-        views = self._single_members(backend_ids)
-        return self._models.check([(view.id, view.url) for view in views])
+        members = self._resolve(backend_ids, self._members(self._rows()))
+        return self._models.check([(member.id, member.url) for member in members])
+
+    def _resolve(self, backend_ids: list[str], members: dict[str, Member]) -> list[Member]:
+        resolved = []
+        for backend_id in backend_ids:
+            member = members.get(backend_id.casefold())
+            if member is None:
+                raise ServiceError(
+                    400, f"Member {backend_id} is not known here (any more); add it again"
+                )
+            if not member.managed:
+                raise ServiceError(
+                    409, f"Member {backend_id} was not added by this app and can't join a pool"
+                )
+            resolved.append(member)
+        return resolved
+
+    def _desired_rows(
+        self, pool_id: str, write: PoolWrite, current: PoolView | None, members: list[Member]
+    ) -> list[dict[str, Any]]:
+        settings = pool_settings(
+            current,
+            title=write.title if write.title is not None else (current.title if current else None),
+            description=(
+                write.description
+                if write.description is not None
+                else (current.description if current else None)
+            ),
+            breaker=write.circuit_breaker,
+            retries=write.retries,
+            timeout_seconds=write.timeout_seconds,
+        )
+        return [
+            pool_row(
+                pool_id,
+                member,
+                priority=entry.priority,
+                weight=entry.weight,
+                position=position,
+                settings=settings,
+            )
+            for position, (entry, member) in enumerate(zip(write.members, members, strict=True))
+        ]
+
+    def _prepare(
+        self, pool_id: str, write: PoolWrite
+    ) -> tuple[str, PoolView | None, list[dict[str, Any]], list[Member], list[dict[str, Any]]]:
+        """Checks a save and returns what it would write, without writing."""
+        self._require_writable(pool_id)
+        rows = self._rows()
+        group = self._pool_rows(pool_id, rows)
+        current = parse_pool(group[0], group[1], self._protected) if group else None
+        if current is None and write.etag:
+            raise ServiceError(404, f"Pool {pool_id} no longer exists")
+        if current is not None:
+            if write.etag is None:
+                raise ServiceError(409, f"Pool {pool_id} already exists")
+            if not current.managed:
+                raise ServiceError(409, f"Pool {pool_id} was not created by this app")
+            if write.etag != current.etag:
+                raise ServiceError(409, "The pool changed since it was loaded. Reload and retry.")
+        name = group[0] if group else pool_id
+        if group is None and name.casefold() in {a.casefold() for a in self._aliases()}:
+            raise ServiceError(409, f"{name} is already an alias of another pool")
+        members = self._resolve([m.backend_id for m in write.members], self._members(rows))
+        existing = group[1] if group else []
+        return name, current, existing, members, self._desired_rows(name, write, current, members)
+
+    def preview_pool(self, pool_id: str, write: PoolWrite) -> ConfigPreview:
+        name, current, existing, _, desired = self._prepare(pool_id, write)
+        aliases = current.aliases if current else []
+        return ConfigPreview(
+            current=config_yaml(name, existing, aliases) if existing else None,
+            proposed=config_yaml(name, desired, aliases),
+        )
 
     def put_pool(self, pool_id: str, write: PoolWrite, actor: str) -> PoolView:
-        self._require_writable(pool_id)
-        if write.session_affinity and not self._settings.session_affinity_supported:
-            raise ServiceError(
-                400,
-                "Session affinity needs a preview pool API version (POOL_MANAGER_POOL_API_VERSION)",
-            )
+        name, _, existing, members, desired = self._prepare(pool_id, write)
+        check = self._models.check([(member.id, member.url) for member in members])
+        if not check.ok:
+            raise ServiceError(409, f"Pool {name} was not saved: {check.message}")
+        client = self.client()
+        have = {row_model_id(row).casefold(): row for row in existing}
+        want = {str(row["model_info"]["id"]).casefold() for row in desired}
         try:
-            existing = self._get_backend(pool_id)
-            if existing is None and write.etag:
-                raise ServiceError(404, f"Pool {pool_id} no longer exists")
-            if existing is not None:
-                if write.etag is None:
-                    raise ServiceError(409, f"Backend {pool_id} already exists")
-                if (existing[0].get("properties") or {}).get("type") != "Pool":
-                    raise ServiceError(409, f"Backend {pool_id} is not a pool")
+            for member in members:
+                self._store_credential(client, member)
+            for row in desired:
+                if str(row["model_info"]["id"]).casefold() not in have:
+                    client.add_model(row)
+            for row in desired:
+                old = have.get(str(row["model_info"]["id"]).casefold())
+                if old is not None:
+                    client.update_model(row_model_id(old), row)
+            dropped = [row for key, row in have.items() if key not in want]
+            for row in dropped:
+                client.delete_model(row_model_id(row))
+        except LiteLLMError as error:
+            raise translate_error(error) from error
+        logger.info("%s wrote pool %s with %d members", actor, name, len(members))
+        self._delete_unused_credentials(client, [row_member(row).id for row in dropped])
+        return self.get_pool(name)
 
-            views = self._single_members([member.backend_id for member in write.members])
-            check = self._models.check([(view.id, view.url) for view in views])
-            if not check.ok:
-                raise ServiceError(409, f"Pool {pool_id} was not saved: {check.message}")
-            previous = (
-                [member.backend_id for member in parse_pool(*existing, self._protected).members]
-                if existing
-                else []
-            )
-            if write.circuit_breaker is not None:
-                self._apply_breaker(views, write.circuit_breaker, actor)
-            canonical = [view.id for view in views]
-            normalized = write.model_copy(
-                update={
-                    "members": [
-                        member.model_copy(update={"backend_id": backend_id})
-                        for member, backend_id in zip(write.members, canonical, strict=True)
-                    ]
-                }
-            )
-            properties = pool_properties(
-                normalized,
-                pool_id,
-                self._arm.resource_id,
-                existing[0].get("properties") if existing else None,
-            )
-            self._arm.request(
-                "PUT",
-                self._backend_path(pool_id),
-                api_version=self._settings.pool_api_version,
-                json_body={"properties": properties},
-                headers=_concurrency_headers(write.etag),
-            )
-        except ArmError as error:
-            raise _translate(error) from error
-        logger.info(
-            "%s wrote pool %s with %d members (affinity=%s)",
-            actor,
-            pool_id,
-            len(write.members),
-            write.session_affinity,
-        )
-        kept = {backend_id.casefold() for backend_id in canonical}
-        self._delete_orphans([b for b in previous if b.casefold() not in kept], actor)
-        return self.get_pool(pool_id)
+    # -- endpoint and aliases ----------------------------------------------------------
 
-    def _apply_breaker(
-        self, members: list[BackendView], breaker: CircuitBreaker, actor: str
-    ) -> None:
-        """Writes the pool's breaker to the members this app manages whose rule differs.
-        Backends the app doesn't own keep theirs: they are read-only here."""
-        for view in members:
-            if not view.managed or view.protected or view.circuit_breaker == breaker:
-                continue
-            found = self._get_backend(view.id)
-            if found is None:
-                continue
-            body, etag = found
-            properties = {
-                **(body.get("properties") or {}),
-                "circuitBreaker": circuit_breaker_properties(breaker),
-            }
-            response = self._arm.request(
-                "PUT",
-                self._backend_path(view.id),
-                api_version=self._settings.api_version,
-                json_body={"properties": properties},
-                headers=_concurrency_headers(etag),
-            )
-            self._arm.wait(response)
-            logger.info("%s set the pool circuit breaker on %s", actor, view.id)
-
-    def _delete_orphans(self, backend_ids: list[str], actor: str) -> list[str]:
-        """Deletes members this app created once no pool uses them, so removing a member or a
-        pool leaves nothing behind. Failures are logged, never raised: the pool is saved.
-        Returns the members it deleted."""
-        deleted: list[str] = []
-        if not backend_ids:
-            return deleted
-        try:
-            in_use = {
-                member.backend_id.casefold()
-                for pool in self.list_pools()
-                for member in pool.members
-            }
-        except ServiceError as error:
-            logger.warning("Kept removed members; cannot list pools: %s", error.message)
-            return deleted
-        for backend_id in backend_ids:
-            if backend_id.casefold() in in_use or is_protected(backend_id, self._protected):
-                continue
-            try:
-                found = self._get_backend(backend_id)
-                if found is None:
-                    continue
-                body, etag = found
-                properties = body.get("properties") or {}
-                if properties.get("type") == "Pool" or not is_managed(properties):
-                    continue
-                backend = parse_backend(body, etag, self._protected)
-                self._arm.request(
-                    "DELETE",
-                    self._backend_path(backend_id),
-                    api_version=self._settings.api_version,
-                    headers={"If-Match": etag or "*"},
-                    allow_not_found=True,
-                )
-                if backend.named_value:
-                    self._delete_owned_named_value(backend_id, backend.named_value)
-            except ArmError as error:
-                logger.warning("Could not delete unused member %s: %s", backend_id, error.message)
-                continue
-            logger.info("%s deleted member %s, which no pool uses any more", actor, backend_id)
-            deleted.append(backend_id)
-        return deleted
-
-    def delete_pool(self, pool_id: str, etag: str | None, actor: str) -> None:
-        self._require_writable(pool_id)
+    def endpoint(self, pool_id: str) -> PoolEndpoint:
         pool = self.get_pool(pool_id)
-        bound = [
-            api.display_name
-            for api in self.list_apis()
-            if api.binding and api.binding.pool_id.casefold() == pool_id.casefold()
-        ]
-        if bound:
-            raise ServiceError(409, f"Pool is bound to API(s): {', '.join(bound)}. Unbind first.")
+        aliases = self._alias_views(pool)
         try:
-            self._delete_pool_resource(pool_id, etag)
-        except ArmError as error:
-            raise _translate(error) from error
-        logger.info("%s deleted pool %s", actor, pool_id)
-        self._delete_orphans([member.backend_id for member in pool.members], actor)
-
-    def _delete_pool_resource(self, pool_id: str, etag: str | None) -> None:
-        self._arm.request(
-            "DELETE",
-            self._backend_path(pool_id),
-            api_version=self._settings.pool_api_version,
-            headers={"If-Match": etag or "*"},
+            url = self.gateway.info().url
+        except GatewayUnavailable as error:
+            raise translate_error(error) from error
+        return PoolEndpoint(
+            pool_id=pool.id,
+            base_url=f"{url}/v1" if url else None,
+            model_names=[pool.id, *(alias.name for alias in aliases)],
+            aliases=aliases,
         )
 
-    # -- removing pools with their APIs ------------------------------------------------
+    def _alias_views(
+        self, pool: PoolView, aliases: dict[str, str] | None = None
+    ) -> list[AliasView]:
+        managed = {name.casefold() for name in pool.aliases}
+        found = aliases if aliases is not None else self._aliases()
+        return sorted(
+            (
+                AliasView(name=name, pool_id=pool.id, managed=name.casefold() in managed)
+                for name, target in found.items()
+                if target.casefold() == pool.id.casefold()
+            ),
+            key=lambda alias: alias.name.casefold(),
+        )
+
+    def list_aliases(self) -> list[AliasView]:
+        pools = {pool.id.casefold(): pool for pool in self.list_pools()}
+        managed = {
+            (alias.casefold(), pool_id) for pool_id, pool in pools.items() for alias in pool.aliases
+        }
+        return sorted(
+            (
+                AliasView(
+                    name=name,
+                    pool_id=pools[target.casefold()].id if target.casefold() in pools else target,
+                    managed=(name.casefold(), target.casefold()) in managed,
+                )
+                for name, target in self._aliases().items()
+            ),
+            key=lambda alias: alias.name.casefold(),
+        )
+
+    def config(self, pool_id: str) -> ConfigView:
+        group = self._pool_rows(pool_id)
+        if group is None:
+            raise ServiceError(404, f"Pool {pool_id} was not found")
+        pool = parse_pool(group[0], group[1], self._protected)
+        aliases = [alias.name for alias in self._alias_views(pool)]
+        return ConfigView(pool_id=pool.id, yaml=config_yaml(pool.id, group[1], aliases))
+
+    def _record_aliases(
+        self, pool: PoolView, rows: list[dict[str, Any]], aliases: list[str]
+    ) -> None:
+        """Stores which aliases this app added in the pool's rows."""
+        client = self.client()
+        for row in rows:
+            if not is_managed(row):
+                continue
+            metadata = dict(row_metadata(row))
+            metadata["pool"] = {**dict(metadata.get("pool") or {}), "aliases": aliases}
+            client.update_model(row_model_id(row), {"model_info": {"pool_manager": metadata}})
+
+    def add_alias(self, pool_id: str, name: str, actor: str) -> PoolEndpoint:
+        self._require_writable(pool_id)
+        rows = self._rows()
+        group = self._pool_rows(pool_id, rows)
+        if group is None:
+            raise ServiceError(404, f"Pool {pool_id} was not found")
+        pool = parse_pool(group[0], group[1], self._protected)
+        if not pool.managed:
+            raise ServiceError(409, f"Pool {pool.id} was not created by this app")
+        if name.casefold() in self._groups(rows):
+            raise ServiceError(409, f"{name} is already a pool or model on the gateway")
+        aliases = self._aliases()
+        existing = next((key for key in aliases if key.casefold() == name.casefold()), None)
+        if existing is not None and aliases[existing].casefold() != pool.id.casefold():
+            raise ServiceError(409, f"{name} already points at {aliases[existing]}")
+        try:
+            if existing is None:
+                self.client().update_router_settings(
+                    {"model_group_alias": {**aliases, name: pool.id}}
+                )
+            if name.casefold() not in {alias.casefold() for alias in pool.aliases}:
+                self._record_aliases(pool, group[1], [*pool.aliases, existing or name])
+        except LiteLLMError as error:
+            raise translate_error(error) from error
+        logger.info("%s added alias %s for pool %s", actor, name, pool.id)
+        return self.endpoint(pool.id)
+
+    def remove_alias(self, pool_id: str, name: str, actor: str) -> PoolEndpoint:
+        self._require_writable(pool_id)
+        rows = self._rows()
+        group = self._pool_rows(pool_id, rows)
+        if group is None:
+            raise ServiceError(404, f"Pool {pool_id} was not found")
+        pool = parse_pool(group[0], group[1], self._protected)
+        aliases = self._aliases()
+        existing = next((key for key in aliases if key.casefold() == name.casefold()), None)
+        if existing is None or aliases[existing].casefold() != pool.id.casefold():
+            raise ServiceError(404, f"{name} is not an alias of {pool.id}")
+        try:
+            self.client().update_router_settings(
+                {"model_group_alias": {k: v for k, v in aliases.items() if k != existing}}
+            )
+            if pool.managed:
+                kept = [alias for alias in pool.aliases if alias.casefold() != name.casefold()]
+                if kept != pool.aliases:
+                    self._record_aliases(pool, group[1], kept)
+        except LiteLLMError as error:
+            raise translate_error(error) from error
+        logger.info("%s removed alias %s of pool %s", actor, existing, pool.id)
+        return self.endpoint(pool.id)
+
+    # -- removing pools ------------------------------------------------------------------
+
+    def _test_keys(self, pool_ids: set[str], *, cleanup: bool) -> list[RemovalKey]:
+        """Test keys this app created for these pools (cleanup: for any pool)."""
+        prefix = test_key_alias(self._settings.id_prefix, "")
+        keys = []
+        try:
+            for key in self.client().list_keys():
+                alias = str(key.get("key_alias") or "")
+                metadata = (key.get("metadata") or {}).get("pool_manager") or {}
+                pool = str(metadata.get("pool") or "") if isinstance(metadata, Mapping) else ""
+                if not alias.startswith(prefix) or not pool:
+                    continue
+                if cleanup or pool.casefold() in pool_ids:
+                    keys.append(RemovalKey(id=str(key.get("token")), alias=alias, pool_id=pool))
+        except LiteLLMError as error:
+            raise translate_error(error) from error
+        return sorted(keys, key=lambda key: key.alias or key.id)
 
     def pool_removal_plan(self, pool_id: str) -> RemovalPlan:
-        """What removing one pool would delete and unbind, without changing anything."""
+        """What removing one pool would delete, without changing anything."""
         pool = self.get_pool(pool_id)
         return self._removal_plan([pool], self.list_pools(), cleanup=False)
 
     def cleanup_plan(self) -> RemovalPlan:
-        """Everything this app created in the service: its pools, their members and APIs."""
+        """Everything this app created on the gateway: its pools, their aliases, test keys."""
         pools = self.list_pools()
         owned = [pool for pool in pools if pool.managed and not pool.protected]
         return self._removal_plan(owned, pools, cleanup=True)
@@ -556,80 +590,46 @@ class PoolManagerService:
     ) -> RemovalPlan:
         removed_ids = {pool.id.casefold() for pool in removed}
         blocked = [f"Pool {pool.id} is read-only here" for pool in removed if pool.protected]
-        delete_apis: list[RemovalApi] = []
-        unbind_apis: list[RemovalApi] = []
-        for raw, view in self._api_entries():
-            bound_to = view.binding.pool_id if view.binding else None
-            ours = bound_to is not None and bound_to.casefold() in removed_ids
-            # An API this app created for a removed pool that nothing is bound to any more is
-            # left over from an earlier unbind; cleanup takes every such API.
-            created_for = (api_pool_id(raw.get("properties") or {}) or "").casefold()
-            leftover = bound_to is None and (cleanup or created_for in removed_ids)
-            if view.managed and (ours or leftover):
-                target = delete_apis
-            elif ours:
-                target = unbind_apis
+        managed = {
+            (alias.casefold(), pool.id.casefold()) for pool in removed for alias in pool.aliases
+        }
+        delete_aliases: list[RemovalAlias] = []
+        unbind_aliases: list[RemovalAlias] = []
+        for name, target in sorted(self._aliases().items(), key=lambda item: item[0].casefold()):
+            if target.casefold() not in removed_ids:
+                continue
+            pool = next(pool.id for pool in removed if pool.id.casefold() == target.casefold())
+            entry = RemovalAlias(name=name, pool_id=pool)
+            if (name.casefold(), target.casefold()) in managed:
+                delete_aliases.append(entry)
             else:
-                continue
-            if is_protected(view.id, self._protected):
-                if ours:
-                    blocked.append(f"API {view.id} uses pool {bound_to} but is read-only here")
-                continue
-            target.append(
-                RemovalApi(
-                    id=view.id, display_name=view.display_name, path=view.path, pool_id=bound_to
-                )
-            )
-        # Members only a removed pool uses; cleanup also takes members no pool uses at all.
-        kept_members = {
-            member.backend_id.casefold()
-            for pool in pools
-            if pool.id.casefold() not in removed_ids
-            for member in pool.members
-        }
-        removed_members = {
-            member.backend_id.casefold() for pool in removed for member in pool.members
-        }
-        delete_members = [
-            view.id
-            for view in self.list_backends()
-            if view.managed
-            and not view.protected
-            and view.id.casefold() not in kept_members
-            and (cleanup or view.id.casefold() in removed_members)
-        ]
+                unbind_aliases.append(entry)
         kept_pools = [pool.id for pool in pools if pool.id.casefold() not in removed_ids]
         return RemovalPlan(
             pools=[pool.id for pool in removed],
-            delete_apis=delete_apis,
-            unbind_apis=unbind_apis,
-            delete_members=delete_members,
+            delete_aliases=delete_aliases,
+            unbind_aliases=unbind_aliases,
+            delete_keys=self._test_keys(removed_ids, cleanup=cleanup),
             kept_pools=kept_pools if cleanup else [],
             blocked=blocked,
         )
 
     def remove_pool(self, pool_id: str, confirm: RemovalConfirm, actor: str) -> RemovalResult:
-        """Unbinds the pool's other APIs, deletes the APIs this app created for it, the pool,
-        and the members no other pool uses."""
+        """Deletes the pool's rows, its aliases and its test keys."""
         self._require_writable(pool_id)
         plan = self.pool_removal_plan(pool_id)
-        return self._remove(plan, confirm, actor, pool_etag=confirm.etag)
+        if confirm.etag and confirm.etag != self.get_pool(pool_id).etag:
+            raise ServiceError(409, "The pool changed since it was loaded. Reload and retry.")
+        return self._remove(plan, confirm, actor)
 
     def cleanup(self, confirm: CleanupConfirm, actor: str) -> RemovalResult:
-        """Removes everything this app created in the service; the service itself stays."""
-        name = self._settings.apim_name
+        """Removes everything this app created on the gateway; the gateway itself stays."""
+        name = self._settings.gateway_name
         if confirm.confirm_name.strip().casefold() != name.casefold():
-            raise ServiceError(400, f"Type the service name ({name}) to confirm")
+            raise ServiceError(400, f"Type the gateway name ({name}) to confirm")
         return self._remove(self.cleanup_plan(), confirm, actor)
 
-    def _remove(
-        self,
-        plan: RemovalPlan,
-        confirm: RemovalConfirm,
-        actor: str,
-        *,
-        pool_etag: str | None = None,
-    ) -> RemovalResult:
+    def _remove(self, plan: RemovalPlan, confirm: RemovalConfirm, actor: str) -> RemovalResult:
         if plan.blocked:
             raise ServiceError(409, " ".join(plan.blocked))
 
@@ -639,286 +639,49 @@ class PoolManagerService:
 
         changed = [
             *unseen(plan.pools, confirm.pools),
-            *unseen([api.id for api in plan.delete_apis], confirm.delete_apis),
-            *unseen([api.id for api in plan.unbind_apis], confirm.unbind_apis),
+            *unseen([alias.name for alias in plan.delete_aliases], confirm.delete_aliases),
+            *unseen([alias.name for alias in plan.unbind_aliases], confirm.unbind_aliases),
+            *unseen([key.alias or key.id for key in plan.delete_keys], confirm.delete_keys),
         ]
         if changed:
             listed = ", ".join(changed)
             raise ServiceError(409, f"Changed since you reviewed it ({listed}); review it again.")
-        result = RemovalResult(pools=[], deleted_apis=[], unbound_apis=[], deleted_members=[])
+        result = RemovalResult(pools=[], deleted_aliases=[], unbound_aliases=[], deleted_keys=[])
+        client = self.client()
+        dropped_members: list[str] = []
         try:
-            # Unbind first, so no API is left pointing at a pool that no longer exists.
-            for api in plan.unbind_apis:
-                self.delete_binding(api.id, None, actor)
-                result.unbound_apis.append(api.id)
-            for api in plan.delete_apis:
-                self._delete_api(api.id, actor)
-                result.deleted_apis.append(api.id)
+            # Aliases first, so none is left pointing at a pool that no longer exists.
+            gone = {alias.name for alias in [*plan.delete_aliases, *plan.unbind_aliases]}
+            if gone:
+                aliases = self._aliases()
+                client.update_router_settings(
+                    {"model_group_alias": {k: v for k, v in aliases.items() if k not in gone}}
+                )
+                result.deleted_aliases = [alias.name for alias in plan.delete_aliases]
+                result.unbound_aliases = [alias.name for alias in plan.unbind_aliases]
+            if plan.delete_keys:
+                client.delete_keys([key.id for key in plan.delete_keys])
+                result.deleted_keys = [key.alias or key.id for key in plan.delete_keys]
+            groups = self._groups(client.models())
             for pool_id in plan.pools:
-                self._delete_pool_resource(pool_id, pool_etag)
+                for row in (groups.get(pool_id.casefold()) or (pool_id, []))[1]:
+                    client.delete_model(row_model_id(row))
+                    dropped_members.append(row_member(row).id)
                 logger.info("%s deleted pool %s", actor, pool_id)
                 result.pools.append(pool_id)
-        except (ArmError, ServiceError) as error:
-            failure = _translate(error) if isinstance(error, ArmError) else error
+        except LiteLLMError as error:
+            failure = translate_error(error)
             done = [
-                *(f"unbound {item}" for item in result.unbound_apis),
-                *(f"deleted API {item}" for item in result.deleted_apis),
+                *(
+                    f"removed alias {item}"
+                    for item in [*result.deleted_aliases, *result.unbound_aliases]
+                ),
+                *(f"deleted key {item}" for item in result.deleted_keys),
                 *(f"deleted pool {item}" for item in result.pools),
             ]
             raise ServiceError(
                 failure.status,
                 f"{failure.message} Already done: {', '.join(done) or 'nothing'}.",
             ) from error
-        result.deleted_members = self._delete_orphans(plan.delete_members, actor)
+        self._delete_unused_credentials(client, dropped_members)
         return result
-
-    def _delete_api(self, api_id: str, actor: str) -> None:
-        path = f"/apis/{segment(api_id)}"
-        found = self._arm.get_json(path, api_version=self._settings.api_version)
-        if found is None:
-            return
-        body, etag = found
-        # Checked again right before the delete: only APIs this app created are ever deleted.
-        if not is_managed(body.get("properties") or {}):
-            raise ServiceError(409, f"API {api_id} was not created by this app")
-        self._arm.request(
-            "DELETE",
-            path,
-            api_version=self._settings.api_version,
-            params={"deleteRevisions": "true"},
-            headers={"If-Match": etag or "*"},
-            allow_not_found=True,
-        )
-        logger.info("%s deleted API %s", actor, api_id)
-
-    # -- API bindings ------------------------------------------------------------------
-
-    def _policy_path(self, api_id: str) -> str:
-        return f"/apis/{segment(api_id)}/policies/policy"
-
-    def _get_policy(self, api_id: str) -> tuple[str | None, str | None]:
-        response = self._arm.request(
-            "GET",
-            self._policy_path(api_id),
-            api_version=self._settings.api_version,
-            params={"format": "xml"},
-            allow_not_found=True,
-        )
-        if response.status_code == 404:
-            return None, None
-        return policy_response_value(response), response.headers.get("ETag")
-
-    def _api_view(self, api: Mapping[str, Any]) -> ApiView:
-        api_id = str(api.get("name") or "")
-        properties = api.get("properties") or {}
-        xml, etag = self._get_policy(api_id)
-        binding, foreign = read_binding(xml) if xml else (None, False)
-        return ApiView(
-            id=api_id,
-            display_name=str(properties.get("displayName") or api_id),
-            path=str(properties.get("path") or ""),
-            binding=binding,
-            foreign_backend_selection=foreign,
-            managed=is_managed(properties),
-            subscription_required=properties.get("subscriptionRequired", True) is not False,
-            subscription_key_header=str(
-                (properties.get("subscriptionKeyParameterNames") or {}).get("header")
-                or "Ocp-Apim-Subscription-Key"
-            ),
-            etag=etag,
-        )
-
-    def _api_entries(self) -> list[tuple[dict[str, Any], ApiView]]:
-        """Every current API as ARM returns it, with its view (which reads its policy)."""
-        try:
-            apis = [
-                api
-                for api in self._arm.list("/apis", api_version=self._settings.api_version)
-                # Non-current revisions are listed as ``api;rev=n`` and omit ``isCurrent`` rather
-                # than setting it false; bind only the current one.
-                if ";rev=" not in str(api.get("name") or "")
-            ]
-            with ThreadPoolExecutor(max_workers=_POLICY_SCAN_WORKERS) as executor:
-                views = list(executor.map(self._api_view, apis))
-        except ArmError as error:
-            raise _translate(error) from error
-        return list(zip(apis, views, strict=True))
-
-    def list_apis(self) -> list[ApiView]:
-        views = [view for _, view in self._api_entries()]
-        return sorted(views, key=lambda view: view.display_name.casefold())
-
-    def get_api(self, api_id: str) -> ApiView:
-        self._require_id(api_id)
-        try:
-            found = self._arm.get_json(
-                f"/apis/{segment(api_id)}", api_version=self._settings.api_version
-            )
-            if found is None:
-                raise ServiceError(404, f"API {api_id} was not found")
-            return self._api_view(found[0])
-        except ArmError as error:
-            raise _translate(error) from error
-
-    def get_policy(self, api_id: str) -> PolicyView:
-        self._require_id(api_id)
-        try:
-            xml, etag = self._get_policy(api_id)
-        except ArmError as error:
-            raise _translate(error) from error
-        return PolicyView(api_id=api_id, xml=xml, etag=etag)
-
-    def _proposed_binding(
-        self, api_id: str, write: ApiBindingWrite
-    ) -> tuple[PoolView, str | None, str, str | None]:
-        """Returns the pool, the current policy, the policy binding would write, and its ETag."""
-        self._require_id(api_id)
-        pool = self.get_pool(write.pool_id)
-        try:
-            xml, current_etag = self._get_policy(api_id)
-            if write.etag and current_etag and write.etag != current_etag:
-                raise ServiceError(
-                    409, "The API policy changed since it was loaded. Reload and retry."
-                )
-            updated = apply_binding(xml, write.model_copy(update={"pool_id": pool.id}))
-        except PolicyConflict as error:
-            raise ServiceError(409, str(error)) from error
-        except ArmError as error:
-            raise _translate(error) from error
-        return pool, xml, updated, current_etag
-
-    def preview_binding(self, api_id: str, write: ApiBindingWrite) -> PolicyPreview:
-        _, xml, updated, _ = self._proposed_binding(api_id, write)
-        return PolicyPreview(current=xml, proposed=updated)
-
-    def put_binding(self, api_id: str, write: ApiBindingWrite, actor: str) -> ApiView:
-        pool, _, updated, current_etag = self._proposed_binding(api_id, write)
-        try:
-            self._put_policy(api_id, updated, current_etag)
-            api = self._arm.get_json(
-                f"/apis/{segment(api_id)}", api_version=self._settings.api_version
-            )
-        except ArmError as error:
-            raise _translate(error) from error
-        if api is None:
-            raise ServiceError(404, f"API {api_id} was not found")
-        logger.info("%s bound API %s to pool %s", actor, api_id, pool.id)
-        return self._api_view(api[0])
-
-    def create_pool_api(self, pool_id: str, write: PoolApiCreate, actor: str) -> ApiView:
-        """Creates an HTTP API for the pool and binds it with the default resilience settings.
-
-        Retrying is safe: an API this app already created for the pool at the same path is
-        completed rather than refused.
-        """
-        pool = self.get_pool(pool_id)
-        self._require_writable(pool.id)
-        path = write.path
-        try:
-            apis = [
-                api
-                for api in self._arm.list("/apis", api_version=self._settings.api_version)
-                if ";rev=" not in str(api.get("name") or "")
-            ]
-            api_id = write.api_id or _default_api_id(pool.id, path, apis)
-            self._require_writable(api_id)
-            existing = next(
-                (api for api in apis if str(api.get("name") or "").casefold() == api_id.casefold()),
-                None,
-            )
-            taken = next(
-                (
-                    api
-                    for api in apis
-                    if api is not existing and _api_path(api).casefold() == path.casefold()
-                ),
-                None,
-            )
-            if taken is not None:
-                raise ServiceError(
-                    409, f"Path /{path} is already used by API {taken.get('name')}; choose another"
-                )
-            if existing is None:
-                name = pool.title or pool.id
-                # A pool's further APIs say which path they serve, so APIM lists them apart.
-                default_name = (
-                    name if api_id.casefold() == pool.id.casefold() else f"{name} (/{path})"
-                )
-                display_name = write.display_name or default_name
-                response = self._arm.request(
-                    "PUT",
-                    f"/apis/{segment(api_id)}",
-                    api_version=self._settings.api_version,
-                    json_body={"properties": api_properties(display_name, path, pool.id)},
-                    headers={"If-None-Match": "*"},
-                )
-                self._arm.wait(response)
-            else:
-                view = self._api_view(existing)
-                other_pool = (
-                    view.binding is not None
-                    and view.binding.pool_id.casefold() != pool.id.casefold()
-                )
-                same_path = _api_path(existing).casefold() == path.casefold()
-                if not view.managed or not same_path or other_pool:
-                    raise ServiceError(
-                        409, f"API {api_id} already exists; bind it, or choose another API ID"
-                    )
-            self._ensure_wildcard_operation(api_id)
-        except ArmError as error:
-            raise _translate(error) from error
-        # Members imported from Foundry authenticate as the APIM managed identity.
-        backends = {view.id.casefold(): view for view in self.list_backends()}
-        uses_identity = any(
-            (backend := backends.get(member.backend_id.casefold())) is not None
-            and backend.auth_type == "managed_identity"
-            for member in pool.members
-        )
-        logger.info("%s created API %s (/%s) for pool %s", actor, api_id, path, pool.id)
-        return self.put_binding(
-            api_id,
-            ApiBindingWrite(
-                pool_id=pool.id,
-                managed_identity_resource=COGNITIVE_SERVICES_RESOURCE if uses_identity else None,
-            ),
-            actor,
-        )
-
-    def _ensure_wildcard_operation(self, api_id: str) -> None:
-        try:
-            self._arm.request(
-                "PUT",
-                f"/apis/{segment(api_id)}/operations/{WILDCARD_OPERATION_ID}",
-                api_version=self._settings.api_version,
-                json_body={"properties": WILDCARD_OPERATION},
-                headers={"If-None-Match": "*"},
-            )
-        except ArmError as error:
-            if error.status != 412:  # It already exists from an earlier attempt.
-                raise
-
-    def delete_binding(self, api_id: str, etag: str | None, actor: str) -> None:
-        self._require_id(api_id)
-        try:
-            xml, current_etag = self._get_policy(api_id)
-            if xml is None or read_binding(xml)[0] is None:
-                raise ServiceError(404, "The API is not bound to a pool by this app")
-            if etag and current_etag and etag != current_etag:
-                raise ServiceError(
-                    409, "The API policy changed since it was loaded. Reload and retry."
-                )
-            self._put_policy(api_id, remove_binding(xml), current_etag)
-        except PolicyConflict as error:
-            raise ServiceError(409, str(error)) from error
-        except ArmError as error:
-            raise _translate(error) from error
-        logger.info("%s unbound API %s", actor, api_id)
-
-    def _put_policy(self, api_id: str, xml: str, etag: str | None) -> None:
-        self._arm.request(
-            "PUT",
-            self._policy_path(api_id),
-            api_version=self._settings.api_version,
-            json_body={"properties": {"format": "xml", "value": xml}},
-            headers={"If-Match": etag or "*"},
-        )

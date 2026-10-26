@@ -1,5 +1,5 @@
-// Line diff for reviewing the API policy a bind would write. Policies are short, so a plain
-// longest-common-subsequence table is fast enough; past the cap it degrades to replace-all.
+// Line diff for reviewing the LiteLLM config a pool save would write. Configs are short, so a
+// plain longest-common-subsequence table is fast enough; past the cap it degrades to replace-all.
 export type DiffLine = { kind: "same" | "added" | "removed"; text: string }
 
 const MAX_CELLS = 4_000_000
@@ -39,15 +39,4 @@ export function diffLines(before: string, after: string): DiffLine[] {
   while (i < left.length) lines.push({ kind: "removed", text: left[i++] })
   while (j < right.length) lines.push({ kind: "added", text: right[j++] })
   return lines
-}
-
-/** Lines inside this app's marker comments, so the viewer can highlight what it owns. */
-export function managedLineFlags(xml: string): boolean[] {
-  let inside = false
-  return xml.split(/\r?\n/).map((line) => {
-    if (line.includes("apim-backend-pool:") && line.includes(":begin")) inside = true
-    const flag = inside
-    if (line.includes("apim-backend-pool:") && line.includes(":end")) inside = false
-    return flag
-  })
 }

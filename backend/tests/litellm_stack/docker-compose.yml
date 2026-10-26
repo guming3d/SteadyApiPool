@@ -1,0 +1,47 @@
+# A real LiteLLM gateway with Postgres and two fake Azure OpenAI regions, for the opt-in
+# integration tests (pytest -m litellm). Nothing here reaches Azure.
+#   docker compose -f backend/tests/litellm_stack/docker-compose.yml up -d --wait
+name: pool-manager-litellm
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: litellm
+      POSTGRES_PASSWORD: litellm-test-only
+      POSTGRES_DB: litellm
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U litellm"]
+      interval: 2s
+      retries: 30
+
+  region-a:
+    image: python:3.12-slim
+    command: ["python", "/app/fake_upstream.py"]
+    environment: { REGION: region-a }
+    volumes: ["./fake_upstream.py:/app/fake_upstream.py:ro"]
+    ports: ["18081:8080"]
+
+  region-b:
+    image: python:3.12-slim
+    command: ["python", "/app/fake_upstream.py"]
+    environment: { REGION: region-b }
+    volumes: ["./fake_upstream.py:/app/fake_upstream.py:ro"]
+    ports: ["18082:8080"]
+
+  litellm:
+    # Keep in step with LITELLM_IMAGE in pool_manager/gateway_template.py.
+    image: ghcr.io/berriai/litellm:v1.106.4
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    environment:
+      LITELLM_MASTER_KEY: sk-test-master-key-0123456789
+      LITELLM_SALT_KEY: sk-test-salt-key-0123456789
+      DATABASE_URL: postgresql://litellm:litellm-test-only@db:5432/litellm
+      STORE_MODEL_IN_DB: "True"
+    volumes: ["./config.yaml:/app/config.yaml:ro"]
+    ports: ["14000:4000"]
+    depends_on:
+      db: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://localhost:4000/health/readiness')\""]
+      interval: 3s
+      retries: 60

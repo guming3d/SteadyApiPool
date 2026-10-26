@@ -8,7 +8,7 @@
   out of date, then runs both in this console until Ctrl+C (or q in the TUI). Without Node.js 22+
   the backend serves the UI already built into backend/pool_manager/static (the release package
   has it). Local development uses your Azure identity (the app's sign-in, or az / azd /
-  PowerShell) against a real APIM service. Writes are live.
+  PowerShell) against a real LiteLLM gateway and Foundry. Writes are live.
 
   Where the execution policy blocks scripts, run scripts\start-local.cmd instead.
 
@@ -79,6 +79,8 @@ if (-not $Python) {
   Fail "Python 3.11 or later is required: https://www.python.org/downloads/ (macOS: brew install python@3.13)."
 }
 $PythonArgs = @($Python | Select-Object -Skip 1)
+# tui/ is a client of the APIM version's API and hasn't been ported to the LiteLLM gateway.
+if ($Tui) { Fail "The terminal UI still targets the APIM version and doesn't work with the LiteLLM gateway yet; run without -Tui for the browser UI." }
 
 if (-not $SkipChecks) {
   # Prints only problems: an old Node.js, no network to Azure, proxy or TLS inspection trouble.
@@ -108,7 +110,7 @@ if (-not $Tui) {
 
 $EnvFile = Join-Path $Backend ".env"
 if (-not (Test-Path $EnvFile)) {
-  # Nothing to fill in: the app's setup page chooses or creates the APIM service.
+  # Nothing to fill in: the app's setup page deploys, chooses or connects the gateway.
   Copy-Item (Join-Path $Backend ".env.example") $EnvFile
   Step "Created backend/.env from .env.example"
 }
@@ -122,14 +124,18 @@ function Get-Setting([string]$Name) {
 }
 $Subscription = Get-Setting "POOL_MANAGER_SUBSCRIPTION_ID"
 $ResourceGroup = Get-Setting "POOL_MANAGER_RESOURCE_GROUP"
-$ApimName = Get-Setting "POOL_MANAGER_APIM_NAME"
-# The APIM service is optional here (the setup page chooses one); if given, give all of it.
-$TargetValues = @($Subscription, $ResourceGroup, $ApimName)
-if (($TargetValues | Where-Object { $_ }).Count -notin @(0, 3)) {
-  Fail "Set all of POOL_MANAGER_SUBSCRIPTION_ID, POOL_MANAGER_RESOURCE_GROUP and POOL_MANAGER_APIM_NAME in backend/.env, or remove them to choose the service in the app."
+$GatewayName = Get-Setting "POOL_MANAGER_GATEWAY_NAME"
+$GatewayUrl = Get-Setting "POOL_MANAGER_GATEWAY_URL"
+# The gateway is optional here (the setup page chooses one). A Container App needs all three
+# settings; a gateway elsewhere needs its name and URL.
+$TargetValues = @($Subscription, $ResourceGroup, $GatewayName)
+if ($GatewayUrl) {
+  if (-not $GatewayName) { Fail "POOL_MANAGER_GATEWAY_URL needs POOL_MANAGER_GATEWAY_NAME in backend/.env." }
+} elseif (($TargetValues | Where-Object { $_ }).Count -notin @(0, 3)) {
+  Fail "Set all of POOL_MANAGER_SUBSCRIPTION_ID, POOL_MANAGER_RESOURCE_GROUP and POOL_MANAGER_GATEWAY_NAME in backend/.env, or remove them to choose the gateway in the app."
 }
-if ($Subscription -eq "00000000-0000-0000-0000-000000000000" -or $ResourceGroup -eq "my-apim-rg" -or $ApimName -eq "my-apim") {
-  Fail "backend/.env still has the example APIM values; set real ones or remove them to choose the service in the app."
+if ($Subscription -eq "00000000-0000-0000-0000-000000000000" -or $ResourceGroup -eq "my-gateway-rg" -or $GatewayName -eq "my-gateway") {
+  Fail "backend/.env still has the example gateway values; set real ones or remove them to choose the gateway in the app."
 }
 # Locally there is no App Service Authentication, so easy_auth would answer 401 to everything.
 if ((Get-Setting "POOL_MANAGER_AUTH_MODE") -ne "disabled") {
@@ -278,10 +284,12 @@ try {
   Write-Host ""
   Write-Host "  App:     $AppUrl" -ForegroundColor White
   Write-Host "  API:     http://127.0.0.1:$BackendPort/api"
-  if ($ApimName) {
-    Write-Host "  APIM:    $ApimName (resource group $ResourceGroup). Changes are live." -ForegroundColor Yellow
+  if ($GatewayUrl) {
+    Write-Host "  Gateway: $GatewayName ($GatewayUrl). Changes are live." -ForegroundColor Yellow
+  } elseif ($GatewayName) {
+    Write-Host "  Gateway: $GatewayName (resource group $ResourceGroup). Changes are live." -ForegroundColor Yellow
   } else {
-    Write-Host "  APIM:    chosen or created on the app's setup page. Changes are live." -ForegroundColor Yellow
+    Write-Host "  Gateway: deployed, chosen or connected on the app's setup page. Changes are live." -ForegroundColor Yellow
   }
   Write-Host "  Press Ctrl+C to stop $(if ($UseVite) { 'both servers' } else { 'the server' })."
   Write-Host ""
