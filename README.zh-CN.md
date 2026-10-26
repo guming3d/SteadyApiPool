@@ -5,6 +5,11 @@
 一个独立的 Web 应用，用于管理 Azure API Management 的**原生后端池**：故障转移、轮询和加权分配、
 断路器以及会话感知。它还能把后端池绑定到 API。
 
+![后端池的路由预览选项卡：客户端只调用一个 APIM 终结点，后端池按权重把请求分配到两个 Foundry 部署，并带有断路器和 429 重试](docs/images/pool-routing.png)
+
+*客户端只用一个入口，后面是多个模型部署：路由预览选项卡展示 APIM 如何在后端池中分配流量；点击某个部署，
+就能看到它故障或被限流时会发生什么。*
+
 ```
 apim-backend-pool/
 ├── backend/    FastAPI 应用（pool_manager）及测试；同时提供构建好的前端

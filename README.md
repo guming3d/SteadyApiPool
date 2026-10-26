@@ -6,6 +6,12 @@ A standalone web app for Azure API Management **native backend pools**: failover
 balanced and weighted distribution, circuit breakers and session affinity. It also lets you
 bind a pool to an API.
 
+![A pool's Routing tab: the client calls one APIM endpoint, and the backend pool spreads requests by weight across two Foundry deployments, with circuit breakers and a retry on 429](docs/images/pool-routing.png)
+
+*One endpoint for clients, several model deployments behind it: the Routing tab shows how APIM
+spreads traffic across the pool, and lets you click a deployment to see what happens when it
+fails or is throttled.*
+
 ```
 apim-backend-pool/
 ├── backend/    FastAPI app (pool_manager) + tests; serves the built frontend
