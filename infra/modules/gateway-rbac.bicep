@@ -24,7 +24,7 @@ resource poolManagerRole 'Microsoft.Authorization/roleDefinitions@2022-04-01' = 
   name: guid(resourceGroup().id, 'ai-gateway-pool-manager')
   properties: {
     roleName: 'AI Gateway Pool Manager ${uniqueString(resourceGroup().id)}'
-    description: 'Reads a LiteLLM gateway\'s Container App and master key, and its Application Insights logs, for the AI Gateway Pool Manager.'
+    description: 'Reads a LiteLLM gateway\'s Container App and master key, and its Application Insights logs, for SteadyApiPool.'
     type: 'CustomRole'
     permissions: [
       {

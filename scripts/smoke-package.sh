@@ -3,7 +3,7 @@
 # git), then checks that the backend answers and serves the UI. CI runs it on Linux and macOS,
 # and the release workflow runs it before publishing.
 #
-# Usage: scripts/smoke-package.sh dist/apim-backend-pool-<version>.zip [port]
+# Usage: scripts/smoke-package.sh dist/SteadyApiPool-<version>.zip [port]
 set -euo pipefail
 
 ZIP="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"

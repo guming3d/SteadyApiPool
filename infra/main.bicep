@@ -1,4 +1,4 @@
-// AI Gateway Pool Manager: one Linux App Service with Entra sign-in (Easy Auth) and a
+// SteadyApiPool: one Linux App Service with Entra sign-in (Easy Auth) and a
 // system-assigned managed identity that manages the pools of an existing LiteLLM gateway.
 // Deploy the gateway first (the local app's setup page does it on Azure Container Apps in one
 // step, or generates the AKS files), then name it here. The gateway is never changed here: its

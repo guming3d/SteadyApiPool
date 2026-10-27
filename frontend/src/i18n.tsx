@@ -2,7 +2,7 @@ import { createContext, useContext, useState, type ReactNode } from "react"
 
 // Chinese is the source copy; English is the translation.
 const zh = {
-  appTitle: "AI 网关后端池管理（LiteLLM）",
+  appTitle: "SteadyApiPool",
   pools: "后端池",
   members: "成员",
   readOnly: "只读",
@@ -529,8 +529,8 @@ const zh = {
   setupScope: "范围",
   setupOpenIam: "在门户中打开访问控制",
   setupCopyMessage: "复制申请消息",
-  setupMessageRole: "你好，我需要为 AI 网关后端池管理器申请 Azure 权限。请将“{role}”分配给 {assignee}，范围：\n{scope}\n\nAzure CLI：\n{command}",
-  setupMessageCommand: "你好，AI 网关后端池管理器需要管理员运行：\n{command}",
+  setupMessageRole: "你好，我需要为 SteadyApiPool 申请 Azure 权限。请将“{role}”分配给 {assignee}，范围：\n{scope}\n\nAzure CLI：\n{command}",
+  setupMessageCommand: "你好，SteadyApiPool 需要管理员运行：\n{command}",
   setupMissing: "缺少的权限",
   setupSignInBrowser: "用浏览器登录",
   setupSignInCode: "改用验证码登录",
@@ -850,7 +850,7 @@ const zh = {
 type Messages = Record<keyof typeof zh, string>
 
 const en: Messages = {
-  appTitle: "AI Gateway Pool Manager (LiteLLM)",
+  appTitle: "SteadyApiPool",
   pools: "Pools",
   members: "Members",
   readOnly: "Read-only",
@@ -1377,8 +1377,8 @@ const en: Messages = {
   setupScope: "Scope",
   setupOpenIam: "Open access control in the portal",
   setupCopyMessage: "Copy request message",
-  setupMessageRole: "Hi, I need Azure access for the AI Gateway Pool Manager. Please assign “{role}” to {assignee} on:\n{scope}\n\nAzure CLI:\n{command}",
-  setupMessageCommand: "Hi, the AI Gateway Pool Manager needs an administrator to run:\n{command}",
+  setupMessageRole: "Hi, I need Azure access for SteadyApiPool. Please assign “{role}” to {assignee} on:\n{scope}\n\nAzure CLI:\n{command}",
+  setupMessageCommand: "Hi, SteadyApiPool needs an administrator to run:\n{command}",
   setupMissing: "Missing permissions",
   setupSignInBrowser: "Sign in with browser",
   setupSignInCode: "Use a code instead",

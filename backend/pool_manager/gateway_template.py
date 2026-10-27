@@ -432,8 +432,8 @@ def aks_bootstrap(install: AksInstall, secrets: dict[str, str]) -> dict[str, str
         "REDIS_PASSWORD": install.redis_password,
     }
     script = f"""#!/usr/bin/env bash
-# Installs the LiteLLM gateway "{install.name}" in this cluster. Run by the AI Gateway Pool
-# Manager through AKS Run Command; safe to run again.
+# Installs the LiteLLM gateway "{install.name}" in this cluster. Run by SteadyApiPool
+# through AKS Run Command; safe to run again.
 set -euo pipefail
 cd "$(dirname "$0")"
 NS={AKS_NAMESPACE}

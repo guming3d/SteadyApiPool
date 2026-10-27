@@ -38,7 +38,7 @@ jobs:
         run: python scripts/package-release.py --version "$GITHUB_REF_NAME"
       # Never publish a package that doesn't start the way the README says.
       - name: Start the package
-        run: bash scripts/smoke-package.sh "dist/apim-backend-pool-${GITHUB_REF_NAME#v}.zip"
+        run: bash scripts/smoke-package.sh "dist/SteadyApiPool-${GITHUB_REF_NAME#v}.zip"
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}

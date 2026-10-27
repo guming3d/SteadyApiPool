@@ -1,4 +1,4 @@
-# AI Gateway Pool Manager (LiteLLM)
+# SteadyApiPool
 
 **English** | [简体中文](README.zh-CN.md)
 
@@ -17,7 +17,7 @@ tab shows how the gateway routes traffic through the pool, and lets you click a 
 what happens when it fails or is throttled.*
 
 ```
-apim-backend-pool/
+SteadyApiPool/
 ├── backend/    FastAPI app (pool_manager) + tests; serves the built frontend
 ├── frontend/   React/Vite UI (built into backend/pool_manager/static)
 ├── infra/      Bicep: the gateway on Container Apps (infra/gateway), and the App Service hosting
@@ -55,8 +55,8 @@ what's missing and fixes it with you. (To give your team a shared URL instead, s
 
 ### 1. Download and start
 
-Download `apim-backend-pool-<version>.zip` from
-[Releases](https://github.com/guming3d/apim-backend-pool-manager/releases), unzip it, and run
+Download `SteadyApiPool-<version>.zip` from
+[Releases](https://github.com/guming3d/SteadyApiPool/releases), unzip it, and run
 the start script in the unzipped folder:
 
 ```powershell
@@ -433,7 +433,7 @@ the gateway's resource group, and on each subscription scanned for deployments.
 **1. Create the Entra app registration for sign-in** (once):
 
 ```sh
-az ad app create --display-name "AI Gateway Pool Manager" \
+az ad app create --display-name "SteadyApiPool" \
   --sign-in-audience AzureADMyOrg --enable-id-token-issuance true
 # Note the appId. Add the redirect URI after the first provision (step 3).
 ```
@@ -441,7 +441,7 @@ az ad app create --display-name "AI Gateway Pool Manager" \
 **2. Configure and provision:**
 
 ```sh
-cd apim-backend-pool
+cd SteadyApiPool
 azd env new pool-manager
 # A gateway on Container Apps (its Container App name)...
 azd env set GATEWAY_NAME <gateway-name>
@@ -550,8 +550,8 @@ which isn't built. The backend refuses to start in that mode. Use the app locall
 Locally the app runs on your machine and acts on Azure as **you**. All it needs is
 **Python 3.11+**. Node.js is only needed to work on the browser UI, and the Azure CLI is optional.
 
-**Quickest: the release package.** Download `apim-backend-pool-<version>.zip` from
-[Releases](https://github.com/guming3d/apim-backend-pool-manager/releases). It has the browser
+**Quickest: the release package.** Download `SteadyApiPool-<version>.zip` from
+[Releases](https://github.com/guming3d/SteadyApiPool/releases). It has the browser
 UI and the gateway template built in, so it needs no Node.js and no git. Unzip it, then:
 
 ```powershell

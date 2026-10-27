@@ -1,1 +1,1 @@
-"""APIM backend pool manager: a standalone FastAPI app for APIM native backend pools."""
+"""SteadyApiPool: a standalone FastAPI app that manages AI gateway pools on LiteLLM."""

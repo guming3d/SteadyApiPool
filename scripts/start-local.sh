@@ -249,7 +249,7 @@ assert_port_free "$BACKEND_PORT" --backend-port
 step "Starting backend on http://127.0.0.1:$BACKEND_PORT"
 BACKEND_LOG=/dev/stdout
 # Request logs would draw over the TUI; they go to a file instead.
-[ "$TUI" -eq 0 ] || BACKEND_LOG="${TMPDIR:-/tmp}/apim-backend-pool-backend.log"
+[ "$TUI" -eq 0 ] || BACKEND_LOG="${TMPDIR:-/tmp}/SteadyApiPool-backend.log"
 (cd "$BACKEND" && exec "$VENV_PYTHON" -m uvicorn pool_manager.app:app \
   --host 127.0.0.1 --port "$BACKEND_PORT" --reload --reload-dir pool_manager >>"$BACKEND_LOG" 2>&1) &
 BACKEND_PID=$!

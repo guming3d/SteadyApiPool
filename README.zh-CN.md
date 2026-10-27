@@ -1,4 +1,4 @@
-# AI 网关后端池管理（LiteLLM）
+# SteadyApiPool
 
 [English](README.md) | **简体中文**
 
@@ -14,7 +14,7 @@ LiteLLM 或 Foundry。它会部署（或连接）一个 [LiteLLM](https://github
 部署，就能看到它故障或被限流时会发生什么。*
 
 ```
-apim-backend-pool/
+SteadyApiPool/
 ├── backend/    FastAPI 应用（pool_manager）及测试；同时提供构建好的前端
 ├── frontend/   React/Vite 界面（构建到 backend/pool_manager/static）
 ├── infra/      Bicep：容器应用上的网关（infra/gateway），以及用 Easy Auth 和最小权限角色
@@ -52,8 +52,8 @@ apim-backend-pool/
 
 ### 1. 下载并启动
 
-从 [Releases](https://github.com/guming3d/apim-backend-pool-manager/releases) 下载
-`apim-backend-pool-<version>.zip`，解压后在解压出的文件夹中运行启动脚本：
+从 [Releases](https://github.com/guming3d/SteadyApiPool/releases) 下载
+`SteadyApiPool-<version>.zip`，解压后在解压出的文件夹中运行启动脚本：
 
 ```powershell
 scripts\start-local.cmd        # Windows
@@ -374,7 +374,7 @@ Bicep 从不创建或更改网关，因为网关的机密由应用生成一次�
 **1. 创建用于登录的 Entra 应用注册**（只需一次）：
 
 ```sh
-az ad app create --display-name "AI Gateway Pool Manager" \
+az ad app create --display-name "SteadyApiPool" \
   --sign-in-audience AzureADMyOrg --enable-id-token-issuance true
 # 记下 appId。首次预配后再添加重定向 URI（第 3 步）。
 ```
@@ -382,7 +382,7 @@ az ad app create --display-name "AI Gateway Pool Manager" \
 **2. 配置并预配：**
 
 ```sh
-cd apim-backend-pool
+cd SteadyApiPool
 azd env new pool-manager
 # 容器应用上的网关（它的容器应用名称）……
 azd env set GATEWAY_NAME <gateway-name>
@@ -483,8 +483,8 @@ az ad app federated-credential create --id $APP_ID --parameters "{
 在本地，应用运行在你的电脑上，并以**你**的身份操作 Azure。它只需要 **Python 3.11+**。只有开发浏览器界面时才需要
 Node.js，Azure CLI 是可选的。
 
-**最快的方式：发布包。** 从 [Releases](https://github.com/guming3d/apim-backend-pool-manager/releases) 下载
-`apim-backend-pool-<version>.zip`。它内置了浏览器界面和网关模板，因此不需要 Node.js 和 git。解压后运行：
+**最快的方式：发布包。** 从 [Releases](https://github.com/guming3d/SteadyApiPool/releases) 下载
+`SteadyApiPool-<version>.zip`。它内置了浏览器界面和网关模板，因此不需要 Node.js 和 git。解压后运行：
 
 ```powershell
 scripts\start-local.cmd                 # Windows；不受 PowerShell 执行策略影响
