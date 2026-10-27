@@ -29,7 +29,7 @@ CONTENTS = [
     ("backend", ["pool_manager", "requirements.txt", "pyproject.toml", ".env.example"]),
     (
         "scripts",
-        ["start-local.ps1", "start-local.sh", "start-local.cmd", "doctor.py"],
+        ["start-local.ps1", "start-local.sh", "start-local.cmd", "doctor.py", "benchmark.py"],
     ),
     (".", ["README.md", "README.zh-CN.md", "LICENSE"]),
 ]

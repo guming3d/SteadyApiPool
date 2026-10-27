@@ -18,12 +18,14 @@ from fastapi.responses import FileResponse, JSONResponse
 from .access import AccessChecker, user_token
 from .api_test import ApiTester
 from .auth import acting_user, caller_name, current_principal, is_owner, owner, writer
+from .benchmark import BenchmarkRunner
 from .config import Settings, get_settings
 from .cost import CostReader
 from .deps import (
     User,
     get_access,
     get_arm,
+    get_benchmarks,
     get_cost,
     get_discovery,
     get_monitor,
@@ -47,6 +49,8 @@ from .models import (
     ApiTestRequest,
     ApiTestResult,
     BackendView,
+    BenchmarkRun,
+    BenchmarkStart,
     Capabilities,
     CleanupConfirm,
     ConfigPreview,
@@ -109,6 +113,7 @@ __all__ = [
     "app",
     "get_access",
     "get_arm",
+    "get_benchmarks",
     "get_discovery",
     "get_monitor",
     "get_request_settings",
@@ -127,6 +132,7 @@ Discovery = Annotated[DeploymentDiscovery, Depends(get_discovery)]
 Access = Annotated[AccessChecker, Depends(get_access)]
 Targets = Annotated[TargetChooser, Depends(get_targets)]
 Tester = Annotated[ApiTester, Depends(get_tester)]
+Benchmarks = Annotated[BenchmarkRunner, Depends(get_benchmarks)]
 Monitor = Annotated[PoolMonitor, Depends(get_monitor)]
 Cost = Annotated[CostReader, Depends(get_cost)]
 # In the public app, with the gateway the caller's browser chose.
@@ -339,6 +345,36 @@ def test_pool(
     pool_id: str, body: ApiTestRequest, tester: Tester, principal: Actor
 ) -> ApiTestResult:
     return tester.call(pool_id, body, principal.name)
+
+
+# A load test sends real, billed traffic with the caller's key, so only owners start one.
+@bound.post("/pools/{pool_id}/benchmarks")
+def start_benchmark(
+    pool_id: str,
+    body: BenchmarkStart,
+    tester: Tester,
+    benchmarks: Benchmarks,
+    principal: Writer,
+) -> BenchmarkRun:
+    base_url, model = tester.target(pool_id, body.spec.model)
+    return benchmarks.start(
+        pool_id,
+        body.spec,
+        f"{base_url}/chat/completions",
+        body.key.get_secret_value(),
+        model,
+        principal.name,
+    )
+
+
+@bound.get("/pools/{pool_id}/benchmarks/{run_id}")
+def get_benchmark(pool_id: str, run_id: str, benchmarks: Benchmarks, _: Owner) -> BenchmarkRun:
+    return benchmarks.get(pool_id, run_id)
+
+
+@bound.post("/pools/{pool_id}/benchmarks/{run_id}/stop")
+def stop_benchmark(pool_id: str, run_id: str, benchmarks: Benchmarks, _: Writer) -> BenchmarkRun:
+    return benchmarks.stop(pool_id, run_id)
 
 
 @bound.get("/deployments")

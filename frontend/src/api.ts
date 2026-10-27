@@ -6,6 +6,8 @@ import type {
   ApiTestRequest,
   ApiTestResult,
   BackendView,
+  BenchmarkRun,
+  BenchmarkStart,
   Capabilities,
   CleanupConfirm,
   ConfigPreview,
@@ -214,6 +216,12 @@ export const api = {
   // The backend sends the request, so the browser needs no CORS from the gateway.
   testPool: (poolId: string, body: ApiTestRequest) =>
     request<ApiTestResult>(`/api/pools/${id(poolId)}/test`, json("POST", body)),
+  startBenchmark: (poolId: string, body: BenchmarkStart) =>
+    request<BenchmarkRun>(`/api/pools/${id(poolId)}/benchmarks`, json("POST", body)),
+  benchmark: (poolId: string, runId: string) =>
+    request<BenchmarkRun>(`/api/pools/${id(poolId)}/benchmarks/${id(runId)}`),
+  stopBenchmark: (poolId: string, runId: string) =>
+    request<BenchmarkRun>(`/api/pools/${id(poolId)}/benchmarks/${id(runId)}/stop`, { method: "POST" }),
 }
 
 export const keys = {
@@ -231,6 +239,7 @@ export const keys = {
   endpoint: (poolId: string) => ["pools", poolId, "endpoint"] as const,
   poolConfig: (poolId: string) => ["pools", poolId, "config"] as const,
   poolKeys: (poolId: string) => ["pools", poolId, "keys"] as const,
+  benchmark: (poolId: string, runId: string) => ["benchmark", poolId, runId] as const,
   aliases: ["aliases"] as const,
   deployments: ["deployments"] as const,
   foundryAccounts: ["foundry", "accounts"] as const,

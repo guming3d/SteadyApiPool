@@ -133,26 +133,31 @@ class ApiTester:
             raise ServiceError(502, "The gateway created a key that can't call the pool")
         return VirtualKeySecret(key=str(created["key"]), view=view)
 
-    def call(self, pool_id: str, request: ApiTestRequest, actor: str) -> ApiTestResult:
+    def target(self, pool_id: str, model: object) -> tuple[str, str]:
+        """The gateway's ``/v1`` URL and the model name to call the pool with (the pool ID when
+        ``model`` is None), for a test call or a load test."""
         endpoint = self._service.endpoint(pool_id)
         if not endpoint.base_url:
             raise ServiceError(409, "The gateway has no URL yet")
         # A local gateway (e.g. in Docker) may be plain HTTP; a deployed app only calls HTTPS.
         if not endpoint.base_url.startswith("https://") and not self._settings.local:
             raise ServiceError(409, "The gateway has no HTTPS URL")
-        if request.key is None:
-            raise ServiceError(400, "Create or paste a key to call the pool with")
-        body = dict(request.body)
-        model = body.get("model")
         if model is None:
-            body["model"] = endpoint.pool_id
-        elif not isinstance(model, str) or model.casefold() not in {
+            return endpoint.base_url, endpoint.pool_id
+        if not isinstance(model, str) or model.casefold() not in {
             name.casefold() for name in endpoint.model_names
         }:
             raise ServiceError(
                 400, f"model must be one of the pool's names: {', '.join(endpoint.model_names)}"
             )
-        url = f"{endpoint.base_url}/{request.path}"
+        return endpoint.base_url, model
+
+    def call(self, pool_id: str, request: ApiTestRequest, actor: str) -> ApiTestResult:
+        body = dict(request.body)
+        base_url, body["model"] = self.target(pool_id, body.get("model"))
+        if request.key is None:
+            raise ServiceError(400, "Create or paste a key to call the pool with")
+        url = f"{base_url}/{request.path}"
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {request.key.get_secret_value()}",
@@ -170,7 +175,7 @@ class ApiTester:
                 504, f"The gateway did not answer within {_TIMEOUT.read:.0f} seconds"
             ) from error
         except httpx.HTTPError as error:
-            raise ServiceError(502, f"Could not reach {endpoint.base_url}: {error}") from error
+            raise ServiceError(502, f"Could not reach {base_url}: {error}") from error
         elapsed = round((time.monotonic() - started) * 1000)
         logger.info("%s tested pool %s: %s in %d ms", actor, pool_id, response.status_code, elapsed)
         return ApiTestResult(

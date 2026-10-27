@@ -7,6 +7,7 @@ import { callSnippet, KEY_PLACEHOLDER, SNIPPET_LANGUAGES, type SnippetLanguage }
 import { fill, useI18n } from "../i18n"
 import type { Capabilities, PoolEndpoint } from "../types"
 import { KeyStep, TryIt } from "./api-tester"
+import { LoadTest } from "./benchmark"
 import { baseUrlOf } from "./pool-endpoint"
 import { FoundryAccessNotice, useOpenSetup } from "./setup-wizard"
 
@@ -30,7 +31,7 @@ export function CopyButton({ text, label }: { text: string; label: string }) {
   </button>
 }
 
-function CodeBlock({ code, label }: { code: string; label: string }) {
+export function CodeBlock({ code, label }: { code: string; label: string }) {
   return <div className="code-block">
     <pre><code>{code}</code></pre>
     <CopyButton text={code} label={label} />
@@ -100,6 +101,10 @@ export function CallGuide({
       <li>
         <b>{t.callStepTry}</b>
         <TryIt poolId={endpoint.pool_id} baseUrl={baseUrl} virtualKey={key} model={modelName} />
+      </li>
+      <li>
+        <b>{t.callStepLoad}</b>
+        <LoadTest poolId={endpoint.pool_id} baseUrl={baseUrl} virtualKey={key} model={modelName} canWrite={canWrite} />
       </li>
       <li>
         <b>{t.callStepRequest}</b>

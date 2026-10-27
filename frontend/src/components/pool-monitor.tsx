@@ -16,11 +16,12 @@ import { Button, ErrorText } from "./ui"
 
 type Messages = ReturnType<typeof useI18n>["t"]
 
-const HEIGHT = 168
-const PAD = { left: 44, right: 10, top: 10, bottom: 22 }
-const PLOT_HEIGHT = HEIGHT - PAD.top - PAD.bottom
+// Shared with the load test's charts (benchmark.tsx).
+export const HEIGHT = 168
+export const PAD = { left: 44, right: 10, top: 10, bottom: 22 }
+export const PLOT_HEIGHT = HEIGHT - PAD.top - PAD.bottom
 
-function useWidth<T extends HTMLElement>() {
+export function useWidth<T extends HTMLElement>() {
   const ref = useRef<T>(null)
   const [width, setWidth] = useState(0)
   useLayoutEffect(() => {
@@ -35,13 +36,13 @@ function useWidth<T extends HTMLElement>() {
   return [ref, width] as const
 }
 
-function ToneIcon({ tone, size = 13 }: { tone: Tone; size?: number }) {
+export function ToneIcon({ tone, size = 13 }: { tone: Tone; size?: number }) {
   if (tone === "bad") return <OctagonAlert size={size} />
   if (tone === "warn") return <TriangleAlert size={size} />
   return null
 }
 
-function Tile({ label, value, sub, tone = "ok", t }: { label: string; value: string; sub: ReactNode; tone?: Tone; t: Messages }) {
+export function Tile({ label, value, sub, tone = "ok", t }: { label: string; value: string; sub: ReactNode; tone?: Tone; t: Messages }) {
   return <div className="kpi" data-tone={tone}>
     <span className="kpi-label">{label}</span>
     <span className="kpi-value">{value}</span>
@@ -51,7 +52,7 @@ function Tile({ label, value, sub, tone = "ok", t }: { label: string; value: str
 }
 
 /** Y gridlines and tick labels, shared by both charts. */
-function Grid({ width, ticks, max, format }: { width: number; ticks: number[]; max: number; format: (value: number) => string }) {
+export function Grid({ width, ticks, max, format }: { width: number; ticks: number[]; max: number; format: (value: number) => string }) {
   return <g className="viz-grid">
     {ticks.map((tick) => {
       const y = PAD.top + PLOT_HEIGHT - (tick / max) * PLOT_HEIGHT
@@ -76,7 +77,7 @@ function TimeAxis({ width, times, range }: { width: number; times: string[]; ran
   </g>
 }
 
-function Tooltip({ left, width, title, rows }: { left: number; width: number; title: string; rows: Array<{ key: string; label: string; value: string }> }) {
+export function Tooltip({ left, width, title, rows }: { left: number; width: number; title: string; rows: Array<{ key: string; label: string; value: string }> }) {
   // Stays inside the chart: flips to the left of the pointer in the right half.
   const style = left > width / 2 ? { right: width - left + 10 } : { left: left + 10 }
   return <div className="viz-tooltip" style={style} role="status">
@@ -89,7 +90,7 @@ function Tooltip({ left, width, title, rows }: { left: number; width: number; ti
   </div>
 }
 
-function Legend({ items }: { items: Array<{ key: string; label: string; line?: boolean }> }) {
+export function Legend({ items }: { items: Array<{ key: string; label: string; line?: boolean }> }) {
   return <div className="viz-legend">
     {items.map((item) => <span key={item.key}><i className={item.line ? "key-line" : "key-box"} data-series={item.key} />{item.label}</span>)}
   </div>

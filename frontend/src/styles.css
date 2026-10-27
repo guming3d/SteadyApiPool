@@ -734,6 +734,33 @@ td > b + .tag { margin: 0 0 0 8px; font-size: 11px; }
 .share span { display: inline-flex; align-items: center; gap: 4px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
 .share b { color: var(--foreground); font-weight: 600; }
 .monitor-note { margin: 0; font-size: 12px; }
+/* The call guide's load test (benchmark.tsx); its charts reuse the monitor's. */
+.bench-presets { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.bench-presets button { display: grid; gap: 1px; min-width: 120px; border: 1px solid var(--border); border-radius: var(--radius); padding: 7px 12px; background: var(--card); color: var(--foreground); font: 12px/1.35 var(--font-sans); text-align: left; cursor: pointer; }
+.bench-presets button b { font-size: 13px; font-weight: 600; }
+.bench-presets button span { color: var(--muted-foreground); }
+.bench-presets button:hover:not(:disabled) { border-color: var(--input); }
+.bench-presets button.active { border-color: var(--brand); box-shadow: inset 0 0 0 1px var(--brand); }
+.bench-presets button:disabled { cursor: not-allowed; opacity: 0.6; }
+.bench-presets .tag { margin: 0; }
+.bench-advanced { display: grid; gap: 8px; font-size: 12px; }
+.bench-advanced summary { width: max-content; color: var(--muted-foreground); font-weight: 500; cursor: pointer; }
+.bench-advanced .form-grid { margin-top: 8px; max-width: 620px; }
+.call-steps p.bench-cost { display: flex; align-items: flex-start; gap: 6px; }
+.bench-cost svg { flex: none; margin-top: 2px; color: var(--warning); }
+.bench-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.bench-result { margin-top: 4px; }
+.bench-status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12px; }
+.bench-status .tag { display: inline-flex; align-items: center; gap: 4px; margin: 0; }
+.bench-progress { flex: 0 1 220px; height: 6px; border-radius: 3px; background: var(--viz-share-track); overflow: hidden; }
+.bench-progress div { height: 100%; border-radius: 3px; background: var(--viz-share); transition: width 0.4s; }
+.bench-verdict { display: flex; align-items: flex-start; gap: 8px; border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; background: var(--card); font-size: 13px; }
+.bench-verdict svg { flex: none; margin-top: 2px; }
+.bench-verdict[data-tone="ok"] svg { color: var(--success); }
+.bench-verdict[data-tone="warn"] { border-color: color-mix(in oklab, var(--warning) 40%, var(--border)); }
+.bench-verdict[data-tone="warn"] svg { color: var(--viz-status-warn); }
+.bench-verdict[data-tone="bad"] { border-color: color-mix(in oklab, var(--destructive) 40%, var(--border)); }
+.bench-verdict[data-tone="bad"] svg { color: var(--viz-status-bad); }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 @media (max-width: 960px) {
   .kpi-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }

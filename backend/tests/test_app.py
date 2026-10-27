@@ -16,6 +16,7 @@ from pool_manager.api_test import ApiTester
 from pool_manager.app import (
     app,
     get_access,
+    get_benchmarks,
     get_cost,
     get_discovery,
     get_monitor,
@@ -24,6 +25,7 @@ from pool_manager.app import (
     get_tester,
 )
 from pool_manager.arm import ArmClient
+from pool_manager.benchmark import BenchmarkRunner
 from pool_manager.config import Settings, get_settings
 from pool_manager.cost import CostReader
 from pool_manager.discovery import DeploymentDiscovery
@@ -61,6 +63,7 @@ def _client(
     credential: Any = None,
     state_file: Path | None = None,
     secrets: SecretStore | None = None,
+    benchmarks: BenchmarkRunner | None = None,
 ) -> TestClient:
     """The app wired to the fakes, the way deps.py wires it to Azure."""
     secrets = secrets or SecretStore(Path(tempfile.mkdtemp()) / "keys.bin", persistent=False)
@@ -100,6 +103,7 @@ def _client(
         get_cost: cost,
         get_monitor: monitor,
         get_tester: tester,
+        get_benchmarks: benchmarks or BenchmarkRunner(azure.litellm.transport()),
         get_targets: chooser,
     }
     for factory, value in overrides.items():

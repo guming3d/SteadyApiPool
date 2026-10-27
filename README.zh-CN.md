@@ -192,6 +192,28 @@ response = client.chat.completions.create(
 print(response.choices[0].message.content)
 ```
 
+### 对后端池进行性能测试（可选）
+
+**在这里测试**下方的**性能测试**模拟多个用户同时调用后端池：每个用户发送请求、等待响应后再发下一个。可以选择
+**快速检查**（2 个用户、30 秒）、**典型负载**（10 个用户、2 分钟）或**压力测试**（30 个用户、3 分钟），也可以在
+**高级设置**中设置用户数、持续时间、逐步加压时间、速率上限、提示长度、`max_tokens` 和流式传输。页面会先估算请求数
+和令牌数；每个请求都像真实流量一样由 Foundry 计费，也会占用部署的速率限制。运行期间可以看到吞吐量、成功率、
+p50/p95/p99 延迟、首令牌时间、429 和故障转移、每秒图表以及响应的成员；结束后给出一句结论（例如所有成员同时返回
+429，说明后端池需要更多容量），并可以**导出 JSON / CSV**，或复制在终端中运行同样测试的命令。每次测试最多 50 个
+用户、10 分钟、5,000 个请求，同一时间只能运行一个，并且只有所有者可以启动。
+
+在终端中运行（可用于此网关或任何兼容 OpenAI 的终结点；密钥放在环境变量中，不会留在命令历史里）：
+
+```powershell
+$env:LITELLM_KEY = "<your-virtual-key>"
+backend\.venv\Scripts\python scripts\benchmark.py --url https://<your-gateway>/v1 --model pool-gpt-5-6-luna --preset typical
+#   --users 20 --duration 120 --ramp-up 10 --rate 15 --prompt long --max-tokens 256 --no-stream
+#   --json result.json --csv requests.csv        （macOS/Linux：backend/.venv/bin/python，export LITELLM_KEY=...）
+```
+
+它每秒打印一行状态，结束时打印报告；按 Ctrl+C 会停止测试（已发送的请求会完成），并仍然打印报告。`--i-know`
+只在终端中解除上述限制。
+
 ### 8. 观察运行情况
 
 **指标监控**选项卡显示请求数、可用性、返回给客户端的 429（以及故障转移挽回了多少）和延迟，以及每个成员承担的
@@ -241,6 +263,7 @@ backend/.venv/Scripts/python scripts/demo_server.py    # macOS 和 Linux 上为 
 | **LiteLLM 配置** | **查看 LiteLLM 配置**以 LiteLLM `config.yaml` 的写法显示后端池（不含机密），发布前可查看差异，也可以**导出 YAML**。 |
 | **路由预览** | 显示网关如何通过后端池路由流量，并模拟故障、冷却和恢复。 |
 | **调用测试** | 创建后端池的测试虚拟密钥，在页面上发送测试请求并显示由哪个成员响应，还提供可直接复制的客户端代码。 |
+| **性能测试** | 在调用测试选项卡或用 `scripts/benchmark.py` 模拟多个用户调用后端池：吞吐量、延迟和首令牌时间的百分位数、429、故障转移以及响应的成员，并给出结论，可以导出结果。 |
 | **指标监控** | 后端池的请求数、可用性、429 和延迟来自网关在 Application Insights 中的 OpenTelemetry 跟踪；每个成员的流量份额、令牌数和延迟来自 Azure Monitor。 |
 | **费用** | 网关资源本月的花费和标价。点击顶栏中的网关名称（**管理网关**）打开，那里还有 LiteLLM 自带管理界面的链接。 |
 | **同一模型** | 如果后端池中的 Foundry 成员提供不同的模型，则拒绝保存。模型从 Azure 读取，而不是根据部署名称猜测。 |

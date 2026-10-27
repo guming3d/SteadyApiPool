@@ -37,6 +37,7 @@ import httpx
 from .access import AccessChecker
 from .api_test import ApiTester
 from .arm import ArmClient, TokenCredential
+from .benchmark import BenchmarkRunner
 from .config import Settings
 from .cost import CostReader
 from .discovery import DeploymentDiscovery
@@ -89,6 +90,7 @@ class UserSession:
     discovery: DeploymentDiscovery
     monitor: PoolMonitor
     tester: ApiTester
+    benchmarks: BenchmarkRunner
     cost: CostReader
     access: AccessChecker
     targets: TargetChooser
@@ -97,6 +99,7 @@ class UserSession:
     def close(self) -> None:
         self.arm.close()
         self.tester.close()
+        self.benchmarks.close()
         self.cost.close()
         self.targets.close()
 
@@ -249,6 +252,9 @@ class Sessions:
             discovery=discovery,
             monitor=PoolMonitor(settings, arm, service),
             tester=ApiTester(settings, service, transport=self._transport),
+            benchmarks=BenchmarkRunner(
+                self._transport if isinstance(self._transport, httpx.AsyncBaseTransport) else None
+            ),
             cost=CostReader(settings, service, transport=self._transport),
             access=AccessChecker(settings, arm, service, discovered_accounts),
             targets=TargetChooser(

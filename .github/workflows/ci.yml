@@ -31,7 +31,7 @@ jobs:
           ruff check . ../scripts
           ruff format --check . ../scripts
           mypy
-          mypy --strict ../scripts/doctor.py ../scripts/package-release.py ../scripts/build-gateway-template.py
+          mypy --strict ../scripts/doctor.py ../scripts/package-release.py ../scripts/build-gateway-template.py ../scripts/benchmark.py
           pytest -q
       # tui/ still targets the APIM version; it isn't checked until it is ported to the gateway.
       - name: Test and build frontend

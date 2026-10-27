@@ -225,6 +225,32 @@ response = client.chat.completions.create(
 print(response.choices[0].message.content)
 ```
 
+### Load-test the pool (optional)
+
+**Load test**, under Try it here, simulates several users calling the pool at once: each sends a
+request, waits for the answer, then sends the next. Pick **Smoke** (2 users, 30 s), **Typical**
+(10 users, 2 min) or **Stress** (30 users, 3 min), or set the users, duration, ramp-up, a rate cap,
+the prompt size, `max_tokens` and streaming under **Advanced settings**. The page estimates the
+requests and tokens first; every request is billed by Foundry like real traffic and counts against
+the deployments' rate limits. While it runs you see throughput, the success rate, latency p50/p95/
+p99, time to first token, 429s and failovers, a chart per second and which members answered; at
+the end a plain verdict (for example that the pool needs more capacity because every member
+returned 429 at once), **Export JSON / CSV** and the same test as a terminal command. A run is
+limited to 50 users, 10 minutes and 5,000 requests, one at a time, and only owners can start one.
+
+From a terminal, against this or any OpenAI-compatible endpoint (the key stays in an environment
+variable, out of the shell history):
+
+```powershell
+$env:LITELLM_KEY = "<your-virtual-key>"
+backend\.venv\Scripts\python scripts\benchmark.py --url https://<your-gateway>/v1 --model pool-gpt-5-6-luna --preset typical
+#   --users 20 --duration 120 --ramp-up 10 --rate 15 --prompt long --max-tokens 256 --no-stream
+#   --json result.json --csv requests.csv        (macOS/Linux: backend/.venv/bin/python, export LITELLM_KEY=...)
+```
+
+It prints a status line every second and the report at the end; Ctrl+C stops it (requests already
+sent finish) and still prints the report. `--i-know` lifts the limits for the terminal only.
+
 ### 8. Watch it work
 
 The **Metrics** tab shows requests, availability, the 429s that reached clients (and how many a
@@ -279,6 +305,7 @@ in onboarding (`pool` is a pool already in use, with an hour of metrics).
 | **LiteLLM config** | **View LiteLLM config** shows the pool as a LiteLLM `config.yaml` would write it (secrets left out), with a diff before you publish, and **Export YAML**. |
 | **Routing preview** | Shows how the gateway routes traffic through the pool and simulates failures, cooldowns and recovery. |
 | **Test call** | Creates the pool's test virtual key, sends a test request from the page, shows which member answered, and gives ready-to-copy client code. |
+| **Load test** | Simulated users calling the pool, from the Test call tab or `scripts/benchmark.py`: throughput, latency and time-to-first-token percentiles, 429s, failovers and the members that answered, with a verdict and exports. |
 | **Metrics** | Requests, availability, 429s and latency for the pool from the gateway's OpenTelemetry traces in Application Insights, plus traffic share, tokens and latency per member from Azure Monitor. |
 | **Cost** | This month's spend for the gateway's resources and their list price. Open it from the gateway name in the top bar (**Manage the gateway**), which also links LiteLLM's own admin UI. |
 | **Same model** | Refuses to save a pool whose Foundry members serve different models. The model is read from Azure, not guessed from the deployment name. |

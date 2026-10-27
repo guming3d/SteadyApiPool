@@ -80,6 +80,8 @@ function ServiceCostSection() {
 /** An AKS gateway the app deployed: the user maintains its cluster with these. */
 function MaintainCluster({ clusterId }: { clusterId: string }) {
   const { t } = useI18n()
+  // The profile the gateway was deployed with (its tag), read with the cost section's query.
+  const cost = useQuery(queries.cost())
   return <section className="service-maintain">
     <div>
       <b>{t.serviceMaintainTitle}</b>
@@ -87,7 +89,7 @@ function MaintainCluster({ clusterId }: { clusterId: string }) {
       <a href={clusterPortalUrl(clusterId)} target="_blank" rel="noreferrer"><ExternalLink size={13} />{t.serviceMaintainOpen}</a>
     </div>
     <ul className="maintain-commands">
-      {maintenanceCommands(clusterId).map((item) => <li key={item.key}>
+      {maintenanceCommands(clusterId, cost.data?.profile ?? null).map((item) => <li key={item.key}>
         <span>{t[item.key]}</span>
         <div className="code-block"><pre><code>{item.command}</code></pre><CopyButton text={item.command} label={t[item.key]} /></div>
       </li>)}

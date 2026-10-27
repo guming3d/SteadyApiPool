@@ -223,11 +223,33 @@ class FakeLiteLLM:
                 "x-litellm-response-cost": "0.0001",
                 "x-ms-region": "East US 2",
             }
+            served = row["litellm_params"]["model"]
+            words = sum(len(str(m.get("content", "")).split()) for m in body.get("messages") or [])
+            usage = {
+                "prompt_tokens": max(1, round(words / 0.75)),
+                "completion_tokens": 2,
+                "total_tokens": max(1, round(words / 0.75)) + 2,
+            }
+            if body.get("stream"):
+                chunks = [
+                    {"model": served, "choices": [{"index": 0, "delta": {"role": "assistant"}}]},
+                    {"model": served, "choices": [{"index": 0, "delta": {"content": "hi"}}]},
+                    {"model": served, "choices": [{"index": 0, "delta": {"content": " there"}}]},
+                ]
+                if (body.get("stream_options") or {}).get("include_usage"):
+                    chunks.append({"model": served, "choices": [], "usage": usage})
+                text = "".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks)
+                return httpx.Response(
+                    200,
+                    content=(text + "data: [DONE]\n\n").encode(),
+                    headers={**headers, "content-type": "text/event-stream"},
+                )
             return httpx.Response(
                 200,
                 json={
-                    "model": row["litellm_params"]["model"],
+                    "model": served,
                     "choices": [{"message": {"role": "assistant", "content": "hi"}}],
+                    "usage": usage,
                 },
                 headers=headers,
             )

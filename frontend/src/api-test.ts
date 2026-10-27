@@ -51,15 +51,19 @@ export function diagnose(result: Pick<ApiTestResult, "status" | "body">): Diagno
 }
 
 /** Which member answered (LiteLLM's model ID header is the pool's row), and the model. */
+/** The member a LiteLLM row (x-litellm-model-id) stands for: rows are "<pool>--<member>";
+ * anything else is shown as LiteLLM named it. */
+export function memberOfRow(row: string | null) {
+  return row && row.includes("--") ? row.slice(row.indexOf("--") + 2) : row
+}
+
 export function servedBy(result: Pick<ApiTestResult, "body" | "headers">) {
   let model: string | null = null
   try {
     const value = JSON.parse(result.body) as { model?: unknown }
     if (typeof value.model === "string") model = value.model
   } catch {}
-  const row = result.headers["x-litellm-model-id"] ?? null
-  // Rows are "<pool>--<member>"; anything else is shown as LiteLLM named it.
-  const member = row && row.includes("--") ? row.slice(row.indexOf("--") + 2) : row
+  const member = memberOfRow(result.headers["x-litellm-model-id"] ?? null)
   const fallbacks = Number(result.headers["x-litellm-attempted-fallbacks"] ?? 0)
   const retries = Number(result.headers["x-litellm-attempted-retries"] ?? 0)
   return {

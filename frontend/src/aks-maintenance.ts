@@ -5,7 +5,9 @@
 const LITELLM_HELM_CHART = "oci://ghcr.io/berriai/litellm-helm"
 
 export type MaintenanceCommand = {
-  key: "maintainCredentials" | "maintainPods" | "maintainMasterKey" | "maintainUpgradeLitellm" | "maintainUpgradeAks" | "maintainScale"
+  key:
+    | "maintainCredentials" | "maintainPods" | "maintainMasterKey" | "maintainUpgradeLitellm" | "maintainUpgradeAks"
+    | "maintainScaleCheck" | "maintainScaleFixed" | "maintainScaleAuto"
   command: string
 }
 
@@ -15,10 +17,24 @@ export function parseClusterId(id: string): { subscription: string; group: strin
   return match ? { subscription: match[1]!, group: match[2]!, name: match[3]! } : null
 }
 
-export function maintenanceCommands(clusterId: string): MaintenanceCommand[] {
+/** The commands for the gateway's cluster. Scaling depends on whether the system node pool
+ * autoscales: litellm-aks.bicep deploys dev with one fixed node (no autoscaler) and production
+ * with the autoscaler on (3-6 nodes), and Azure refuses --update-cluster-autoscaler on a pool
+ * without it. The user may have changed that since, so both are offered, with a command to check
+ * and the one the gateway's profile deployed first. */
+export function maintenanceCommands(clusterId: string, profile: string | null = null): MaintenanceCommand[] {
   const cluster = parseClusterId(clusterId)
   if (!cluster) return []
   const target = `-g ${cluster.group} -n ${cluster.name} --subscription ${cluster.subscription}`
+  const pool = `-g ${cluster.group} --cluster-name ${cluster.name} -n system --subscription ${cluster.subscription}`
+  const fixed: MaintenanceCommand = {
+    key: "maintainScaleFixed",
+    command: `az aks nodepool scale ${pool} --node-count 2\naz aks nodepool update ${pool} --enable-cluster-autoscaler --min-count 1 --max-count 3`,
+  }
+  const auto: MaintenanceCommand = {
+    key: "maintainScaleAuto",
+    command: `az aks nodepool update ${pool} --update-cluster-autoscaler --min-count 3 --max-count 6\naz aks nodepool update ${pool} --disable-cluster-autoscaler`,
+  }
   return [
     { key: "maintainCredentials", command: `az aks get-credentials ${target}` },
     { key: "maintainPods", command: "kubectl -n litellm get pods,gateway,certificate" },
@@ -28,7 +44,11 @@ export function maintenanceCommands(clusterId: string): MaintenanceCommand[] {
       command: `helm upgrade litellm ${LITELLM_HELM_CHART} -n litellm --reuse-values --version <new-version> --set image.tag=v<new-version>`,
     },
     { key: "maintainUpgradeAks", command: `az aks get-upgrades ${target} -o table\naz aks upgrade ${target} --kubernetes-version <version>` },
-    { key: "maintainScale", command: `az aks nodepool update ${target.replace(`-n ${cluster.name}`, `--cluster-name ${cluster.name} -n system`)} --update-cluster-autoscaler --min-count 3 --max-count 6` },
+    {
+      key: "maintainScaleCheck",
+      command: `az aks nodepool show ${pool} --query "{nodes:count, autoscaler:enableAutoScaling, min:minCount, max:maxCount}" -o table`,
+    },
+    ...(profile === "production" ? [auto, fixed] : [fixed, auto]),
   ]
 }
 

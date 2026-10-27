@@ -16,6 +16,7 @@ from fastapi import Depends, Request
 from .access import AccessChecker
 from .api_test import ApiTester
 from .arm import ArmClient
+from .benchmark import BenchmarkRunner
 from .config import Settings, get_settings
 from .cost import CostReader
 from .credentials import LocalCredential
@@ -76,6 +77,12 @@ def _monitor() -> PoolMonitor:
 @lru_cache
 def _tester() -> ApiTester:
     return ApiTester(get_settings(), _service())
+
+
+@lru_cache
+def _benchmarks() -> BenchmarkRunner:
+    """Load tests; not bound to a gateway (each run gets its URL), so a switch keeps them."""
+    return BenchmarkRunner()
 
 
 @lru_cache
@@ -240,6 +247,10 @@ def get_monitor(session: Session) -> PoolMonitor:
 
 def get_tester(session: Session) -> ApiTester:
     return session.tester if session else _tester()
+
+
+def get_benchmarks(session: Session) -> BenchmarkRunner:
+    return session.benchmarks if session else _benchmarks()
 
 
 def get_cost(session: Session) -> CostReader:

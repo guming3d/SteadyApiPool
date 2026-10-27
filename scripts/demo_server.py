@@ -15,10 +15,12 @@ stage: sign-in, ready, or pool (a pool already in use, with an hour of metrics).
 from __future__ import annotations
 
 import argparse
+import asyncio
 import base64
 import io
 import json
 import math
+import random
 import sys
 import tempfile
 import time
@@ -43,6 +45,7 @@ from pool_manager.api_test import ApiTester  # noqa: E402
 from pool_manager.app import (  # noqa: E402
     app,
     get_access,
+    get_benchmarks,
     get_cost,
     get_discovery,
     get_monitor,
@@ -52,6 +55,7 @@ from pool_manager.app import (  # noqa: E402
     get_tester,
 )
 from pool_manager.arm import ArmClient  # noqa: E402
+from pool_manager.benchmark import BenchmarkRunner  # noqa: E402
 from pool_manager.config import Settings  # noqa: E402
 from pool_manager.cost import CostReader  # noqa: E402
 from pool_manager.discovery import DeploymentDiscovery  # noqa: E402
@@ -181,6 +185,9 @@ class DemoLiteLLM(FakeLiteLLM):
         return super()._handle(request)
 
     def _inference(self, request: httpx.Request, path: str, body: Any, auth: str) -> httpx.Response:
+        if (body or {}).get("stream") or request.headers.get("x-demo-load-test"):
+            # A load test (_SlowGateway waits instead, without blocking its event loop).
+            return super()._inference(request, path, body, auth)
         time.sleep(0.6)  # A model takes a moment to answer.
         response = super()._inference(request, path, body, auth)
         if response.status_code != 200:
@@ -458,11 +465,34 @@ def _wire(
         get_targets: chooser,
         get_cost: CostReader(settings, service, transport=azure.transport()),
         get_tester: ApiTester(settings, service, transport=azure.litellm.transport()),
+        get_benchmarks: BenchmarkRunner(_SlowGateway(azure.litellm)),
         get_monitor: PoolMonitor(settings, arm, service, transport=azure.transport()),
     }
     app.dependency_overrides.clear()
     for factory, value in overrides.items():
         app.dependency_overrides[factory] = _const(value)
+
+
+class _SlowGateway(httpx.AsyncBaseTransport):
+    """The fake gateway at a model's pace, so a load test in the demo looks like one: answers
+    take 0.4 to 1.6 s, and now and then the first member is busy and LiteLLM fails over."""
+
+    def __init__(self, litellm: FakeLiteLLM) -> None:
+        self._litellm = litellm
+        self._inner = litellm.transport()
+        self._random = random.Random(7)
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(self._random.uniform(0.4, 1.6))
+        request.headers["x-demo-load-test"] = "1"
+        response = await self._inner.handle_async_request(request)
+        group = response.headers.get("x-litellm-model-group")
+        rows = self._litellm.pool(group) if group else []
+        if response.status_code == 200 and len(rows) > 1 and self._random.random() < 0.08:
+            ordered = sorted(rows, key=lambda row: row["litellm_params"].get("order") or 1)
+            response.headers["x-litellm-attempted-fallbacks"] = "1"
+            response.headers["x-litellm-model-id"] = ordered[1]["model_info"]["id"]
+        return response
 
 
 def _const(value: Any) -> Any:
