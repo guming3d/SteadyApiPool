@@ -13,12 +13,11 @@ from collections.abc import Mapping
 from threading import Lock
 from typing import Any
 
-from .arm import ArmClient
-from .config import Settings
-from .gateway import GatewayConnection, GatewayUnavailable
-from .litellm import LiteLLMClient, LiteLLMError
-from .model_check import FoundryModelCheck
-from .models import (
+from ..arm import ArmClient
+from ..config import Settings
+from ..errors import ServiceError
+from ..model_check import FoundryModelCheck
+from ..models import (
     AliasView,
     BackendView,
     Capabilities,
@@ -37,6 +36,8 @@ from .models import (
     RemovalResult,
     is_valid_resource_id,
 )
+from .client import LiteLLMClient, LiteLLMError
+from .gateway import GatewayConnection, GatewayUnavailable
 from .resources import (
     Member,
     config_yaml,
@@ -54,13 +55,6 @@ from .resources import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-class ServiceError(Exception):
-    def __init__(self, status: int, message: str) -> None:
-        super().__init__(message)
-        self.status = status
-        self.message = message
 
 
 def translate_error(error: LiteLLMError | GatewayUnavailable) -> ServiceError:

@@ -29,7 +29,8 @@ from typing import Any
 
 import httpx
 
-from .models import (
+from ..errors import ServiceError
+from ..models import (
     BenchmarkMember,
     BenchmarkPoint,
     BenchmarkRun,
@@ -37,7 +38,6 @@ from .models import (
     BenchmarkSummary,
     PromptSize,
 )
-from .service import ServiceError
 
 logger = logging.getLogger(__name__)
 

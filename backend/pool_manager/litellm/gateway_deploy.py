@@ -19,12 +19,12 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from .arm import ArmClient, ArmError, segment
-from .config import Settings
+from ..arm import ArmClient, ArmError, segment
+from ..config import Settings
+from ..errors import ServiceError
+from ..models import DeployStep, GatewayCreate, GatewayDeployStatus
 from .gateway import GATEWAY_TAG, MANAGED_TAG, MANAGED_TAG_VALUE
 from .gateway_template import aca_parameters, aca_template
-from .models import DeployStep, GatewayCreate, GatewayDeployStatus
-from .service import ServiceError
 
 logger = logging.getLogger(__name__)
 

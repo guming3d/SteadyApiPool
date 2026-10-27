@@ -18,10 +18,11 @@ from typing import Any
 import httpx
 import pytest
 
-from pool_manager.api_test import ApiTester
 from pool_manager.arm import ArmClient
 from pool_manager.config import Settings
-from pool_manager.gateway import GatewayConnection
+from pool_manager.litellm.api_test import ApiTester
+from pool_manager.litellm.gateway import GatewayConnection
+from pool_manager.litellm.service import PoolManagerService
 from pool_manager.models import (
     ApiTestRequest,
     CircuitBreaker,
@@ -31,7 +32,6 @@ from pool_manager.models import (
     PoolWrite,
     RemovalConfirm,
 )
-from pool_manager.service import PoolManagerService
 from tests.fake_azure import FakeAzure, FakeCredential
 
 pytestmark = pytest.mark.litellm

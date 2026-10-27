@@ -29,7 +29,7 @@ services:
     ports: ["18082:8080"]
 
   litellm:
-    # Keep in step with LITELLM_IMAGE in pool_manager/gateway_template.py.
+    # Keep in step with LITELLM_IMAGE in pool_manager/litellm/gateway_template.py.
     image: ghcr.io/berriai/litellm:v1.106.4
     command: ["--config", "/app/config.yaml", "--port", "4000"]
     environment:

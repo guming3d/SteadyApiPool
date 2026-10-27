@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Compiles the gateway templates in infra/gateway/ (Container Apps and AKS) into the ARM
-templates the app deploys (backend/pool_manager/templates/). Needs the Azure CLI with Bicep.
+templates the app deploys (backend/pool_manager/litellm/templates/). Needs the Azure CLI with Bicep.
 
     python scripts/build-gateway-template.py           # rewrite the JSON
     python scripts/build-gateway-template.py --check   # fail when one is out of date (CI)
@@ -28,7 +28,7 @@ def _source(name: str) -> Path:
 
 
 def _target(name: str) -> Path:
-    return ROOT / "backend" / "pool_manager" / "templates" / f"{name}.json"
+    return ROOT / "backend" / "pool_manager" / "litellm" / "templates" / f"{name}.json"
 
 
 def _compile(source: Path) -> str:

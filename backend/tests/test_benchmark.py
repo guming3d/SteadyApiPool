@@ -13,7 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from pool_manager.app import app
-from pool_manager.benchmark import (
+from pool_manager.litellm.benchmark import (
     BenchmarkRunner,
     Sample,
     prompt,

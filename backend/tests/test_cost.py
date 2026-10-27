@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from pool_manager.app import app
 from pool_manager.cost import list_price, region_name
-from pool_manager.gateway import container_app_info
+from pool_manager.litellm.gateway import container_app_info
 from tests.fake_azure import GATEWAY_APP, RETAIL_PRICES, FakeAzure
 from tests.fake_litellm import MASTER_KEY, URL
 from tests.test_app import _client, _settings

@@ -41,7 +41,6 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from pool_manager import deps  # noqa: E402
 from pool_manager.access import AccessChecker  # noqa: E402
-from pool_manager.api_test import ApiTester  # noqa: E402
 from pool_manager.app import (  # noqa: E402
     app,
     get_access,
@@ -55,14 +54,15 @@ from pool_manager.app import (  # noqa: E402
     get_tester,
 )
 from pool_manager.arm import ArmClient  # noqa: E402
-from pool_manager.benchmark import BenchmarkRunner  # noqa: E402
 from pool_manager.config import Settings  # noqa: E402
 from pool_manager.cost import CostReader  # noqa: E402
 from pool_manager.discovery import DeploymentDiscovery  # noqa: E402
-from pool_manager.gateway import GatewayConnection  # noqa: E402
+from pool_manager.litellm.api_test import ApiTester  # noqa: E402
+from pool_manager.litellm.benchmark import BenchmarkRunner  # noqa: E402
+from pool_manager.litellm.gateway import GatewayConnection  # noqa: E402
+from pool_manager.litellm.service import PoolManagerService  # noqa: E402
 from pool_manager.metrics import PoolMonitor  # noqa: E402
 from pool_manager.secret_store import SecretStore  # noqa: E402
-from pool_manager.service import PoolManagerService  # noqa: E402
 from pool_manager.target import TargetChooser  # noqa: E402
 from tests.fake_azure import OPENAI_USER, SUBSCRIPTION, TENANT, FakeAzure  # noqa: E402
 from tests.fake_litellm import FakeLiteLLM  # noqa: E402

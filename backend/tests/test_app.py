@@ -12,7 +12,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from pool_manager.access import AccessChecker, SignInCredential
-from pool_manager.api_test import ApiTester
 from pool_manager.app import (
     app,
     get_access,
@@ -25,14 +24,15 @@ from pool_manager.app import (
     get_tester,
 )
 from pool_manager.arm import ArmClient
-from pool_manager.benchmark import BenchmarkRunner
 from pool_manager.config import Settings, get_settings
 from pool_manager.cost import CostReader
 from pool_manager.discovery import DeploymentDiscovery
-from pool_manager.gateway import GatewayConnection
+from pool_manager.litellm.api_test import ApiTester
+from pool_manager.litellm.benchmark import BenchmarkRunner
+from pool_manager.litellm.gateway import GatewayConnection
+from pool_manager.litellm.service import PoolManagerService
 from pool_manager.metrics import PoolMonitor
 from pool_manager.secret_store import SecretStore
-from pool_manager.service import PoolManagerService
 from pool_manager.target import TargetChooser
 from tests.fake_azure import FakeAzure, FakeCredential
 from tests.fake_litellm import URL

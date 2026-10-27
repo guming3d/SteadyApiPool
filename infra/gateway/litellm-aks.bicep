@@ -13,7 +13,7 @@
 //   Azure Managed Redis (production profile): cooldowns shared between replicas
 //   Log Analytics + Application Insights: the gateway's OpenTelemetry spans
 //
-// Compiled to backend/pool_manager/templates/litellm-aks.json by
+// Compiled to backend/pool_manager/litellm/templates/litellm-aks.json by
 // scripts/build-gateway-template.py. The resources are the same as litellm-aca.bicep's where they
 // overlap, and the template stays flat (no modules) so the deployment's operations name them.
 targetScope = 'resourceGroup'

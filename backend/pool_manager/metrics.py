@@ -32,6 +32,9 @@ import httpx
 
 from .arm import ArmClient, ArmError
 from .config import Settings
+from .errors import ServiceError
+from .litellm.resources import member_target
+from .litellm.service import PoolManagerService
 from .models import (
     GatewayMetrics,
     LatencyPoint,
@@ -41,8 +44,6 @@ from .models import (
     PoolMetrics,
     TrafficPoint,
 )
-from .resources import member_target
-from .service import PoolManagerService, ServiceError
 
 logger = logging.getLogger(__name__)
 

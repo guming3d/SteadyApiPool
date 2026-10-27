@@ -35,11 +35,13 @@ from urllib.parse import urlsplit
 import httpx
 
 from .access import AUTHORIZATION_API_VERSION, GATEWAY_ACTIONS, Permissions, missing
-from .aks_deploy import CONTAINER_SERVICE_API_VERSION, AksDeployer, cluster_path
 from .arm import ArmClient, ArmError, TokenCredential, segment
 from .config import Settings, clear_saved_target, read_saved_target, save_target
-from .gateway import GATEWAY_TAG, MANAGED_TAG, MANAGED_TAG_VALUE, container_app_info
-from .gateway_deploy import (
+from .errors import ServiceError
+from .litellm.aks_deploy import CONTAINER_SERVICE_API_VERSION, AksDeployer, cluster_path
+from .litellm.client import LiteLLMClient, LiteLLMError
+from .litellm.gateway import GATEWAY_TAG, MANAGED_TAG, MANAGED_TAG_VALUE, container_app_info
+from .litellm.gateway_deploy import (
     DEPLOYMENTS_API_VERSION,
     RESOURCES_API_VERSION,
     GatewayDeployer,
@@ -48,8 +50,7 @@ from .gateway_deploy import (
     group_path,
     translate,
 )
-from .gateway_template import aks_fqdn
-from .litellm import LiteLLMClient, LiteLLMError
+from .litellm.gateway_template import aks_fqdn
 from .models import (
     GatewayConnect,
     GatewayCreate,
@@ -67,7 +68,6 @@ from .models import (
     TenantView,
 )
 from .secret_store import SecretStore
-from .service import ServiceError
 
 logger = logging.getLogger(__name__)
 

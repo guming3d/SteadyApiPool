@@ -15,9 +15,9 @@ from typing import Any
 
 import pytest
 
-from pool_manager.aks_deploy import AKS_SERVER_SCOPE
 from pool_manager.app import app
-from pool_manager.gateway_template import (
+from pool_manager.litellm.aks_deploy import AKS_SERVER_SCOPE
+from pool_manager.litellm.gateway_template import (
     AKS_COMMAND,
     AksInstall,
     aks_bootstrap,

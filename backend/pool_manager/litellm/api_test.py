@@ -19,16 +19,17 @@ from typing import Any
 
 import httpx
 
-from .config import Settings
-from .litellm import LiteLLMError
-from .models import (
+from ..config import Settings
+from ..errors import ServiceError
+from ..models import (
     ApiTestRequest,
     ApiTestResult,
     PoolEndpoint,
     VirtualKeySecret,
     VirtualKeyView,
 )
-from .service import PoolManagerService, ServiceError, test_key_alias, translate_error
+from .client import LiteLLMError
+from .service import PoolManagerService, test_key_alias, translate_error
 
 logger = logging.getLogger(__name__)
 

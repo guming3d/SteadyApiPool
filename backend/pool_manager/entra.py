@@ -27,7 +27,7 @@ import httpx
 import jwt
 
 from .config import Settings
-from .service import ServiceError
+from .errors import ServiceError
 
 logger = logging.getLogger(__name__)
 

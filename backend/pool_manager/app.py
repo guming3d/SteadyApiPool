@@ -16,9 +16,7 @@ from fastapi import APIRouter, Depends, FastAPI, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 
 from .access import AccessChecker, user_token
-from .api_test import ApiTester
 from .auth import acting_user, caller_name, current_principal, is_owner, owner, writer
-from .benchmark import BenchmarkRunner
 from .config import Settings, get_settings
 from .cost import CostReader
 from .deps import (
@@ -39,7 +37,11 @@ from .deps import (
 )
 from .discovery import DeploymentDiscovery
 from .entra import API_SCOPE_NAME, ARM_USER_SCOPE
-from .gateway_template import aks_bundle
+from .errors import ServiceError
+from .litellm.api_test import ApiTester
+from .litellm.benchmark import BenchmarkRunner
+from .litellm.gateway_template import aks_bundle
+from .litellm.service import PoolManagerService
 from .metrics import PoolMonitor
 from .model_deploy import ModelDeployer
 from .models import (
@@ -98,7 +100,6 @@ from .models import (
     VirtualKeySecret,
     VirtualKeyView,
 )
-from .service import PoolManagerService, ServiceError
 from .sessions import Sessions
 from .target import TargetChooser
 

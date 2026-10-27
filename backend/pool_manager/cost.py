@@ -25,13 +25,13 @@ from typing import Any
 
 import httpx
 
-from .aks_deploy import CONTAINER_SERVICE_API_VERSION
 from .arm import ArmClient, ArmError, segment
 from .config import Settings
-from .gateway import GATEWAY_TAG, GatewayInfo, GatewayUnavailable
-from .gateway_template import AKS_NODE_SIZE
+from .litellm.aks_deploy import CONTAINER_SERVICE_API_VERSION
+from .litellm.gateway import GATEWAY_TAG, GatewayInfo, GatewayUnavailable
+from .litellm.gateway_template import AKS_NODE_SIZE
+from .litellm.service import PoolManagerService
 from .models import CostItem, CostNote, ListPrice, MonthToDate, ServiceCost
-from .service import PoolManagerService
 
 logger = logging.getLogger(__name__)
 

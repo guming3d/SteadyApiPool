@@ -20,6 +20,7 @@ from typing import Any, get_args
 from .arm import ArmClient, ArmError, segment
 from .config import Settings
 from .discovery import DeploymentDiscovery
+from .errors import ServiceError
 from .models import (
     DeployableModel,
     DeploymentSku,
@@ -29,7 +30,6 @@ from .models import (
     ModelCapacity,
     ModelSkuOption,
 )
-from .service import ServiceError
 
 logger = logging.getLogger(__name__)
 

@@ -20,6 +20,8 @@ from typing import Any
 
 from .arm import ArmClient, ArmError, segment
 from .config import Settings
+from .errors import ServiceError
+from .litellm.service import PoolManagerService
 from .models import (
     DeploymentImport,
     DeploymentImportResult,
@@ -27,7 +29,6 @@ from .models import (
     MemberAuth,
     MemberBackendWrite,
 )
-from .service import PoolManagerService, ServiceError
 
 logger = logging.getLogger(__name__)
 

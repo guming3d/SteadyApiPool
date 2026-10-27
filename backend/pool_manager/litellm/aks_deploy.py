@@ -31,9 +31,12 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from .access import AUTHORIZATION_API_VERSION, missing
-from .arm import ArmClient, ArmError, segment
-from .config import Settings
+from ..access import AUTHORIZATION_API_VERSION, missing
+from ..arm import ArmClient, ArmError, segment
+from ..config import Settings
+from ..errors import ServiceError
+from ..models import GatewayCreate, GatewayDeployStatus
+from ..secret_store import SecretStore
 from .gateway import MANAGED_TAG, MANAGED_TAG_VALUE
 from .gateway_deploy import (
     DEPLOYMENTS_API_VERSION,
@@ -54,9 +57,6 @@ from .gateway_template import (
     aks_template,
     context_zip,
 )
-from .models import GatewayCreate, GatewayDeployStatus
-from .secret_store import SecretStore
-from .service import ServiceError
 
 logger = logging.getLogger(__name__)
 

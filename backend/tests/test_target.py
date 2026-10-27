@@ -12,7 +12,7 @@ import pytest
 from pool_manager import config
 from pool_manager.app import app
 from pool_manager.config import Settings, read_saved_target
-from pool_manager.gateway_template import LITELLM_IMAGE, aca_template
+from pool_manager.litellm.gateway_template import LITELLM_IMAGE, aca_template
 from pool_manager.secret_store import SecretStore
 from tests.fake_azure import SUBSCRIPTION, TENANT, FakeAzure
 from tests.fake_litellm import MASTER_KEY, URL

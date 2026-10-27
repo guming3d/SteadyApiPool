@@ -3,7 +3,7 @@
     set LITELLM_KEY=sk-...           (PowerShell: $env:LITELLM_KEY="sk-..."; POSIX: export ...)
     backend/.venv/Scripts/python scripts/benchmark.py --url https://<gateway>/v1 --model <pool>
 
-It uses the same engine as the pool's Test call tab (backend/pool_manager/benchmark.py) and
+It uses the same engine as the pool's Test call tab (backend/pool_manager/litellm/benchmark.py) and
 works against any OpenAI-compatible chat completions endpoint. Presets: smoke (2 users, 30 s,
 the default), typical (10 users, 2 min) and stress (30 users, 3 min); --users, --duration and
 the other options change them. It prints a status line while it runs and a report at the end;
@@ -37,7 +37,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 from pydantic import ValidationError  # noqa: E402
 
-from pool_manager.benchmark import (  # noqa: E402
+from pool_manager.litellm.benchmark import (  # noqa: E402
     PRESETS,
     PROMPT_TOKENS,
     Sample,

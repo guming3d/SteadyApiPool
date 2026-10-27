@@ -33,9 +33,11 @@ from typing import Any, Literal, Protocol
 
 from .arm import ArmClient, ArmError, jwt_claims, segment
 from .config import Settings
-from .gateway import GatewayUnavailable
-from .gateway_deploy import GatewayDeployer
-from .litellm import LiteLLMError
+from .errors import ServiceError
+from .litellm.client import LiteLLMError
+from .litellm.gateway import GatewayUnavailable
+from .litellm.gateway_deploy import GatewayDeployer
+from .litellm.service import PoolManagerService
 from .models import (
     AdminRequest,
     DeviceCodePrompt,
@@ -51,7 +53,6 @@ from .models import (
     SetupStatus,
     SetupStepKind,
 )
-from .service import PoolManagerService, ServiceError
 
 logger = logging.getLogger(__name__)
 

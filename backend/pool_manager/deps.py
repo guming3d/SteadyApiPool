@@ -14,18 +14,19 @@ from typing import Annotated
 from fastapi import Depends, Request
 
 from .access import AccessChecker
-from .api_test import ApiTester
 from .arm import ArmClient
-from .benchmark import BenchmarkRunner
 from .config import Settings, get_settings
 from .cost import CostReader
 from .credentials import LocalCredential
 from .discovery import DeploymentDiscovery
 from .entra import EntraUser, OboExchanger, TokenVerifier
-from .gateway import GatewayConnection
+from .errors import ServiceError
+from .litellm.api_test import ApiTester
+from .litellm.benchmark import BenchmarkRunner
+from .litellm.gateway import GatewayConnection
+from .litellm.service import PoolManagerService
 from .metrics import PoolMonitor
 from .secret_store import SecretStore
-from .service import PoolManagerService, ServiceError
 from .sessions import TARGET_HEADER, Sessions, UserSession, parse_target
 from .target import TargetChooser
 

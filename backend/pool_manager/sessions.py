@@ -35,17 +35,18 @@ from urllib.parse import unquote
 import httpx
 
 from .access import AccessChecker
-from .api_test import ApiTester
 from .arm import ArmClient, TokenCredential
-from .benchmark import BenchmarkRunner
 from .config import Settings
 from .cost import CostReader
 from .discovery import DeploymentDiscovery
 from .entra import EntraUser, Exchange, UserCredential
-from .gateway import GatewayConnection
+from .errors import ServiceError
+from .litellm.api_test import ApiTester
+from .litellm.benchmark import BenchmarkRunner
+from .litellm.gateway import GatewayConnection
+from .litellm.service import PoolManagerService
 from .metrics import PoolMonitor
 from .models import GATEWAY_NAME_PATTERN
-from .service import PoolManagerService, ServiceError
 from .target import TargetChooser
 
 logger = logging.getLogger(__name__)
