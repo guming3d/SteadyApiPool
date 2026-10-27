@@ -1,6 +1,7 @@
-// The pool's Monitor tab: what its clients saw (the gateway's spans in Application Insights) and
-// how each member is doing (the gateway's attempts on it, and its own Azure OpenAI metrics).
-// Deliberately small: four tiles, two charts and one table.
+// The pool's Monitor tab: what its clients saw (APIM's metrics for the pool's APIs, or LiteLLM's
+// spans in Application Insights) and how each member is doing (its own Azure OpenAI metrics, and
+// on LiteLLM the gateway's attempts on it). Deliberately small: four tiles, two charts and one
+// table.
 import { CircleAlert, ExternalLink, LoaderCircle, OctagonAlert, RefreshCw, TriangleAlert } from "lucide-react"
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
@@ -11,7 +12,7 @@ import {
   actualShares, availabilityTone, formatCompact, formatMs, formatPercent, formatTime,
   niceScale, perMinute, RANGES, roundedTop, shareTone, throttleTone, type Tone,
 } from "../pool-metrics"
-import type { Capabilities, LatencyPoint, MemberMetrics, MetricsRange, PoolMetrics, TrafficPoint } from "../types"
+import type { LatencyPoint, MemberMetrics, MetricsRange, PoolMetrics, Product, TrafficPoint } from "../types"
 import { Button, ErrorText } from "./ui"
 
 type Messages = ReturnType<typeof useI18n>["t"]
@@ -210,18 +211,18 @@ function ShareMeter({ actual, expected, t }: { actual: number | null; expected: 
   </div>
 }
 
-function MemberTable({ members, t }: { members: MemberMetrics[]; t: Messages }) {
+function MemberTable({ members, withAttempts, t }: { members: MemberMetrics[]; withAttempts: boolean; t: Messages }) {
   const shares = actualShares(members)
   return <table className="monitor-members">
     <thead><tr>
-      <th>{t.monMember}</th><th>{t.monShare}</th><th className="num">{t.monAttempts}</th><th className="num">{t.monRequests}</th><th className="num">429</th>
+      <th>{t.monMember}</th><th>{t.monShare}</th>{withAttempts && <th className="num">{t.monAttempts}</th>}<th className="num">{t.monRequests}</th><th className="num">429</th>
       <th className="num">5xx</th><th className="num">{t.monTokens}</th><th className="num">{t.monLatencyTtlt}</th><th className="num">PTU</th>
     </tr></thead>
     <tbody>{members.map((member, index) => {
       const deployment = member.deployment_id?.split("/deployments/")[1]
       const name = <td><b>{member.backend_id}</b>{deployment && <span className="muted">{deployment}{member.region && ` · ${member.region}`}</span>}</td>
-      // The gateway's own attempts on the member, failed ones in brackets.
-      const attempts = <td className="num">{member.gateway_attempts == null ? "—" : formatCompact(member.gateway_attempts)}
+      // LiteLLM: the gateway's own attempts on the member, failed ones in brackets.
+      const attempts = withAttempts && <td className="num">{member.gateway_attempts == null ? "—" : formatCompact(member.gateway_attempts)}
         {(member.gateway_failures ?? 0) > 0 && <span className="muted"> ({formatCompact(member.gateway_failures!)})</span>}</td>
       if (!member.deployment_id) return <tr key={member.backend_id}>{name}<td><ShareMeter actual={shares[index] ?? null} expected={member.expected_share} t={t} /></td>{attempts}<td colSpan={6} className="muted">{t.monNoDeployment}</td></tr>
       if (member.error) return <tr key={member.backend_id}>{name}<td><ShareMeter actual={shares[index] ?? null} expected={member.expected_share} t={t} /></td>{attempts}<td colSpan={6} className="muted"><CircleAlert size={12} /> {member.error}</td></tr>
@@ -252,29 +253,34 @@ function Tiles({ data, t }: { data: PoolMetrics; t: Messages }) {
       sub={fill(t.monErrorsSub, { server: formatCompact(gateway.server_errors), client: formatCompact(gateway.client_errors) })} />
     <Tile t={t} label={t.monThrottled} value={formatCompact(gateway.throttled)} tone={throttle}
       sub={gateway.requests
-        ? fill(t.monThrottledSub, { rate: formatPercent(gateway.throttled / gateway.requests), failovers: formatCompact(gateway.failovers) })
+        ? fill(t.monThrottledSub, { rate: formatPercent(gateway.throttled / gateway.requests), failovers: formatCompact(gateway.failovers ?? 0) })
         : t.monNoTraffic} />
     <Tile t={t} label={t.monLatencyAvg} value={formatMs(gateway.duration_ms)}
       sub={fill(t.monBackendSub, { ms: formatMs(gateway.backend_duration_ms) })} />
   </div>
 }
 
-export function PoolMonitor({ poolId, active, capabilities }: { poolId: string; active: boolean; capabilities: Capabilities | undefined }) {
-  const { t } = useI18n()
+export function PoolMonitor({ product, poolId, active, portalUrl, external = false }: {
+  product: Product
+  poolId: string
+  active: boolean
+  /** The gateway's own metrics or logs in the Azure portal, if it has an Azure resource. */
+  portalUrl?: string | null
+  /** LiteLLM: a gateway connected by URL, whose Application Insights the user names. */
+  external?: boolean
+}) {
+  const { t } = useI18n(product)
   const queryClient = useQueryClient()
   const [range, setRange] = useState<MetricsRange>("1h")
-  const metrics = useQuery(queries.poolMetrics(poolId, range, active))
+  const metrics = useQuery(queries.poolMetrics(product, poolId, range, active))
   const refresh = useMutation({
-    mutationFn: () => api.poolMetrics(poolId, range, true),
-    onSuccess: (data) => queryClient.setQueryData(keys.poolMetrics(poolId, range), data),
+    mutationFn: () => api.poolMetrics(product, poolId, range, true),
+    onSuccess: (data) => queryClient.setQueryData(keys.poolMetrics(product, poolId, range), data),
   })
   const data = metrics.data
   const updated = metrics.dataUpdatedAt ? new Date(metrics.dataUpdatedAt).toLocaleTimeString() : null
   const busy = metrics.isFetching || refresh.isPending
   const gateway = data?.gateway
-  // The spans live in Application Insights; without it, the Container App's own metrics.
-  const portalTarget = capabilities?.app_insights_id ?? capabilities?.gateway_resource_id
-  const portalBlade = capabilities?.app_insights_id ? "logs" : "metrics"
 
   return <div className="monitor" data-fetching={busy && Boolean(data)}>
     <div className="monitor-bar">
@@ -283,17 +289,19 @@ export function PoolMonitor({ poolId, active, capabilities }: { poolId: string; 
       </div>
       <span className="muted monitor-updated">{updated && fill(t.monUpdated, { time: updated })}</span>
       <Button variant="ghost" disabled={busy} onClick={() => refresh.mutate()}><RefreshCw size={13} className={busy ? "spin" : ""} />{t.monRefresh}</Button>
-      {portalTarget && <a className="monitor-portal" href={`https://portal.azure.com/#resource${portalTarget}/${portalBlade}`} target="_blank" rel="noreferrer"><ExternalLink size={13} />{t.monOpenPortal}</a>}
+      {portalUrl && <a className="monitor-portal" href={portalUrl} target="_blank" rel="noreferrer"><ExternalLink size={13} />{t.monOpenPortal}</a>}
     </div>
     {!data
       ? metrics.isLoading ? <div className="state"><LoaderCircle className="spin" size={14} />{t.monLoading}</div> : <ErrorText error={metrics.error} />
       : <>
         <ErrorText error={refresh.error ?? (metrics.isError ? metrics.error : null)} />
         {data.gateway_error === "no_app_insights"
-          ? <div className="state">{capabilities?.gateway_kind === "external" ? t.monNoAppInsightsExternal : t.monNoAppInsights}</div>
+          ? <div className="state">{external ? t.monNoAppInsightsExternal : t.monNoAppInsights}</div>
           : data.gateway_error === "forbidden"
             ? <div className="callout warning"><CircleAlert size={15} /><div><span>{t.monForbidden}</span><small className="muted">{t.monPermissionHint}</small></div></div>
-            : data.gateway_error && <div className="callout warning"><CircleAlert size={15} /><div><span>{data.gateway_error}</span></div></div>}
+            // APIM says which permission its metrics need; LiteLLM's message is Log Analytics'.
+            : data.gateway_error && <div className="callout warning"><CircleAlert size={15} /><div><span>{data.gateway_error}</span>{product === "apim" && <small className="muted">{t.monPermissionHint}</small>}</div></div>}
+        {product === "apim" && !data.names.length && <div className="state">{t.monNoApi}</div>}
         {gateway && <>
           <Tiles data={data} t={t} />
           {gateway.requests
@@ -305,7 +313,7 @@ export function PoolMonitor({ poolId, active, capabilities }: { poolId: string; 
         </>}
         {data.members.length > 0 && <section className="monitor-section">
           <header><b>{t.monMembers}</b><span className="muted">{t.monMembersHint}</span></header>
-          <MemberTable members={data.members} t={t} />
+          <MemberTable members={data.members} withAttempts={product === "litellm"} t={t} />
         </section>}
         <p className="muted monitor-note">{t.monDelayNote}</p>
       </>}

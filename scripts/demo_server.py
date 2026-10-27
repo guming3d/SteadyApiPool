@@ -1,15 +1,17 @@
-"""Runs the web UI against the tests' in-memory Azure and LiteLLM gateway (backend/tests/
-fake_azure.py, fake_litellm.py), so the UI can be tried, and the README's screenshots retaken,
-without Azure. Nothing here reaches Azure: every ARM, gateway, log and price request goes to
-the fakes, and the real credential factories in deps.py refuse to build.
+"""Runs the web UI against the tests' in-memory Azure, APIM service and LiteLLM gateway
+(backend/tests/fake_azure.py, apim/fake_apim.py, litellm/fake_litellm.py), so the UI can be
+tried, and the README's screenshots retaken, without Azure. Nothing here reaches Azure: every
+ARM, gateway, log and price request goes to the fakes, and the real credential factories in
+deps.py refuse to build.
 
     cd frontend && npm run build && cd ..
     backend/.venv/Scripts/python scripts/demo_server.py     # bin/python on macOS and Linux
 
-Open http://127.0.0.1:8010. It starts signed out, like a first run. Sign in, then choose
-ai-gateway-contoso, or deploy a new gateway (the deployment finishes after a few polls), and
-you are at a gateway with Foundry deployments to pool. ``POST /demo/stage/<stage>`` jumps to a
-stage: sign-in, ready, or pool (a pool already in use, with an hour of metrics).
+Open http://127.0.0.1:8010. It starts signed out, like a first run. Sign in, then choose the
+LiteLLM gateway ai-gateway-contoso or the APIM service apim-contoso, or deploy a new gateway
+(the deployment finishes after a few polls), and you are at a gateway with Foundry deployments
+to pool. ``POST /demo/stage/<stage>?product=<apim|litellm>`` jumps to a stage: sign-in, ready,
+or pool (a pool already in use, with an hour of metrics).
 """
 
 from __future__ import annotations
@@ -41,43 +43,73 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from pool_manager import deps  # noqa: E402
 from pool_manager.access import AccessChecker  # noqa: E402
+from pool_manager.apim.access import ApimAccessChecker  # noqa: E402
+from pool_manager.apim.api_test import ApimTester  # noqa: E402
+from pool_manager.apim.cost import ApimCost  # noqa: E402
+from pool_manager.apim.metrics import ApimMonitor  # noqa: E402
+from pool_manager.apim.service import ApimService  # noqa: E402
+from pool_manager.apim.target import MANAGED_TAG, MANAGED_TAG_VALUE, ApimTargets  # noqa: E402
 from pool_manager.app import (  # noqa: E402
     app,
     get_access,
+    get_apim_cost,
+    get_apim_monitor,
+    get_apim_service,
+    get_apim_targets,
+    get_apim_tester,
     get_benchmarks,
-    get_cost,
     get_discovery,
-    get_monitor,
-    get_service,
+    get_litellm_cost,
+    get_litellm_monitor,
+    get_litellm_service,
+    get_litellm_targets,
+    get_litellm_tester,
     get_settings,
     get_targets,
-    get_tester,
 )
 from pool_manager.arm import ArmClient  # noqa: E402
 from pool_manager.config import Settings  # noqa: E402
-from pool_manager.cost import CostReader  # noqa: E402
-from pool_manager.discovery import DeploymentDiscovery  # noqa: E402
-from pool_manager.litellm.api_test import ApiTester  # noqa: E402
+from pool_manager.discovery import DeploymentDiscovery, MemberStore  # noqa: E402
+from pool_manager.litellm.access import LiteLLMAccessChecker  # noqa: E402
+from pool_manager.litellm.api_test import LiteLLMTester  # noqa: E402
 from pool_manager.litellm.benchmark import BenchmarkRunner  # noqa: E402
+from pool_manager.litellm.cost import LiteLLMCost  # noqa: E402
 from pool_manager.litellm.gateway import GatewayConnection  # noqa: E402
+from pool_manager.litellm.metrics import LiteLLMMonitor  # noqa: E402
 from pool_manager.litellm.service import LiteLLMService  # noqa: E402
-from pool_manager.metrics import PoolMonitor  # noqa: E402
+from pool_manager.litellm.target import LiteLLMTargets  # noqa: E402
+from pool_manager.models import Product  # noqa: E402
 from pool_manager.secret_store import SecretStore  # noqa: E402
 from pool_manager.target import TargetChooser  # noqa: E402
-from tests.fake_azure import OPENAI_USER, SUBSCRIPTION, TENANT, FakeAzure  # noqa: E402
+from tests.apim.fake_apim import FakeApim  # noqa: E402
+from tests.fake_azure import OPENAI_USER, SUBSCRIPTION, TENANT  # noqa: E402
 from tests.litellm.fake_litellm import FakeLiteLLM  # noqa: E402
 
 GROUP = "rg-ai-gateway"
 GATEWAY_NAME = "ai-gateway-contoso"
 FQDN = f"{GATEWAY_NAME}.wittydune-1a2b3c.eastus2.azurecontainerapps.io"
+APIM_GROUP = "rg-apim"
+APIM_NAME = "apim-contoso"
+APIM_ID = (
+    f"/subscriptions/{SUBSCRIPTION}/resourceGroups/{APIM_GROUP}"
+    f"/providers/Microsoft.ApiManagement/service/{APIM_NAME}"
+)
 POOL = "gpt-5-6-luna"
 WRITE = {"X-Pool-Manager": "1"}
-NO_TARGET = {"subscription_id": "", "resource_group": "", "gateway_name": ""}
-TARGET = {
-    "subscription_id": SUBSCRIPTION,
-    "resource_group": GROUP,
-    "gateway_name": GATEWAY_NAME,
-    "tenant_id": TENANT,
+NO_TARGET = {"subscription_id": "", "resource_group": "", "apim_name": "", "gateway_name": ""}
+TARGETS: dict[Product, dict[str, str]] = {
+    "litellm": {
+        "subscription_id": SUBSCRIPTION,
+        "resource_group": GROUP,
+        "gateway_name": GATEWAY_NAME,
+        "tenant_id": TENANT,
+    },
+    "apim": {
+        "subscription_id": SUBSCRIPTION,
+        "resource_group": APIM_GROUP,
+        "apim_name": APIM_NAME,
+        "tenant_id": TENANT,
+    },
 }
 STAGES = ("sign-in", "ready", "pool")
 # Polls of a new gateway's deployment before it finishes.
@@ -136,12 +168,13 @@ class DemoCredential:
         self.signed_in = False
 
 
-class DemoAzure(FakeAzure):
-    """A deployment started from the wizard finishes after a few status polls; on AKS the
-    install in the cluster follows, and the gateway answers with the key it was given."""
+class DemoAzure(FakeApim):
+    """An APIM service and a LiteLLM gateway's Azure. A LiteLLM deployment started from the
+    wizard finishes after a few status polls; on AKS the install in the cluster follows, and the
+    gateway answers with the key it was given."""
 
     def __init__(self) -> None:
-        super().__init__()
+        super().__init__(service_id=APIM_ID)
         self.polls: dict[str, int] = {}
 
     def _deployment(
@@ -218,7 +251,7 @@ class DemoLiteLLM(FakeLiteLLM):
         return httpx.Response(200, json=answer, headers=headers)
 
 
-def _seed(azure: FakeAzure) -> list[str]:
+def _seed(azure: DemoAzure) -> list[str]:
     azure.tenants = [{"tenantId": TENANT, "displayName": "Contoso", "defaultDomain": "contoso.com"}]
     azure.subscriptions = [
         {
@@ -248,6 +281,18 @@ def _seed(azure: FakeAzure) -> list[str]:
         "id": own,
     }
     azure.costs[GATEWAY_NAME] = (38.42, "USD")
+    # The APIM service this app manages, listed in the wizard beside one someone else made.
+    azure.add_service(
+        APIM_NAME,
+        group=APIM_GROUP,
+        subscription=SUBSCRIPTION,
+        sku={"name": "BasicV2", "capacity": 1},
+        tags={MANAGED_TAG: MANAGED_TAG_VALUE},
+    )
+    azure.add_service("apim-platform", group="rg-platform", subscription=SUBSCRIPTION)
+    azure.add_resource_group(APIM_GROUP)
+    azure.gateway_url = f"https://{APIM_NAME}.azure-api.net"
+    azure.costs[APIM_ID.casefold()] = (152.18, "USD")
     accounts = [
         azure.add_account(
             "foundry-eastus2",
@@ -291,11 +336,12 @@ def _wave(minute: int, base: float, swing: float, phase: float = 0.0) -> float:
     return base + swing * math.sin(minute / 7 + phase) + swing / 3 * math.sin(minute / 2.3 + phase)
 
 
-def _pool_in_use(azure: FakeAzure, accounts: list[str]) -> None:
-    """A failover pool over the three gpt-5.6-luna deployments, with an alias and traffic."""
+def _pool_in_use(azure: DemoAzure, accounts: list[str], product: Product) -> None:
+    """A failover pool over the three gpt-5.6-luna deployments, in use: on LiteLLM with an alias
+    and spans, on APIM with an API bound to it and its metrics."""
     client = TestClient(app)
     for account in accounts:
-        azure.grant_openai_user(account)
+        azure.grant_openai_user(account, "apim-mi" if product == "apim" else "gateway-mi")
     refs = [
         (accounts[1], "gpt-5.6-luna"),
         (accounts[0], "gpt-5.6-luna"),
@@ -312,14 +358,36 @@ def _pool_in_use(azure: FakeAzure, accounts: list[str]) -> None:
         for index, backend_id in enumerate(imported.json()["backend_ids"])
     ]
     body = {"title": "gpt-5.6-luna", "members": members}
-    client.put(f"/api/litellm/pools/{POOL}", json=body, headers=WRITE).raise_for_status()
-    client.post(f"/api/litellm/pools/{POOL}/aliases", json={"name": "gpt-5.6-luna"}, headers=WRITE)
+    client.put(f"/api/{product}/pools/{POOL}", json=body, headers=WRITE).raise_for_status()
 
     end = datetime.now(UTC).replace(second=0, microsecond=0)
     minutes = range(61)
 
     def value(i: int, base: float, swing: float, phase: float = 0.0) -> float:
         return round(max(0.0, _wave(i, base, swing, phase)))
+
+    stamps = [(f"{end - timedelta(minutes=60 - i):%Y-%m-%dT%H:%M:%SZ}", i) for i in minutes]
+
+    def series(base: float, swing: float, phase: float = 0.0) -> list[tuple[str, float]]:
+        return [(t, value(i, base, swing, phase)) for t, i in stamps]
+
+    _member_metrics(azure, refs, series)
+    if product == "apim":
+        api = {"path": "gpt-5.6-luna", "display_name": "gpt-5.6-luna"}
+        client.post(f"/api/apim/pools/{POOL}/api", json=api, headers=WRITE).raise_for_status()
+        api_id = POOL  # The API is named after its pool.
+        for code, base, swing in (("200", 150, 30), ("429", 2, 2), ("404", 1, 1)):
+            azure.add_metric(
+                azure.service_id,
+                "Requests",
+                series(base, swing),
+                ApiId=api_id,
+                GatewayResponseCode=code,
+            )
+        azure.add_metric(azure.service_id, "Duration", series(2100, 260, 1.0), ApiId=api_id)
+        azure.add_metric(azure.service_id, "BackendDuration", series(1950, 240, 1.0), ApiId=api_id)
+        return
+    client.post(f"/api/litellm/pools/{POOL}/aliases", json={"name": "gpt-5.6-luna"}, headers=WRITE)
 
     azure.log_rows["by time"] = [
         {
@@ -357,11 +425,10 @@ def _pool_in_use(azure: FakeAzure, accounts: list[str]) -> None:
             "throttled": 0,
         },
     ]
-    stamps = [(f"{end - timedelta(minutes=60 - i):%Y-%m-%dT%H:%M:%SZ}", i) for i in minutes]
 
-    def series(base: float, swing: float, phase: float = 0.0) -> list[tuple[str, float]]:
-        return [(t, value(i, base, swing, phase)) for t, i in stamps]
 
+def _member_metrics(azure: DemoAzure, refs: list[tuple[str, str]], series: Any) -> None:
+    """The member deployments' own Azure OpenAI metrics: Sweden takes the traffic."""
     for index, (account, deployment) in enumerate(refs):
         share = (1.0, 0.05, 0.01)[index]
         dims = {"ModelDeploymentName": deployment}
@@ -394,31 +461,32 @@ def _pool_in_use(azure: FakeAzure, accounts: list[str]) -> None:
         )
 
 
-def wire(stage: str) -> None:
-    """Points every dependency at fresh fakes, seeded for ``stage``."""
+def wire(stage: str, product: Product = "litellm") -> None:
+    """Points every dependency at fresh fakes, seeded for ``stage`` on a ``product`` gateway."""
     azure = DemoAzure()
     azure.litellm = DemoLiteLLM()
     azure.callers[TOKEN] = "app"
     accounts = _seed(azure)
     credential = DemoCredential(signed_in=stage != "sign-in")
     base = Settings(_env_file=None, auth_mode="disabled", **NO_TARGET)  # type: ignore[call-arg]
-    settings = base if stage == "sign-in" else base.with_saved_target(TARGET)
+    settings = base if stage == "sign-in" else base.with_saved_target(TARGETS[product])
     # Like deps._secrets: kept when the wizard switches gateways.
     secrets = SecretStore(Path(tempfile.mkdtemp()) / "keys.bin", persistent=False)
     # Like the app's backend/.pool-manager.json: one file the wizard's choices are saved to.
     state_file = Path(tempfile.mkdtemp()) / "state.json"
     _wire(azure, settings, credential, secrets, state_file)
     if stage == "pool":
-        _pool_in_use(azure, accounts)
+        _pool_in_use(azure, accounts, product)
 
 
 def _wire(
-    azure: FakeAzure,
+    azure: DemoAzure,
     settings: Settings,
     credential: DemoCredential,
     secrets: SecretStore,
     state_file: Path,
 ) -> None:
+    """Like deps.py: both products' components, and the shared ones for the chosen gateway."""
     arm = ArmClient(settings, credential, azure.transport(), sleep=lambda _: None)  # type: ignore[arg-type]
     gateway = GatewayConnection(
         settings,
@@ -427,15 +495,22 @@ def _wire(
         transport=azure.litellm.transport(),
         sleep=lambda _: None,
     )
-    service = LiteLLMService(settings, arm, gateway)
-    discovery = DeploymentDiscovery(settings, arm, service)
-    access = AccessChecker(
-        settings,
-        arm,
-        service,
-        lambda: [view.account_id for view in discovery.list()],
-        credential,  # type: ignore[arg-type]
-    )
+    apim = ApimService(settings, arm)
+    litellm = LiteLLMService(settings, arm, gateway)
+    product = settings.product if settings.has_target else None
+    members: MemberStore | None = {"apim": apim, "litellm": litellm, None: None}[product]
+    discovery = DeploymentDiscovery(settings, arm, members)
+
+    def discovered() -> list[str]:
+        return [view.account_id for view in discovery.list()]
+
+    access: AccessChecker
+    if product == "apim":
+        access = ApimAccessChecker(settings, arm, apim, discovered, credential)  # type: ignore[arg-type]
+    elif product == "litellm":
+        access = LiteLLMAccessChecker(settings, arm, litellm, discovered, credential)  # type: ignore[arg-type]
+    else:
+        access = AccessChecker(settings, arm, None, discovered, credential)  # type: ignore[arg-type]
 
     def changed() -> None:
         # Choosing, deploying or connecting a gateway moves the demo on to it, keeping the fakes;
@@ -451,22 +526,28 @@ def _wire(
         settings,
         credential,  # type: ignore[arg-type]
         transport=azure.transport(),
-        gateway_transport=azure.litellm.transport(),
         sleep=lambda _: None,
         state_file=state_file,
-        secrets=secrets,
         on_change=changed,
     )
     overrides: dict[Any, Any] = {
         get_settings: settings,
-        get_service: service,
         get_discovery: discovery,
         get_access: access,
         get_targets: chooser,
-        get_cost: CostReader(settings, service, transport=azure.transport()),
-        get_tester: ApiTester(settings, service, transport=azure.litellm.transport()),
+        get_apim_service: apim,
+        get_apim_targets: ApimTargets(chooser),
+        get_apim_cost: ApimCost(settings, apim, transport=azure.transport()),
+        get_apim_tester: ApimTester(settings, apim, transport=azure.transport()),
+        get_apim_monitor: ApimMonitor(settings, arm, apim),
+        get_litellm_service: litellm,
+        get_litellm_targets: LiteLLMTargets(
+            chooser, gateway_transport=azure.litellm.transport(), secrets=secrets
+        ),
+        get_litellm_cost: LiteLLMCost(settings, litellm, transport=azure.transport()),
+        get_litellm_tester: LiteLLMTester(settings, litellm, transport=azure.litellm.transport()),
         get_benchmarks: BenchmarkRunner(_SlowGateway(azure.litellm)),
-        get_monitor: PoolMonitor(settings, arm, service, transport=azure.transport()),
+        get_litellm_monitor: LiteLLMMonitor(settings, arm, litellm, transport=azure.transport()),
     }
     app.dependency_overrides.clear()
     for factory, value in overrides.items():
@@ -505,10 +586,10 @@ def _refuse(*_: Any, **__: Any) -> Any:
 
 
 @app.post("/demo/stage/{stage}", include_in_schema=False)
-def demo_stage(stage: str) -> Response:
+def demo_stage(stage: str, product: Product = "litellm") -> Response:
     if stage not in STAGES:
         return Response(status_code=404)
-    wire(stage)
+    wire(stage, product)
     return Response(status_code=204)
 
 
@@ -522,12 +603,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     parser.add_argument("--port", type=int, default=8010)
     parser.add_argument("--stage", choices=STAGES, default="sign-in")
+    parser.add_argument("--product", choices=("litellm", "apim"), default="litellm")
     args = parser.parse_args()
     deps.ArmClient = _refuse  # type: ignore[assignment,misc]
     deps.LocalCredential = _refuse  # type: ignore[assignment,misc]
     deps.SecretStore = _refuse  # type: ignore[assignment,misc]
     app.router.lifespan_context = _lifespan
-    wire(args.stage)
+    wire(args.stage, args.product)
     import uvicorn
 
     print(f"Demo UI (no Azure): http://127.0.0.1:{args.port}")

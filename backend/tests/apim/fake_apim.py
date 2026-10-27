@@ -37,6 +37,8 @@ RETAIL_PRICES = AZURE_RETAIL_PRICES["API Management"]
 
 @dataclass
 class FakeApim(FakeAzure):
+    # The service the app manages (Settings: sub / rg / apim).
+    service_id: str = SERVICE
     backends: dict[str, dict[str, Any]] = field(default_factory=dict)
     named_values: dict[str, dict[str, Any]] = field(default_factory=dict)
     apis: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -111,7 +113,11 @@ class FakeApim(FakeAzure):
         """An APIM subscription; ``scope`` is relative to the service, e.g. ``/apis/x``."""
         self.apim_subscriptions[name] = {
             "name": name,
-            "properties": {"scope": f"{SERVICE}{scope}", "displayName": name, "state": state},
+            "properties": {
+                "scope": f"{self.service_id}{scope}",
+                "displayName": name,
+                "state": state,
+            },
         }
 
     def grant_openai_user(self, account_id: str, principal: str = APIM_PRINCIPAL) -> None:
@@ -122,9 +128,9 @@ class FakeApim(FakeAzure):
     def gateway_resource(
         self, request: httpx.Request, caller: str, path: str, body: Any
     ) -> httpx.Response | None:
-        if path == SERVICE:
+        if path == self.service_id:
             return self._service(request, caller)
-        if path.startswith(f"{SERVICE}/"):
+        if path.startswith(f"{self.service_id}/"):
             return self._in_service(request, caller, path, body)
         parts = path.strip("/").split("/")
         if len(parts) < 4 or parts[0] != "subscriptions":
@@ -169,7 +175,7 @@ class FakeApim(FakeAzure):
     def _in_service(
         self, request: httpx.Request, caller: str, path: str, body: Any
     ) -> httpx.Response:
-        parts = path[len(SERVICE) :].strip("/").split("/")
+        parts = path[len(self.service_id) :].strip("/").split("/")
         if parts[0] == "subscriptions":
             return self._subscription(request, caller, parts[1:], body)
         if parts[0] == "apis" and parts[2:] == ["products"]:
@@ -217,7 +223,7 @@ class FakeApim(FakeAzure):
 
     def _service(self, request: httpx.Request, caller: str) -> httpx.Response:
         if request.method == "PATCH":
-            if not self._may(caller, SERVICE, "Microsoft.ApiManagement/service/write"):
+            if not self._may(caller, self.service_id, "Microsoft.ApiManagement/service/write"):
                 return _error(403, "AuthorizationFailed")
             body = json.loads(request.content)
             assert "SystemAssigned" in body["identity"]["type"]
@@ -231,7 +237,7 @@ class FakeApim(FakeAzure):
         return httpx.Response(
             200,
             json={
-                "name": "apim",
+                "name": self.service_id.rpartition("/")[2],
                 # APIM reports the display name of its region.
                 "location": "East US 2",
                 "sku": {"name": "BasicV2", "capacity": 2},
@@ -251,13 +257,13 @@ class FakeApim(FakeAzure):
     ) -> httpx.Response:
         action = "Microsoft.ApiManagement/service/subscriptions"
         if not parts:
-            if not self._may(caller, SERVICE, f"{action}/read"):
+            if not self._may(caller, self.service_id, f"{action}/read"):
                 return _error(403, "AuthorizationFailed")
             return httpx.Response(200, json={"value": list(self.apim_subscriptions.values())})
         name = parts[0]
         existing = self.apim_subscriptions.get(name)
         if parts[1:] == ["listSecrets"]:
-            if not self._may(caller, SERVICE, f"{action}/listSecrets/action"):
+            if not self._may(caller, self.service_id, f"{action}/listSecrets/action"):
                 return _error(403, "AuthorizationFailed")
             if existing is None:
                 return _error(404, "ResourceNotFound")
@@ -265,18 +271,18 @@ class FakeApim(FakeAzure):
                 200, json={"primaryKey": f"primary-{name}", "secondaryKey": f"secondary-{name}"}
             )
         if request.method == "GET":
-            if not self._may(caller, SERVICE, f"{action}/read"):
+            if not self._may(caller, self.service_id, f"{action}/read"):
                 return _error(403, "AuthorizationFailed")
             return httpx.Response(200, json=existing) if existing else _error(404, "NotFound")
         if request.method != "PUT":
             return _error(405, "MethodNotAllowed")
-        if not self._may(caller, SERVICE, f"{action}/write"):
+        if not self._may(caller, self.service_id, f"{action}/write"):
             return _error(403, "AuthorizationFailed")
         if request.headers.get("If-None-Match") == "*" and existing:
             return _error(412, "PreconditionFailed")
         properties = dict(body["properties"])
         # ARM answers with the full scope ID.
-        properties["scope"] = f"{SERVICE}{properties['scope']}"
+        properties["scope"] = f"{self.service_id}{properties['scope']}"
         self.apim_subscriptions[name] = {"name": name, "properties": properties}
         return httpx.Response(201, json=self.apim_subscriptions[name])
 
@@ -343,7 +349,7 @@ class FakeApim(FakeAzure):
 
     def _delete_api(self, request: httpx.Request, caller: str, name: str) -> httpx.Response:
         """Like APIM: the API goes with its policy and operations; ``If-Match`` is required."""
-        if not self._may(caller, SERVICE, "Microsoft.ApiManagement/service/apis/delete"):
+        if not self._may(caller, self.service_id, "Microsoft.ApiManagement/service/apis/delete"):
             return _error(403, "AuthorizationFailed")
         if not request.headers.get("If-Match"):
             return _error(400, "IfMatchRequired")

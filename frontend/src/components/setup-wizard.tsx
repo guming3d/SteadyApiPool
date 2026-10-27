@@ -1,25 +1,21 @@
-// First-run setup: picks or deploys the gateway, checks the Azure access the user, the app and
-// the gateway's identity need, fixes what the user's own rights allow, and turns the rest into a
-// ready-to-send admin request.
-import { Check, CheckCircle2, CircleAlert, CircleDashed, Clock, Copy, ExternalLink, KeyRound, LoaderCircle, RefreshCw, ShieldAlert, ShieldCheck } from "lucide-react"
-import { createContext, useContext, useEffect, useState, type ReactNode } from "react"
+// First-run setup: picks or creates the gateway (an APIM service or a LiteLLM gateway), checks
+// the Azure access the user, the app and the gateway's identity need, fixes what the user's own
+// rights allow, and turns the rest into a ready-to-send admin request.
+import { Check, CheckCircle2, CircleAlert, CircleDashed, Clock, ExternalLink, KeyRound, LoaderCircle, Network, RefreshCw, Server, ShieldAlert, ShieldCheck } from "lucide-react"
+import { useEffect, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 
 import { api, keys, queries } from "../api"
-import { fill, useI18n } from "../i18n"
+import { api as apimApi } from "../apim/api"
+import { fill, useI18n, type Messages } from "../i18n"
+import { PRODUCTS } from "../products"
 import { attentionCount, canAdvance, elapsedMinutes, firstStep, grantable, reachable, resourceName, STEPS, stepChecks, stepState, type StepId, type StepState } from "../setup-steps"
-import type { AdminRequest, DeviceCodePrompt, SetupCheck, SetupReport, SignInSource, TargetView } from "../types"
+import type { DeviceCodePrompt, Product, SetupCheck, SetupReport, SignInSource, TargetView } from "../types"
 import { isPublic, signIn as publicSignIn } from "../session"
-import { GatewayPicker } from "./gateway-picker"
+import { AdminRequestPanel, CopyText, useSetupActions, useSetupI18n } from "./setup"
 import { Button, Dialog, ErrorText } from "./ui"
 
-type Messages = ReturnType<typeof useI18n>["t"]
-
-const SetupContext = createContext<() => void>(() => {})
-/** Opens the setup wizard from anywhere, e.g. an inline "the gateway can't call this account" notice. */
-export const useOpenSetup = () => useContext(SetupContext)
-export const SetupProvider = ({ open, children }: { open: () => void; children: ReactNode }) =>
-  <SetupContext value={open}>{children}</SetupContext>
+export { SetupButton, SetupProvider } from "./setup"
 
 const STEP_LABEL: Record<StepId, "setupStepSignIn" | "setupStepGateway" | "setupStepAccess" | "setupStepFoundry"> = {
   sign_in: "setupStepSignIn",
@@ -57,17 +53,20 @@ function checkText(check: SetupCheck, report: SetupReport, t: Messages, gateway:
       if (ok) return text(check.granted_by === "owners" ? t.chkAccessOwners : check.granted_by === "azure_rbac" ? t.chkAccessRbac : t.chkAccessOk)
       if (check.status === "blocked") return text(t.chkAccessBlocked, t.chkAccessBlockedHint)
       if (check.status === "unknown") return text(t.chkAccessUnknown)
-      return text(t.chkAccessReadOnly, t.chkAccessReadOnlyHint)
+      // APIM deployed: the app can write; the user needs to be an owner or hold the role.
+      return text(t.chkAccessReadOnly, report.product === "apim" && report.mode === "deployed" ? t.chkAccessReadOnlyDeployedHint : t.chkAccessReadOnlyHint)
     case "discovery":
       return ok ? text(t.chkDiscoveryOk) : text(t.chkDiscovery, t.chkDiscoveryHint)
     case "app_gateway":
       if (ok) return text(t.chkAppGatewayOk)
-      return text(t.chkAppGatewayBlocked, t.chkAppHint)
+      // APIM: the app can read the service but not change it.
+      return text(check.status === "blocked" ? t.chkAppGatewayBlocked : t.chkAppGateway, t.chkAppHint)
     case "app_discovery":
       return ok ? text(t.chkAppDiscoveryOk) : text(t.chkAppDiscovery, t.chkAppHint)
     case "gateway_identity":
       if (ok) return text(t.chkIdentityOk)
       if (check.status === "unknown") return text(t.chkIdentityUnknown)
+      if (check.status === "pending") return text(t.chkIdentityPending, t.chkIdentityPendingHint)
       if (check.detail === "external_unknown") return text(t.chkIdentityExternal, t.chkIdentityExternalHint)
       return text(t.chkIdentity, t.chkIdentityHint)
     case "foundry_access":
@@ -85,86 +84,14 @@ function StatusIcon({ status, size = 16 }: { status: SetupCheck["status"] | Step
   return <CircleDashed size={size} />
 }
 
-function CopyText({ text, label, children }: { text: string; label: string; children?: ReactNode }) {
-  const { t } = useI18n()
-  const [copied, setCopied] = useState(false)
-  const copy = async () => {
-    await navigator.clipboard.writeText(text)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1500)
-  }
-  return children
-    ? <Button variant="ghost" onClick={() => void copy()}>{copied ? <Check size={13} /> : <Copy size={13} />}{copied ? t.copied : children}</Button>
-    : <button type="button" className="icon-button" title={copied ? t.copied : t.copy} aria-label={`${t.copy} ${label}`} onClick={() => void copy()}>{copied ? <Check size={13} /> : <Copy size={13} />}</button>
-}
-
-/** Who needs what, where, plus the command and a message to send to an administrator. */
-export function AdminRequestPanel({ request, open }: { request: AdminRequest; open?: boolean }) {
-  const { t, locale } = useI18n()
-  const message = request.role
-    ? fill(t.setupMessageRole, { role: request.role, assignee: request.assignee_id ? `${request.assignee} (${request.assignee_id})` : request.assignee, scope: request.scope ?? "", command: request.command }, locale)
-    : fill(t.setupMessageCommand, { command: request.command }, locale)
-  return <details className="admin-request" open={open}>
-    <summary><KeyRound size={13} />{t.setupAskAdmin}</summary>
-    <div className="admin-request-body">
-      {request.role && <dl>
-        <div><dt>{t.setupAssignee}</dt><dd>{request.assignee}{request.assignee_id && <code>{request.assignee_id}</code>}</dd></div>
-        <div><dt>{t.setupRole}</dt><dd>{request.role}</dd></div>
-        {request.scope && <div className="wide"><dt>{t.setupScope}</dt><dd><code>{request.scope}</code></dd></div>}
-      </dl>}
-      <div className="code-block"><pre><code>{request.command}</code></pre><CopyText text={request.command} label="command" /></div>
-      <div className="admin-request-actions">
-        <CopyText text={message} label={t.setupCopyMessage}>{t.setupCopyMessage}</CopyText>
-        {request.portal_url && <a href={request.portal_url} target="_blank" rel="noreferrer"><ExternalLink size={13} />{t.setupOpenIam}</a>}
-      </div>
-    </div>
-  </details>
-}
-
-/** Runs the fixes and refreshes every query that depends on Azure access afterwards. */
-function useSetupActions() {
-  const queryClient = useQueryClient()
-  const recheck = async () => {
-    queryClient.setQueryData(keys.setup, await api.setup(true))
-    void queryClient.invalidateQueries({ queryKey: keys.capabilities })
-    void queryClient.invalidateQueries({ queryKey: keys.me })
-    void queryClient.invalidateQueries({ queryKey: ["setup", "foundry"] })
-  }
-  // A different account sees different pools and deployments.
-  const switched = async () => { await recheck(); void queryClient.invalidateQueries() }
-  const signIn = useMutation({ mutationFn: () => api.signIn(), onSuccess: switched })
-  // Starting returns the code at once; DeviceCodePanel follows the sign-in to the end.
-  const device = useMutation({ mutationFn: () => api.startDeviceCode() })
-  const signOut = useMutation({ mutationFn: api.signOut, onSuccess: switched })
-  const grant = useMutation({
-    mutationFn: api.grantFoundryAccess,
-    onSuccess: async (checks) => {
-      // The grant's own answer counts at once: Azure lists a new assignment only a while later.
-      const fresh = new Map(checks.map((check) => [check.subject, check]))
-      queryClient.setQueriesData<SetupCheck[]>({ queryKey: ["setup", "foundry"] }, (old) =>
-        old?.map((check) => (check.subject && fresh.get(check.subject)) || check))
-      await recheck()
-    },
-  })
-  const refresh = useMutation({ mutationFn: recheck })
-  const consent = () => {
-    // The public app asks Entra for consent again; it returns to this page.
-    if (isPublic()) return void publicSignIn({ consent: true })
-    // Easy Auth signs in again and asks for the Azure scope; it returns to this page.
-    window.location.assign(`/.auth/login/aad?post_login_redirect_uri=${encodeURIComponent(window.location.pathname + window.location.search)}`)
-  }
-  const renew = useMutation({
-    mutationFn: async () => {
-      const response = await fetch("/.auth/refresh", { credentials: "same-origin" })
-      if (!response.ok) return consent()
-      await recheck()
-    },
-  })
-  return { signIn, device, signOut, switched, grant, refresh, consent, renew }
-}
-
 function FixButton({ check, actions }: { check: SetupCheck; actions: ReturnType<typeof useSetupActions> }) {
-  const { t } = useI18n()
+  const { t } = useSetupI18n()
+  const queryClient = useQueryClient()
+  // APIM only: turns on the service's system-assigned identity with the user's own rights.
+  const enableIdentity = useMutation({
+    mutationFn: apimApi.enableApimIdentity,
+    onSuccess: async () => queryClient.setQueryData(keys.setup, await api.setup(true)),
+  })
   const spinner = <LoaderCircle className="spin" size={13} />
   switch (check.fix) {
     case "sign_in":
@@ -189,6 +116,13 @@ function FixButton({ check, actions }: { check: SetupCheck; actions: ReturnType<
       return <Button variant="primary" disabled={actions.renew.isPending} onClick={() => actions.renew.mutate()}>
         {actions.renew.isPending ? spinner : <RefreshCw size={13} />}{t.setupRenew}
       </Button>
+    case "enable_apim_identity":
+      return <span className="setup-fix-group">
+        <Button variant="primary" disabled={enableIdentity.isPending} onClick={() => enableIdentity.mutate()}>
+          {enableIdentity.isPending ? spinner : <ShieldCheck size={13} />}{t.setupEnableIdentity}
+        </Button>
+        <ErrorText error={enableIdentity.error} />
+      </span>
     case "grant_foundry_access":
       return <Button variant="primary" disabled={actions.grant.isPending} onClick={() => actions.grant.mutate([check.subject!])}>
         {actions.grant.isPending && actions.grant.variables?.includes(check.subject!) ? spinner : <KeyRound size={13} />}{t.setupGrant}
@@ -199,7 +133,7 @@ function FixButton({ check, actions }: { check: SetupCheck; actions: ReturnType<
 }
 
 function CheckRow({ check, report, gateway, actions }: { check: SetupCheck; report: SetupReport; gateway: string; actions: ReturnType<typeof useSetupActions> }) {
-  const { t } = useI18n()
+  const { t } = useSetupI18n()
   const { title, hint } = checkText(check, report, t, gateway)
   const attention = check.status === "action" || check.status === "blocked"
   return <li className="setup-check" data-status={check.status}>
@@ -228,7 +162,7 @@ function CheckRow({ check, report, gateway, actions }: { check: SetupCheck; repo
 /** Live proof that a gateway deployment is being followed: elapsed time and the last poll. The
  *  setup query refetches every 5 s while a check is pending, and each poll re-renders this. */
 function ProvisioningProgress({ startedAt }: { startedAt: string | null }) {
-  const { t, locale } = useI18n()
+  const { t, locale } = useSetupI18n()
   const { dataUpdatedAt } = useQuery(queries.setup())
   const minutes = elapsedMinutes(startedAt, Date.now())
   const elapsed = minutes === null ? null
@@ -253,7 +187,7 @@ const SOURCE_LABEL: Record<SignInSource, "srcBrowser" | "srcDeviceCode" | "srcAz
 
 /** Which sign-in the app is using, whether a restart keeps it, and a way to sign out of it. */
 function SignInDetails({ report, actions }: { report: SetupReport; actions: ReturnType<typeof useSetupActions> }) {
-  const { t } = useI18n()
+  const { t } = useSetupI18n()
   const local = report.local_sign_in!
   const appSignIn = local.source === "browser" || local.source === "device_code"
   return <div className="setup-sign-in">
@@ -271,7 +205,7 @@ function SignInDetails({ report, actions }: { report: SetupReport; actions: Retu
 
 /** The device code to enter elsewhere, followed until the sign-in finishes or fails. */
 function DeviceCodePanel({ prompt, onDone }: { prompt: DeviceCodePrompt; onDone: () => Promise<void> }) {
-  const { t } = useI18n()
+  const { t } = useSetupI18n()
   const status = useQuery({
     queryKey: ["setup", "device-code", prompt.user_code],
     queryFn: api.deviceCodeStatus,
@@ -296,16 +230,15 @@ function DeviceCodePanel({ prompt, onDone }: { prompt: DeviceCodePrompt; onDone:
 }
 
 export function SetupWizard({ open = true, page = false, onClose }: { open?: boolean; page?: boolean; onClose?: () => void }) {
-  const { t } = useI18n()
+  const { t } = useSetupI18n()
   const setup = useQuery(queries.setup())
-  const capabilities = useQuery({ ...queries.capabilities(), enabled: setup.data?.can_operate === true })
-  const target = useQuery({ ...queries.target(), enabled: setup.data?.mode === "local" || setup.data?.mode === "public" || setup.data?.mode === "guest" })
+  const target = useQuery(queries.target())
   const actions = useSetupActions()
   const [chosen, setChosen] = useState<StepId | null>(null)
   const report = setup.data
   const step = chosen ?? firstStep(report)
   const index = STEPS.indexOf(step)
-  const gateway = capabilities.data?.gateway_name ?? target.data?.gateway_name ?? "gateway"
+  const gateway = target.data?.gateway_name ?? t.gatewayFallbackName
   const checks = stepChecks(report, step)
   const count = attentionCount(report)
   const toGrant = grantable(checks)
@@ -370,71 +303,45 @@ export function SetupWizard({ open = true, page = false, onClose }: { open?: boo
 
 /** Where the gateway comes from, and the picker when it can be changed here. */
 function TargetPanel({ target, report }: { target: TargetView; report: SetupReport }) {
-  const { t } = useI18n()
+  const { t } = useSetupI18n()
   // Open straight away when there is nothing to manage yet, the gateway can't be reached, or
   // a new AKS gateway is being installed (the picker's progress drives that on).
   const [open, setOpen] = useState(target.provisioning || report.checks.some((item) =>
     (item.kind === "gateway_target" || item.kind === "gateway_health")
     && (item.status === "action" || item.status === "blocked")))
+  // The kind of gateway to pick from: the chosen one's, else the user picks (the public app
+  // manages APIM services only).
+  const [product, setProduct] = useState<Product | null>(target.product ?? (report.mode === "public" ? "apim" : null))
   if (!target.can_change) {
     if (target.source === "guest") return <p className="muted">{t.targetGuest}</p>
     return target.source === "environment" ? <p className="muted">{t.targetFixed}</p> : null
   }
+  const Picker = product && PRODUCTS[product].Picker
   return <div className="setup-target">
     {target.source === "saved" && <p className="muted">{t.targetSaved}</p>}
     {target.source === "browser" && <p className="muted">{t.targetBrowser}</p>}
-    {open
-      ? <GatewayPicker target={target} user={report.user} />
-      : <div><Button onClick={() => setOpen(true)}>{t.targetChange}</Button></div>}
+    {!open
+      ? <div><Button onClick={() => setOpen(true)}>{t.targetChange}</Button></div>
+      : <>
+        {report.mode !== "public" && <ProductChoice product={product} onChange={setProduct} />}
+        {Picker && <Picker key={product} target={target} user={report.user} />}
+      </>}
   </div>
 }
 
-/** Top-bar entry point: green when ready, amber with a count when something needs attention. */
-export function SetupButton({ onOpen }: { onOpen: () => void }) {
+/** APIM or LiteLLM: which kind of gateway the picker below lists and creates. */
+function ProductChoice({ product, onChange }: { product: Product | null; onChange: (product: Product) => void }) {
   const { t } = useI18n()
-  const setup = useQuery(queries.setup())
-  if (!setup.data) return null
-  const count = attentionCount(setup.data)
-  return <button type="button" className="setup-button" data-ready={setup.data.ready} data-tour="setup" title={t.setupOpen} onClick={onOpen}>
-    {setup.data.ready ? <ShieldCheck size={14} /> : <ShieldAlert size={14} />}{t.setupTitle}
-    {count > 0 && <span className="setup-count">{count}</span>}
-  </button>
-}
-
-/** Inline status of the gateway's access to some Foundry accounts, with a one-click grant. */
-export function FoundryAccessNotice({ accountIds }: { accountIds: string[] }) {
-  const { t, locale } = useI18n()
-  const openSetup = useOpenSetup()
-  const actions = useSetupActions()
-  const ids = [...new Set(accountIds)].sort()
-  const access = useQuery(queries.foundryAccess(ids))
-  if (!ids.length) return null
-  if (access.isLoading) return <div className="state"><LoaderCircle className="spin" size={14} />{t.foundryAccessChecking}</div>
-  if (access.error) return <ErrorText error={access.error} />
-  const checks = access.data ?? []
-  if (checks.some((check) => check.status === "skipped")) {
-    return <div className="foundry-access" data-tone="warn">
-      <CircleAlert size={14} /><span>{t.foundryNoIdentity}</span>
-      <button type="button" className="link-button" onClick={openSetup}>{t.setupOpen}</button>
-    </div>
-  }
-  const missing = checks.filter((check) => check.status !== "ok")
-  if (!missing.length) {
-    return <div className="foundry-access" data-tone="ok"><CheckCircle2 size={14} /><span>{fill(t.foundryAccessAll, { count: checks.length })}</span></div>
-  }
-  const toGrant = grantable(missing)
-  const commands = missing.flatMap((check) => check.request ? [check.request.command] : []).join("\n")
-  return <div className="foundry-access" data-tone="warn">
-    <CircleAlert size={14} />
-    <span>{fill(t.foundryAccessMissing, { names: missing.map((check) => resourceName(check.subject)) }, locale)}</span>
-    {toGrant.length > 0 && <Button variant="primary" disabled={actions.grant.isPending} onClick={() => actions.grant.mutate(toGrant)}>
-      {actions.grant.isPending ? <LoaderCircle className="spin" size={13} /> : <KeyRound size={13} />}
-      {toGrant.length > 1 ? fill(t.setupGrantAll, { count: toGrant.length }) : t.setupGrant}
-    </Button>}
-    {toGrant.length < missing.length && commands && <details className="foundry-access-admin">
-      <summary>{t.setupAskAdmin}</summary>
-      <div className="code-block"><pre><code>{commands}</code></pre><CopyText text={commands} label="az role assignment" /></div>
-    </details>}
-    <ErrorText error={actions.grant.error} />
+  const options: Array<{ id: Product; icon: typeof Server; title: string; hint: string }> = [
+    { id: "litellm", icon: Network, title: t.productLitellm, hint: t.productLitellmHint },
+    { id: "apim", icon: Server, title: t.productApim, hint: t.productApimHint },
+  ]
+  return <div className="pool-choices" role="radiogroup" aria-label={t.productChoice}>
+    {options.map(({ id, icon: Icon, title, hint }) => <label key={id} className="pool-choice" data-selected={product === id}>
+      <input type="radio" name="gateway-product" checked={product === id} onChange={() => onChange(id)} />
+      <span className="list-copy"><b>{title}</b><small>{hint}</small></span>
+      <Icon size={16} />
+    </label>)}
   </div>
 }
+

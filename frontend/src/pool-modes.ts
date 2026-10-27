@@ -1,6 +1,6 @@
 // Pool modes (failover, balanced, weighted) derived from member priority and weight. The
 // operator picks the primary, and it is kept as the first member.
-import type { PoolMember, PoolWrite } from "./types"
+import type { PoolMember } from "./types.ts"
 
 export type DeploymentMode = "failover" | "balanced" | "weighted" | "custom"
 
@@ -99,29 +99,11 @@ export function trafficShare(members: PoolMember[], backendId: string) {
   return member && total > 0 ? Math.round(member.weight / total * 100) : 0
 }
 
-export function draftIssues(draft: PoolWrite, mode: DeploymentMode | null) {
+export function draftIssues(draft: { members: PoolMember[] }, mode: DeploymentMode | null) {
   const issues: Array<"members" | "weights"> = []
   if (draft.members.length < MIN_MEMBERS || draft.members.length > MAX_MEMBERS) issues.push("members")
   if (mode === "weighted" && new Set(draft.members.map((member) => member.weight)).size < 2) {
     issues.push("weights")
   }
   return issues
-}
-
-// Same rules as backend/pool_manager/models.py. A pool's ID is also the model name clients send.
-export const POOL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]{0,79}$/
-export const MODEL_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/
-
-/** A pool ID for a model: the model name with anything an ID can't hold turned into hyphens. */
-export function suggestPoolId(model: string | null | undefined, taken: Iterable<string> = []) {
-  const slug = (model ?? "").trim().toLowerCase()
-    .replace(/[^a-z0-9-]+/g, "-")
-    .replace(/-{2,}/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 72) || "pool"
-  const used = new Set([...taken].map((id) => id.toLowerCase()))
-  if (!used.has(slug)) return slug
-  for (let index = 2; ; index++) {
-    if (!used.has(`${slug}-${index}`)) return `${slug}-${index}`
-  }
 }

@@ -1,20 +1,26 @@
 // Adds members to a pool draft: discovered deployments of the pool's model (imported on the way
-// in), members of other pools that are not Foundry deployments, or a new custom endpoint.
+// in), other members that are not Foundry deployments, or a new custom endpoint. The product's
+// editor says which members may join and opens its own dialog for a custom endpoint.
 import { CircleAlert, ListPlus, LoaderCircle, Plus, RefreshCw } from "lucide-react"
-import { useState } from "react"
+import { useState, type ReactNode } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 
 import { api, keys, queries } from "../api"
 import { fill, useI18n } from "../i18n"
+import { useProductUi } from "../product"
 import type { DeploymentView } from "../types"
 import { modelName, refKey } from "./deployments-page"
-import { MemberBackendDialog } from "./member-backend-dialog"
 import { Button, Dialog, ErrorText } from "./ui"
+
+/** A member that could join the pool, as the product's member list describes it. */
+export type MemberCandidate = { id: string; title: string | null; url: string | null }
 
 export function AddMembersDialog({
   model,
   memberIds,
   room,
+  candidates: members,
+  customEndpoint,
   onAdd,
   onClose,
 }: {
@@ -24,13 +30,17 @@ export function AddMembersDialog({
   memberIds: ReadonlySet<string>
   /** How many members can still be added (30 max). */
   room: number
+  /** Members that may join (the product decides, e.g. only those this app manages). */
+  candidates: MemberCandidate[]
+  /** The product's dialog for a new custom endpoint; onSaved ticks it in the list. */
+  customEndpoint: (props: { onSaved: (memberId: string) => void; onClose: () => void }) => ReactNode
   onAdd: (backendIds: string[]) => void
   onClose: () => void
 }) {
-  const { t } = useI18n()
+  const { product, membersKey } = useProductUi()
+  const { t } = useI18n(product)
   const queryClient = useQueryClient()
   const deployments = useQuery(queries.deployments())
-  const backends = useQuery(queries.backends())
   const [picked, setPicked] = useState<Set<string>>(new Set())
   const [pickedBackends, setPickedBackends] = useState<Set<string>>(new Set())
   const [customOpen, setCustomOpen] = useState(false)
@@ -45,7 +55,7 @@ export function AddMembersDialog({
       if (!views.length) return []
       const result = await api.importDeployments(views.map(({ account_id, deployment }) => ({ account_id, deployment })))
       // The editor resolves members against the backend list, so wait for the new ones.
-      await queryClient.refetchQueries({ queryKey: keys.backends })
+      await queryClient.refetchQueries({ queryKey: membersKey })
       void queryClient.invalidateQueries({ queryKey: keys.deployments })
       return result.backend_ids
     },
@@ -64,9 +74,8 @@ export function AddMembersDialog({
       || Number(inPool(left)) - Number(inPool(right))
       || left.account_name.localeCompare(right.account_name) || left.deployment.localeCompare(right.deployment))
   const deploymentBackendIds = new Set(all.flatMap((view) => view.backend_id ? [view.backend_id.toLowerCase()] : []))
-  // Rows this app didn't write can't join a pool (the backend refuses them).
-  const others = (backends.data ?? []).filter((backend) => backend.managed
-    && !memberIds.has(backend.id.toLowerCase()) && !deploymentBackendIds.has(backend.id.toLowerCase()))
+  const others = members.filter((backend) =>
+    !memberIds.has(backend.id.toLowerCase()) && !deploymentBackendIds.has(backend.id.toLowerCase()))
   const count = picked.size + pickedBackends.size
   const full = count >= room
   const busy = add.isPending
@@ -139,13 +148,12 @@ export function AddMembersDialog({
     </details>}
     <ErrorText error={add.error ?? refresh.error} />
     {/* A new endpoint lands ticked in the list above, alongside any other picks. */}
-    {customOpen && <MemberBackendDialog
-      backend={null}
-      onSaved={(saved) => {
-        setPickedBackends((current) => new Set(current).add(saved.id))
+    {customOpen && customEndpoint({
+      onSaved: (memberId) => {
+        setPickedBackends((current) => new Set(current).add(memberId))
         setOthersOpen(true)
-      }}
-      onClose={() => setCustomOpen(false)}
-    />}
+      },
+      onClose: () => setCustomOpen(false),
+    })}
   </Dialog>
 }

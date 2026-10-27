@@ -7,6 +7,11 @@
       // Applies the saved light/dark choice before first paint; src/theme.ts and
       // components/theme-toggle.tsx own it after that.
       try {
+        // The APIM-only app kept its settings under "apim-backend-pool:"; carry them over once.
+        for (const key of Object.keys(localStorage)) {
+          const moved = key.replace(/^apim-backend-pool:/, "ai-gateway-pool:")
+          if (moved !== key && localStorage.getItem(moved) === null) localStorage.setItem(moved, localStorage.getItem(key))
+        }
         const stored = localStorage.getItem("ai-gateway-pool:theme")
         document.documentElement.dataset.mode = stored === "light" || stored === "dark" ? stored
           : matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"

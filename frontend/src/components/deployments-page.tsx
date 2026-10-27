@@ -7,8 +7,8 @@ import { fill, useI18n } from "../i18n"
 import { deploymentMode, MAX_MEMBERS, primaryFirst } from "../pool-modes"
 import type { DeploymentView, FoundryDeploymentStatus } from "../types"
 import { DeployModelDialog } from "./deploy-model-dialog"
-import type { PoolAddRequest, PoolCreateRequest } from "./pool-editor"
-import { FoundryAccessNotice, useOpenSetup } from "./setup-wizard"
+import { useProductUi, type PoolAddRequest, type PoolCreateRequest } from "../product"
+import { FoundryAccessNotice, useOpenSetup } from "./setup"
 import { Button, Dialog, ErrorText } from "./ui"
 
 export const refKey = (view: DeploymentView) => `${view.account_id.toLowerCase()}|${view.deployment}`
@@ -27,10 +27,11 @@ export function DeploymentsPage({
   onCreatePool: (request: PoolCreateRequest) => void
   onAddToPool: (request: PoolAddRequest) => void
 }) {
-  const { t } = useI18n()
+  const { product, useFacts, membersKey } = useProductUi()
+  const { t } = useI18n(product)
   const queryClient = useQueryClient()
   const me = useQuery(queries.me())
-  const capabilities = useQuery(queries.capabilities())
+  const facts = useFacts()
   const deployments = useQuery(queries.deployments())
   const [filter, setFilter] = useState("")
   const [selected, setSelected] = useState<Set<string>>(new Set())
@@ -76,13 +77,13 @@ export function DeploymentsPage({
   const selectedModels = new Set(selectedViews.map(modelName))
   const selectedVersions = new Set(selectedViews.map(modelKey))
   const selectedAccounts = [...new Set(selectedViews.map((view) => view.account_id))]
-  const principalId = capabilities.data?.gateway_principal_id ?? null
+  const principalId = facts?.principalId ?? null
 
   const importViews = useMutation({
     mutationFn: async ({ views }: { views: DeploymentView[]; createPool?: boolean; addToPool?: string }) => {
       const result = await api.importDeployments(views.map(({ account_id, deployment }) => ({ account_id, deployment })))
       // The pool editor validates members against this list, so wait for it.
-      await queryClient.refetchQueries({ queryKey: keys.backends })
+      await queryClient.refetchQueries({ queryKey: membersKey })
       await queryClient.invalidateQueries({ queryKey: keys.deployments })
       return result
     },
@@ -96,7 +97,7 @@ export function DeploymentsPage({
       setNotice(`${t.importedNotice}: ${result.created.length} / ${result.backend_ids.length}`)
       if (createPool) {
         const model = views[0]!.model_name
-        onCreatePool({ id: poolIdFor(capabilities.data?.id_prefix ?? "", model), title: model, members: result.backend_ids })
+        onCreatePool({ id: poolIdFor(facts?.idPrefix ?? "", model), title: model, members: result.backend_ids })
       }
     },
   })
@@ -134,9 +135,9 @@ export function DeploymentsPage({
       </span>
     </header>
     {deployOpen && <DeployModelDialog existing={existing} onDeployed={deployed} onClose={() => setDeployOpen(false)} />}
-    <p className="muted page-hint">{t.deploymentsHint}{capabilities.data && <> · {t.subscriptions}: <code>{capabilities.data.discovery_subscriptions.join(", ")}</code></>}</p>
+    <p className="muted page-hint">{t.deploymentsHint}{facts && <> · {t.subscriptions}: <code>{facts.discoverySubscriptions.join(", ")}</code></>}</p>
 
-    {capabilities.data && !principalId && <div className="callout warning">
+    {facts && !principalId && <div className="callout warning">
       <CircleAlert size={15} /><div><b>{t.identityMissing}</b><span>{t.identityMissingFix}</span></div>
       <Button onClick={openSetup}>{t.setupOpen}</Button>
     </div>}
@@ -222,8 +223,9 @@ function AddToPoolDialog({
   onConfirm: (poolId: string) => void
   onClose: () => void
 }) {
-  const { t } = useI18n()
-  const pools = useQuery(queries.pools())
+  const { product, usePools } = useProductUi()
+  const { t } = useI18n(product)
+  const pools = usePools()
   const [choice, setChoice] = useState<string | null>(null)
   const model = modelName(views[0]!)
   // Imported deployments tell which model each existing member backend serves.

@@ -6,7 +6,7 @@ import { useQuery } from "@tanstack/react-query"
 import { queries } from "../api"
 import { useI18n } from "../i18n"
 import { deploymentMode, primaryFirst } from "../pool-modes"
-import { PoolEditor, type PoolAddRequest, type PoolCreateRequest } from "./pool-editor"
+import { useProductUi, type PoolAddRequest, type PoolCreateRequest } from "../product"
 import { Button, Dialog, ErrorText } from "./ui"
 
 export function PoolsPage({
@@ -22,15 +22,17 @@ export function PoolsPage({
   addRequest?: PoolAddRequest | null
   onAddRequestHandled?: () => void
 }) {
-  const { t } = useI18n()
+  const { product, usePools, PoolEditor } = useProductUi()
+  const { t } = useI18n(product)
   const me = useQuery(queries.me())
-  const pools = useQuery(queries.pools())
+  const pools = usePools()
   const [search, setSearch] = useState("")
   // Start on the requested pool, so the select-the-first-pool fallback below never overrides it.
   const [selectedId, setSelectedId] = useState<string | null>(addRequest?.poolId ?? null)
   const [pendingAdd, setPendingAdd] = useState<PoolAddRequest | null>(addRequest ?? null)
-  // A just-created pool opens on Connect, where clients learn how to call it.
-  const [justCreated, setJustCreated] = useState<string | null>(null)
+  // The pool just created in the dialog, and what its editor should do once it opens (e.g.
+  // open on Connect, where clients learn how to call it).
+  const [justCreated, setJustCreated] = useState<{ poolId: string; next?: unknown } | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
   const [prefill, setPrefill] = useState<PoolCreateRequest | undefined>()
   useEffect(() => {
@@ -101,7 +103,8 @@ export function PoolsPage({
             key={selected.id}
             poolId={selected.id}
             addMembers={pendingAdd?.poolId === selected.id ? pendingAdd.members : undefined}
-            openOn={justCreated === selected.id ? "connect" : undefined}
+            created={justCreated?.poolId === selected.id ? { next: justCreated.next } : undefined}
+            onCreatedHandled={() => setJustCreated((current) => current && { poolId: current.poolId })}
             onDeleted={() => select(null)}
             header={(controls) => <header className="detail-toolbar">
               <div><b>{selected.title || selected.id}</b><code>{selected.id}</code></div>
@@ -111,7 +114,7 @@ export function PoolsPage({
         </section>
       </div>}
     <Dialog open={createOpen} wide onClose={closeCreate} title={t.addPool} description={t.noPoolsHint}>
-      {createOpen && <PoolEditor initial={prefill} onCreated={(poolId) => { closeCreate(); setPendingId(poolId); setJustCreated(poolId) }} />}
+      {createOpen && <PoolEditor initial={prefill} onCreated={(poolId, next) => { closeCreate(); setPendingId(poolId); setJustCreated({ poolId, next }) }} />}
     </Dialog>
   </div>
 }

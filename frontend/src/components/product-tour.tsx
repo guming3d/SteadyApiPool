@@ -5,6 +5,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 
 import { useI18n, type MessageKey } from "../i18n"
+import type { Product } from "../types"
 import { placeCard, progress, spotlight, stepAvailable, TOUR_STEPS, type Rect } from "../tour-steps"
 import { Button } from "./ui"
 
@@ -23,8 +24,8 @@ function measure(element: HTMLElement): Rect {
 }
 
 /** Closed when finished or skipped; either way the caller marks it seen. */
-export function ProductTour({ onClose }: { onClose: () => void }) {
-  const { t } = useI18n()
+export function ProductTour({ product, onClose }: { product: Product | null; onClose: () => void }) {
+  const { t } = useI18n(product)
   const [index, setIndex] = useState(0)
   const [target, setTarget] = useState<Rect | null>(null)
   const [ready, setReady] = useState(false)

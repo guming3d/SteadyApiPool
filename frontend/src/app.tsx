@@ -4,16 +4,16 @@ import { useQuery } from "@tanstack/react-query"
 
 import { queries } from "./api"
 import { DeploymentsPage } from "./components/deployments-page"
-import type { PoolAddRequest, PoolCreateRequest } from "./components/pool-editor"
 import { PoolsPage } from "./components/pools-page"
 import { ProductTour } from "./components/product-tour"
-import { ServicePanel } from "./components/service-panel"
 import { SetupButton, SetupProvider, SetupWizard } from "./components/setup-wizard"
 import { StartupProgress } from "./components/startup-progress"
 import { ThemeToggle } from "./components/theme-toggle"
 import { ErrorText } from "./components/ui"
 import { useI18n } from "./i18n"
 import { displayUser } from "./identity"
+import { ProductProvider, useProductUi, type PoolAddRequest, type PoolCreateRequest } from "./product"
+import { PRODUCTS } from "./products"
 import { isGuest, isPublic, leaveGuest, signOut } from "./session"
 import { shouldAutoStart, TOUR_STORAGE_KEY, TOUR_VERSION } from "./tour-steps"
 
@@ -24,13 +24,14 @@ const TABS: Tab[] = ["pools", "deployments"]
 const SETUP_SEEN_KEY = "ai-gateway-pool:setup-seen"
 
 export function App() {
-  const { t, locale, setLocale } = useI18n()
   const me = useQuery(queries.me())
   const setup = useQuery(queries.setup())
+  // The chosen gateway's kind decides the pages below the top bar and the wording.
+  const product = setup.data?.product ?? null
+  const ui = product ? PRODUCTS[product] : null
+  const { t, locale, setLocale } = useI18n(product)
   // Locally the name comes from the setup report, so wait for it rather than flash "no sign-in".
   const user = me.data && (me.data.authenticated || setup.data) ? displayUser(me.data, setup.data?.user) : undefined
-  // Until a gateway is chosen (and readable) there is nothing to describe.
-  const capabilities = useQuery({ ...queries.capabilities(), enabled: setup.data?.can_operate === true })
   const [setupOpen, setSetupOpen] = useState(false)
   const [serviceOpen, setServiceOpen] = useState(false)
   const openSetup = useCallback(() => setSetupOpen(true), [])
@@ -73,7 +74,7 @@ export function App() {
     setTourOpen(false)
   }
   // Nothing else works until the app can reach the gateway, so setup takes the whole page.
-  const blocked = setup.data?.can_operate === false
+  const blocked = setup.data?.can_operate === false || (setup.data !== undefined && !ui)
   const [tab, setTab] = useState<Tab>(() => {
     const requested = new URLSearchParams(window.location.search).get("tab") as Tab | null
     return requested && TABS.includes(requested) ? requested : "pools"
@@ -92,9 +93,7 @@ export function App() {
   return <SetupProvider open={openSetup}><div className="shell">
     <nav className="topbar">
       <div className="brand"><img src="/favicon.svg" alt="" width={20} height={20} /><b>{t.appTitle}</b>
-        {capabilities.data && <button type="button" className="brand-service" data-tour="gateway" title={t.serviceOpen} aria-haspopup="dialog" onClick={() => setServiceOpen(true)}>
-          <code>{capabilities.data.gateway_name}</code><ChevronDown size={12} />
-        </button>}
+        {ui && !blocked && <ProductProvider key={ui.product} ui={ui}><GatewayButton onOpen={() => setServiceOpen(true)} /></ProductProvider>}
       </div>
       <div className="tabs" role="tablist">
         <button type="button" role="tab" aria-selected={tab === "pools"} className={tab === "pools" ? "active" : ""} data-tour="tab-pools" onClick={() => selectTab("pools")}>{t.pools}</button>
@@ -121,14 +120,27 @@ export function App() {
       {setup.isLoading ? <StartupProgress />
         : blocked ? <div className="page"><SetupWizard page /></div>
         : me.error ? <ErrorText error={me.error} />
-        : tab === "pools" ? <PoolsPage createRequest={createRequest} onCreateRequestHandled={clearCreateRequest} addRequest={addRequest} onAddRequestHandled={clearAddRequest} />
-        : <DeploymentsPage
-          onCreatePool={(request) => { setCreateRequest(request); selectTab("pools") }}
-          onAddToPool={(request) => { setAddRequest(request); selectTab("pools") }}
-        />}
+        : ui && <ProductProvider key={ui.product} ui={ui}>
+          {tab === "pools" ? <PoolsPage createRequest={createRequest} onCreateRequestHandled={clearCreateRequest} addRequest={addRequest} onAddRequestHandled={clearAddRequest} />
+            : <DeploymentsPage
+              onCreatePool={(request) => { setCreateRequest(request); selectTab("pools") }}
+              onAddToPool={(request) => { setAddRequest(request); selectTab("pools") }}
+            />}
+        </ProductProvider>}
     </main>
     {setupOpen && !blocked && <SetupWizard onClose={closeSetup} />}
-    {serviceOpen && !blocked && <ServicePanel onClose={() => setServiceOpen(false)} />}
-    {tourOpen && !blocked && !setupOpen && <ProductTour onClose={closeTour} />}
+    {serviceOpen && !blocked && ui && <ProductProvider key={ui.product} ui={ui}><ui.ServicePanel onClose={() => setServiceOpen(false)} /></ProductProvider>}
+    {tourOpen && !blocked && !setupOpen && <ProductTour product={product} onClose={closeTour} />}
   </div></SetupProvider>
+}
+
+/** The chosen gateway's name in the top bar; it opens the gateway panel. */
+function GatewayButton({ onOpen }: { onOpen: () => void }) {
+  const { product, useFacts } = useProductUi()
+  const { t } = useI18n(product)
+  const facts = useFacts()
+  if (!facts) return null
+  return <button type="button" className="brand-service" data-tour="gateway" title={t.serviceOpen} aria-haspopup="dialog" onClick={onOpen}>
+    <code>{facts.name}</code><ChevronDown size={12} />
+  </button>
 }

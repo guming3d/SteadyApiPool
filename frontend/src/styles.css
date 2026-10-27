@@ -849,3 +849,43 @@ td > b + .tag { margin: 0 0 0 8px; font-size: 11px; }
 .sign-in-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .sign-in-footer { max-width: 640px; margin-top: 16px; text-align: center; }
 .sign-in-footer a { display: inline-flex; align-items: center; gap: 4px; }
+
+/* APIM only: session affinity, the policy and API bindings, and the service picker. */
+.tab-panel > .affinity:first-child, .tab-panel > .bindings:first-child { border-top: 0; padding-top: 0; }
+.affinity { display: grid; gap: 8px; border-top: 1px solid var(--border); padding-top: 12px; }
+.affinity-control { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.affinity-control > label { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 500; cursor: pointer; }
+.affinity-state { margin-left: auto; color: var(--muted-foreground); font-size: 11px; }
+.affinity dl, .policy dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 0; }
+.affinity dl { gap: 8px; }
+.affinity dt, .policy dt { color: var(--muted-foreground); font-size: 11px; text-transform: uppercase; }
+.affinity dd, .policy dd { margin: 3px 0 0; overflow-wrap: anywhere; font-size: 13px; font-weight: 600; }
+.policy { display: grid; gap: 12px; border-top: 1px solid var(--border); padding-top: 14px; }
+.policy > div:first-child { display: grid; grid-template-columns: 18px minmax(0, 1fr); align-items: center; gap: 8px; color: var(--muted-foreground); }
+.policy[data-active="true"] > div:first-child, .policy[data-pending="true"] > div:first-child { color: var(--brand); }
+.policy > div:first-child span { display: grid; }
+.policy b { color: var(--foreground); font-size: 13px; }
+.policy small { color: var(--muted-foreground); font-size: 12px; }
+.policy dl > div { padding: 10px 12px; border-left: 1px solid var(--border); }
+.policy dl > div:first-child { border-left: 0; }
+.bindings { display: grid; gap: 8px; border-top: 1px solid var(--border); padding-top: 14px; }
+  .affinity dl, .policy dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.policy-preview { display: grid; gap: 8px; border-top: 1px solid var(--border); padding-top: 8px; }
+.policy-preview > .btn { justify-self: start; }
+.policy-preview-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.policy-preview-head span { display: inline-flex; gap: 6px; }
+.setup-target, .apim-picker, .apim-create { display: grid; gap: 12px; }
+.apim-services { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.apim-services li { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; align-items: center; gap: 10px; border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 12px; }
+.apim-services li > svg { color: var(--muted-foreground); }
+.apim-services li > div { min-width: 0; display: grid; gap: 2px; font-size: 12px; }
+.apim-services li b { font-size: 13px; overflow-wrap: anywhere; }
+.apim-services .tag { margin: 0 4px 0 0; font-size: 11px; }
+.apim-create { border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; }
+.apim-create h3 { margin: 0; font-size: 13px; }
+.apim-create input[aria-invalid="true"] { border-color: var(--warning); }
+.apim-create-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.apim-services li > .apim-service-actions { display: flex; align-items: center; gap: 6px; }
+.apim-deleted { display: grid; gap: 8px; }
+.apim-deleted header { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; font-size: 13px; }
+.apim-deleted header .muted { font-size: 12px; }
