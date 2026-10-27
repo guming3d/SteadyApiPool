@@ -1,4 +1,4 @@
-"""``python -m pool_tui``: the terminal UI for the APIM Backend Pool Manager."""
+"""``python -m pool_tui``: the terminal UI for SteadyApiPool."""
 
 from __future__ import annotations
 

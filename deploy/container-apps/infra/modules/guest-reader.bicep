@@ -13,6 +13,6 @@ resource reader 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', readerRole)
     principalId: principalId
     principalType: 'ServicePrincipal'
-    description: 'APIM Backend Pool Manager (public): read-only guest view'
+    description: 'SteadyApiPool (public): read-only guest view'
   }
 }

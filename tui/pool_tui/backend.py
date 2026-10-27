@@ -21,7 +21,7 @@ import httpx
 REPO = Path(__file__).resolve().parents[2]
 BACKEND = REPO / "backend"
 DEFAULT_URL = "http://127.0.0.1:8000"
-LOG_FILE = Path(tempfile.gettempdir()) / "apim-backend-pool-tui-backend.log"
+LOG_FILE = Path(tempfile.gettempdir()) / "SteadyApiPool-tui-backend.log"
 
 
 def healthy(url: str) -> bool:
