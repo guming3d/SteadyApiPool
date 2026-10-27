@@ -101,6 +101,14 @@ export const PROFILE_ESTIMATE: Record<GatewayProfile, { low: number; high: numbe
   production: { low: 171, high: 865 },
 }
 
+/** The same for a new AKS cluster (US list prices): Standard_D4ds_v5 nodes ($0.24 an hour,
+ *  1 for dev, 3-6 for production), the Standard tier's uptime SLA for production, PostgreSQL,
+ *  Redis, and the load balancer. The gateway panel shows the chosen region's price. */
+export const AKS_PROFILE_ESTIMATE: Record<GatewayProfile, { low: number; high: number }> = {
+  dev: { low: 190, high: 230 },
+  production: { low: 670, high: 1200 },
+}
+
 // Mirrors GATEWAY_NAME_PATTERN in pool_manager/models.py: lower case, a letter first, no
 // trailing or double hyphen, 2-32 characters.
 export const GATEWAY_NAME = /^[a-z](?:[a-z0-9]|-[a-z0-9]){1,30}$/

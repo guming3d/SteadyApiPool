@@ -113,8 +113,18 @@ class LiteLLMClient:
     # -- health ------------------------------------------------------------------------
 
     def readiness(self) -> dict[str, Any]:
-        """``/health/readiness``: the proxy's version and whether its database is connected."""
-        body = self.request("GET", "/health/readiness")
+        """Whether the proxy's database is connected, and its version.
+
+        Recent LiteLLM keeps the details (version, callbacks) behind the master key at
+        ``/health/readiness/details``; plain ``/health/readiness`` then says only status and db.
+        Older ones answer everything there.
+        """
+        try:
+            body = self.request("GET", "/health/readiness/details")
+        except LiteLLMError as error:
+            if error.status not in {404, 405}:
+                raise
+            body = self.request("GET", "/health/readiness")
         return body if isinstance(body, dict) else {}
 
     # -- models ------------------------------------------------------------------------

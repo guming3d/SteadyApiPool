@@ -25,9 +25,11 @@ from typing import Any
 
 import httpx
 
+from .aks_deploy import CONTAINER_SERVICE_API_VERSION
 from .arm import ArmClient, ArmError, segment
 from .config import Settings
 from .gateway import GATEWAY_TAG, GatewayInfo, GatewayUnavailable
+from .gateway_template import AKS_NODE_SIZE
 from .models import CostItem, CostNote, ListPrice, MonthToDate, ServiceCost
 from .service import PoolManagerService
 
@@ -42,12 +44,17 @@ POSTGRES_SKU = {"dev": "B1MS", "production": "B2S"}
 POSTGRES_STORAGE_GB = 32
 # Azure Managed Redis Balanced B0, with high availability (two instances).
 REDIS_SKU, REDIS_INSTANCES = "B0", 2
-# One query per service; each lists every meter of the region.
+# One query per service; each lists every meter of the region (VMs: only the node size).
 _SERVICES = {
     "aca": "Azure Container Apps",
     "postgres": "Azure Database for PostgreSQL",
     "redis": "Redis Cache",
+    "vm": "Virtual Machines",
+    "aks": "Azure Kubernetes Service",
 }
+_FILTERS = {"vm": f" and armSkuName eq '{AKS_NODE_SIZE}'"}
+_ACA_SERVICES = ("aca", "postgres", "redis")
+_AKS_SERVICES = ("vm", "aks", "postgres", "redis")
 _SPEND_SECONDS = 3600.0
 _PRICES_SECONDS = 86400.0
 _MAX_PRICE_PAGES = 10
@@ -68,41 +75,9 @@ def _meter(items: list[dict[str, Any]], match: Callable[[dict[str, Any]], bool])
     return max(found) if found else None
 
 
-def list_price(
-    prices: dict[str, list[dict[str, Any]]], info: GatewayInfo, profile: str
-) -> ListPrice | None:
-    """The estimate from a region's meters; None if a meter it needs is missing."""
-    aca = prices.get("aca") or []
-
-    def standard(meter: str) -> float | None:
-        return _meter(aca, lambda i: i.get("skuName") == "Standard" and i.get("meterName") == meter)
-
-    cpu_active = standard("Standard vCPU Active Usage")
-    cpu_idle = standard("Standard vCPU Idle Usage")
-    mem_active = standard("Standard Memory Active Usage")
-    mem_idle = standard("Standard Memory Idle Usage")
-    if None in {cpu_active, cpu_idle, mem_active, mem_idle} or info.cpu is None:
-        return None
-    assert cpu_active is not None and cpu_idle is not None
-    assert mem_active is not None and mem_idle is not None
-    cpu, memory = info.cpu, info.memory_gib or 0.0
-    low_replicas = max(info.min_replicas or 1, 1)
-    high_replicas = max(info.max_replicas or low_replicas, low_replicas)
-    items = [
-        CostItem(
-            kind="container_apps",
-            detail=f"{cpu:g} vCPU, {memory:g} GiB x {low_replicas}-{high_replicas} replicas"
-            if high_replicas != low_replicas
-            else f"{cpu:g} vCPU, {memory:g} GiB x {low_replicas} replica",
-            # Quiet: the minimum replicas at the idle rate. Busy: every replica at the active rate.
-            monthly_low=round(
-                (cpu * cpu_idle + memory * mem_idle) * SECONDS_PER_MONTH * low_replicas, 2
-            ),
-            monthly_high=round(
-                (cpu * cpu_active + memory * mem_active) * SECONDS_PER_MONTH * high_replicas, 2
-            ),
-        )
-    ]
+def _database_items(prices: dict[str, list[dict[str, Any]]], profile: str) -> list[CostItem]:
+    """PostgreSQL, and Redis for production: the same on Container Apps and AKS."""
+    items: list[CostItem] = []
     postgres = prices.get("postgres") or []
     sku = POSTGRES_SKU.get(profile, "B1MS")
     compute = _meter(
@@ -142,13 +117,102 @@ def list_price(
                     monthly_high=round(monthly, 2),
                 )
             )
-    currency = str(next((item.get("currencyCode") for item in aca), None) or "USD")
+    return items
+
+
+def _total(items: list[CostItem], currency: str) -> ListPrice:
     return ListPrice(
         items=items,
         monthly_low=round(sum(item.monthly_low for item in items), 2),
         monthly_high=round(sum(item.monthly_high for item in items), 2),
         currency=currency,
     )
+
+
+def aks_list_price(
+    prices: dict[str, list[dict[str, Any]]], *, nodes: tuple[int, int], profile: str
+) -> ListPrice | None:
+    """An AKS gateway: its Linux nodes (from the fewest to the most the autoscaler runs), the
+    Standard tier's uptime SLA for production, PostgreSQL and Redis; None without a node price."""
+    vms = prices.get("vm") or []
+    node = _meter(
+        vms,
+        lambda i: (
+            i.get("meterName") == AKS_NODE_SIZE.removeprefix("Standard_").replace("_", " ")
+            and "Windows" not in str(i.get("productName"))
+            and i.get("unitOfMeasure") == "1 Hour"
+        ),
+    )
+    if node is None:
+        return None
+    low, high = nodes
+    items = [
+        CostItem(
+            kind="aks_nodes",
+            detail=f"{AKS_NODE_SIZE} x {low}-{high}" if high != low else f"{AKS_NODE_SIZE} x {low}",
+            monthly_low=round(node * HOURS_PER_MONTH * low, 2),
+            monthly_high=round(node * HOURS_PER_MONTH * high, 2),
+        )
+    ]
+    if profile == "production":
+        tier = _meter(
+            prices.get("aks") or [],
+            lambda i: (
+                i.get("skuName") == "Standard" and i.get("meterName") == "Standard Uptime SLA"
+            ),
+        )
+        if tier is not None:
+            items.append(
+                CostItem(
+                    kind="aks_tier",
+                    detail="Standard",
+                    monthly_low=round(tier * HOURS_PER_MONTH, 2),
+                    monthly_high=round(tier * HOURS_PER_MONTH, 2),
+                )
+            )
+    items += _database_items(prices, profile)
+    currency = str(next((item.get("currencyCode") for item in vms), None) or "USD")
+    return _total(items, currency)
+
+
+def list_price(
+    prices: dict[str, list[dict[str, Any]]], info: GatewayInfo, profile: str
+) -> ListPrice | None:
+    """The estimate from a region's meters; None if a meter it needs is missing."""
+    aca = prices.get("aca") or []
+
+    def standard(meter: str) -> float | None:
+        return _meter(aca, lambda i: i.get("skuName") == "Standard" and i.get("meterName") == meter)
+
+    cpu_active = standard("Standard vCPU Active Usage")
+    cpu_idle = standard("Standard vCPU Idle Usage")
+    mem_active = standard("Standard Memory Active Usage")
+    mem_idle = standard("Standard Memory Idle Usage")
+    if None in {cpu_active, cpu_idle, mem_active, mem_idle} or info.cpu is None:
+        return None
+    assert cpu_active is not None and cpu_idle is not None
+    assert mem_active is not None and mem_idle is not None
+    cpu, memory = info.cpu, info.memory_gib or 0.0
+    low_replicas = max(info.min_replicas or 1, 1)
+    high_replicas = max(info.max_replicas or low_replicas, low_replicas)
+    items = [
+        CostItem(
+            kind="container_apps",
+            detail=f"{cpu:g} vCPU, {memory:g} GiB x {low_replicas}-{high_replicas} replicas"
+            if high_replicas != low_replicas
+            else f"{cpu:g} vCPU, {memory:g} GiB x {low_replicas} replica",
+            # Quiet: the minimum replicas at the idle rate. Busy: every replica at the active rate.
+            monthly_low=round(
+                (cpu * cpu_idle + memory * mem_idle) * SECONDS_PER_MONTH * low_replicas, 2
+            ),
+            monthly_high=round(
+                (cpu * cpu_active + memory * mem_active) * SECONDS_PER_MONTH * high_replicas, 2
+            ),
+        )
+    ]
+    items += _database_items(prices, profile)
+    currency = str(next((item.get("currencyCode") for item in aca), None) or "USD")
+    return _total(items, currency)
 
 
 def month_to_date(result: dict[str, Any], since: str) -> MonthToDate:
@@ -195,7 +259,43 @@ class CostReader:
             f"/resourceGroups/{segment(settings.resource_group)}"
         )
 
+    @property
+    def _scope(self) -> str:
+        """Where the gateway's costs are: its resource group, or for AKS the subscription,
+        since the cluster's nodes and load balancer are in its node resource group (AKS tags them
+        like the cluster)."""
+        if self._settings.gateway_cluster_id:
+            return f"/subscriptions/{segment(self._settings.subscription_id)}"
+        return self._group_scope
+
+    def _aks_price(self, refresh: bool) -> tuple[ListPrice | None, str | None, str | None]:
+        """An AKS gateway's list price, profile and location, from its cluster."""
+        try:
+            cluster = self._service.arm.get_arm_json(
+                self._settings.gateway_cluster_id, api_version=CONTAINER_SERVICE_API_VERSION
+            )
+        except ArmError as error:
+            logger.info("Cannot read the gateway's cluster for its cost: %s", error.message)
+            return None, None, None
+        if not cluster:
+            return None, None, None
+        location = str(cluster.get("location") or "")
+        profile = str((cluster.get("tags") or {}).get("ai-gateway-profile") or "dev")
+        pools = (cluster.get("properties") or {}).get("agentPoolProfiles") or [{}]
+        count = int(pools[0].get("count") or 1)
+        nodes = (int(pools[0].get("minCount") or count), int(pools[0].get("maxCount") or count))
+        try:
+            region = region_name(location)
+            prices = {key: self._region_prices(key, region, refresh) for key in _AKS_SERVICES}
+            return aks_list_price(prices, nodes=nodes, profile=profile), profile, location
+        except (httpx.HTTPError, ValueError) as error:
+            logger.info("Cannot read Azure retail prices: %s", error)
+            return None, profile, location
+
     def get(self, user: ArmClient | None, caller: str, *, refresh: bool = False) -> ServiceCost:
+        if self._settings.gateway_cluster_id:
+            aks_price, aks_profile, location = self._aks_price(refresh)
+            return self._with_spend(user, caller, refresh, aks_profile, location, aks_price)
         if self._settings.external:
             return ServiceCost(
                 profile=None,
@@ -216,10 +316,23 @@ class CostReader:
         if info is not None and info.location:
             try:
                 region = region_name(info.location)
-                prices = {key: self._region_prices(key, region, refresh) for key in _SERVICES}
+                prices = {key: self._region_prices(key, region, refresh) for key in _ACA_SERVICES}
                 price = list_price(prices, info, profile)
             except (httpx.HTTPError, ValueError) as error:
                 logger.info("Cannot read Azure retail prices: %s", error)
+        return self._with_spend(
+            user, caller, refresh, profile, info.location if info else None, price
+        )
+
+    def _with_spend(
+        self,
+        user: ArmClient | None,
+        caller: str,
+        refresh: bool,
+        profile: str | None,
+        location: str | None,
+        price: ListPrice | None,
+    ) -> ServiceCost:
         spend: MonthToDate | None = None
         note: CostNote | None = None
         detail: str | None = None
@@ -238,13 +351,13 @@ class CostReader:
                     note = "unavailable"
                 logger.info("Cannot read the gateway's cost: %s", error.message)
         return ServiceCost(
-            profile=profile,
-            location=info.location if info else None,
+            profile=profile if profile in {"dev", "production"} else None,
+            location=location,
             list_price=price,
             month_to_date=spend,
             month_to_date_note=note,
             detail=detail,
-            portal_url=f"https://portal.azure.com/#resource{self._group_scope}/costanalysis",
+            portal_url=f"https://portal.azure.com/#resource{self._scope}/costanalysis",
         )
 
     def _region_prices(self, key: str, region: str, refresh: bool) -> list[dict[str, Any]]:
@@ -254,7 +367,7 @@ class CostReader:
             return cached[1]
         query = (
             f"serviceName eq '{_SERVICES[key]}' and armRegionName eq '{region}' "
-            "and priceType eq 'Consumption'"
+            f"and priceType eq 'Consumption'{_FILTERS.get(key, '')}"
         )
         items: list[dict[str, Any]] = []
         url: str | None = RETAIL_PRICES_URL
@@ -282,7 +395,7 @@ class CostReader:
         since = datetime.now(UTC).date().replace(day=1).isoformat()
         response = user.request(
             "POST",
-            user.arm_url(f"{self._group_scope}/providers/Microsoft.CostManagement/query"),
+            user.arm_url(f"{self._scope}/providers/Microsoft.CostManagement/query"),
             api_version=COST_API_VERSION,
             json_body={
                 "type": "ActualCost",

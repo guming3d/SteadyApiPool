@@ -84,6 +84,9 @@ DISCOVERY_FALLBACK_ROLE = "Reader"
 ARM_AUDIENCES = frozenset({"https://management.azure.com", "https://management.core.windows.net"})
 
 _CACHE_SECONDS = 300.0
+# How long a role this app just assigned counts as there while Azure's role assignment list
+# catches up (it can miss a new assignment for a while after it is created).
+_GRANT_GRACE_SECONDS = 900.0
 _WORKERS = 8
 _NOT_READY: frozenset[SetupStatus] = frozenset({"action", "blocked", "pending"})
 # The gateway's Container App (or its deployment) after Azure could not finish it.
@@ -239,6 +242,8 @@ class AccessChecker:
         self._writers: dict[str, tuple[float, bool]] = {}
         self._roles: dict[str, Permissions] = {}
         self._role_names: dict[str, str | None] = {}
+        # (account, principal) -> when this app assigned the gateway's inference role there.
+        self._granted: dict[tuple[str, str], float] = {}
         # The report being built for each caller, while it runs.
         self._reports: dict[str, _Tracker] = {}
 
@@ -439,6 +444,17 @@ class AccessChecker:
         if not settings.has_target:
             return SetupCheck(id=kind, kind=kind, status="action", fix=fix)
         subject = settings.gateway_name
+        if settings.gateway_provisioning:
+            # A new AKS gateway the app is still installing: the gateway step's progress
+            # (its deploy status) drives the install on.
+            return SetupCheck(
+                id=kind,
+                kind=kind,
+                subject=subject,
+                status="pending",
+                detail="DeployingAks",
+                started_at=settings.gateway_started_at or None,
+            )
         if settings.external:
             # Nothing in Azure to look at; the health check reaches the gateway itself.
             return SetupCheck(id=kind, kind=kind, subject=subject, status="ok")
@@ -815,6 +831,11 @@ class AccessChecker:
             )
         if has_role:
             return check("ok")
+        with self._lock:
+            granted = self._granted.get((account.casefold(), principal))
+        if granted is not None and time.monotonic() - granted < _GRANT_GRACE_SECONDS:
+            # Assigned moments ago; Azure's list doesn't show it yet.
+            return check("ok", detail="granted")
         can_grant = False
         if user is not None:
             try:
@@ -963,6 +984,7 @@ class AccessChecker:
                 )
             except ArmError as error:
                 if error.code == "RoleAssignmentExists":
+                    self._remember_grant(account, principal)
                     continue
                 if error.status in {401, 403}:
                     raise ServiceError(
@@ -971,6 +993,7 @@ class AccessChecker:
                         f"{error.message}",
                     ) from error
                 raise ServiceError(502, f"Assigning the role failed: {error.message}") from error
+            self._remember_grant(account, principal)
             logger.info(
                 "%s granted %s to gateway identity %s on %s",
                 actor,
@@ -979,6 +1002,10 @@ class AccessChecker:
                 account,
             )
         return self._foundry(account_ids, principal, user)
+
+    def _remember_grant(self, account: str, principal: str) -> None:
+        with self._lock:
+            self._granted[(account.casefold(), principal)] = time.monotonic()
 
     def sign_in(self, tenant_id: str | None = None) -> None:
         """Local only: opens the browser sign-in on this machine and waits for it. Without a

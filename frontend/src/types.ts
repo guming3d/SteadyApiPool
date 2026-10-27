@@ -340,6 +340,9 @@ export type TargetView = {
   source: "environment" | "saved" | "browser" | "guest" | "none"
   /** Locally unless the environment fixes the gateway; never in the Easy Auth deployment. */
   can_change: boolean
+  /** An AKS gateway the app deployed: its cluster, and whether the app is still installing it. */
+  cluster_id: string | null
+  provisioning: boolean
 }
 
 export type TenantView = { tenant_id: string; display_name: string | null; default_domain: string | null }
@@ -363,6 +366,8 @@ export type GatewayView = {
   /** The signed-in user may read the app and its master key; null if unknown. */
   can_manage: boolean | null
   missing: string[]
+  /** aks: an AKS cluster the app deployed LiteLLM on (id is the cluster's). */
+  platform: GatewayPlatform
 }
 
 export type ResourceGroupView = { name: string; location: string }
@@ -384,6 +389,7 @@ export type GatewayCreate = {
   location: string
   name: string
   profile: GatewayProfile
+  platform: GatewayPlatform
 }
 
 /** A LiteLLM proxy this app didn't deploy (e.g. on AKS). */
@@ -400,12 +406,19 @@ export type GatewayConnect = {
 
 export type DeployStep = { resource_type: string; name: string; state: string; error: string | null }
 
+export type GatewayPlatform = "aca" | "aks"
+
 export type GatewayDeployStatus = {
   name: string
   state: "none" | "running" | "succeeded" | "failed"
   started_at: string | null
   steps: DeployStep[]
   error: string | null
+  platform: GatewayPlatform
+  /** azure: the ARM deployment; cluster: installing LiteLLM (AKS); certificate: waiting for HTTPS. */
+  phase: "azure" | "cluster" | "certificate" | "done"
+  /** The end of the install's output, once it has finished or failed. */
+  log_tail: string | null
 }
 
 export type AksBundle = { name: string; namespace: string; files: { path: string; content: string }[] }
@@ -507,7 +520,7 @@ export type PoolMetrics = {
 // -- what the gateway costs (mirrors pool_manager/models.py) --
 
 export type CostItem = {
-  kind: "container_apps" | "environment" | "postgres" | "redis"
+  kind: "container_apps" | "environment" | "postgres" | "redis" | "aks_nodes" | "aks_tier"
   detail: string
   monthly_low: number
   monthly_high: number

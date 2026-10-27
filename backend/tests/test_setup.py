@@ -273,6 +273,23 @@ def test_grant_foundry_access(client: TestClient, azure: FakeAzure) -> None:
     assert len(azure.role_assignments) == count
 
 
+def test_a_grant_counts_before_azure_lists_it(client: TestClient, azure: FakeAzure) -> None:
+    _, west = _members(client, azure)
+    body = {"account_ids": [west]}
+    # Azure's role assignment list misses a new assignment for a while after it is created.
+    azure.role_assignment_lag = True
+
+    granted = client.post("/api/setup/foundry-access/grant", json=body, headers=WRITE)
+    checked = client.post("/api/setup/foundry-access", json=body)
+
+    assert [check["status"] for check in granted.json()] == ["ok"]
+    assert [(check["status"], check["detail"]) for check in checked.json()] == [("ok", "granted")]
+    # Once Azure lists it, it is simply there.
+    azure.hidden_assignments.clear()
+    listed = client.post("/api/setup/foundry-access", json=body).json()
+    assert [(check["status"], check["detail"]) for check in listed] == [("ok", None)]
+
+
 def test_grant_is_limited_to_known_accounts(client: TestClient, azure: FakeAzure) -> None:
     _members(client, azure)
     other = "/subscriptions/sub/resourceGroups/x/providers/Microsoft.CognitiveServices/accounts/y"

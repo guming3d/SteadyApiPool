@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { ACA_MAX_REPLICAS, DEFAULT_ANSWERS, isGatewayName, peakRps, recommend, suggestGatewayName } from "../src/gateway-choice.ts"
+import { ACA_MAX_REPLICAS, AKS_PROFILE_ESTIMATE, DEFAULT_ANSWERS, PROFILE_ESTIMATE, isGatewayName, peakRps, recommend, suggestGatewayName } from "../src/gateway-choice.ts"
 
 test("a trial without special needs gets a dev gateway on Container Apps", () => {
   const result = recommend(DEFAULT_ANSWERS)
@@ -53,4 +53,11 @@ test("odd inputs don't break the estimate", () => {
 test("gateway names follow the backend's rule", () => {
   for (const name of ["ai-gateway", "gw2", suggestGatewayName(() => 0.123456)]) assert.equal(isGatewayName(name), true, name)
   for (const name of ["Gateway", "g", "gw-", "gw--x", "1gw", "a".repeat(33)]) assert.equal(isGatewayName(name), false, name)
+})
+
+test("a new AKS cluster costs more than Container Apps at every size", () => {
+  for (const profile of ["dev", "production"]) {
+    assert.ok(AKS_PROFILE_ESTIMATE[profile].low > PROFILE_ESTIMATE[profile].low, profile)
+    assert.ok(AKS_PROFILE_ESTIMATE[profile].low <= AKS_PROFILE_ESTIMATE[profile].high, profile)
+  }
 })

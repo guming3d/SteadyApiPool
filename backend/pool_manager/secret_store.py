@@ -48,6 +48,8 @@ class SecretStore:
     def _load(self) -> dict[str, str]:
         if not self._persistent:
             return dict(self._memory)
+        if not self._path.exists():
+            return {}  # Nothing stored yet (msal-extensions has its own error for that).
         try:
             raw = self._store().load()
         except FileNotFoundError:

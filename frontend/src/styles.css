@@ -628,6 +628,23 @@ td > b + .tag { margin: 0 0 0 8px; font-size: 11px; }
 .deploy-steps li[data-state="failed"] > svg { color: var(--destructive); }
 .deploy-steps li > span { display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline; min-width: 0; overflow-wrap: anywhere; }
 .aks-files { display: grid; gap: 8px; min-width: 0; }
+.choice-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.deploy-phases { display: flex; gap: 6px 18px; flex-wrap: wrap; margin: 0; padding: 0; list-style: none; font-size: 12px; }
+.deploy-phases li { display: inline-flex; align-items: center; gap: 6px; color: var(--muted-foreground); }
+.deploy-phases li[data-state="running"] { color: var(--foreground); font-weight: 600; }
+.deploy-phases li[data-state="succeeded"] > svg { color: var(--success); }
+.deploy-phases li[data-state="failed"] { color: var(--destructive); }
+.phase-dot { width: 8px; height: 8px; margin: 0 3px; border: 1px solid var(--border); border-radius: 999px; }
+.deploy-log { font-size: 12px; }
+.deploy-log summary { cursor: pointer; color: var(--muted-foreground); }
+.deploy-log pre { max-height: 220px; overflow: auto; margin: 6px 0 0; border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 10px; background: var(--muted); font: 12px/1.5 var(--font-mono); white-space: pre-wrap; }
+.service-maintain { display: grid; gap: 10px; border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; }
+.service-maintain > div { display: grid; gap: 4px; font-size: 12px; }
+.service-maintain > div b { font-size: 13px; }
+.service-maintain a { display: inline-flex; align-items: center; gap: 5px; }
+.maintain-commands { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.maintain-commands li { display: grid; gap: 3px; font-size: 12px; }
+.maintain-commands .code-block pre { white-space: pre; padding-top: 6px; padding-bottom: 6px; }
 .aks-files .code-block pre { white-space: pre; }
 .delete-resources { display: grid; gap: 3px; max-height: 180px; overflow: auto; margin: 0; padding: 0; list-style: none; font-size: 12px; }
 @media (max-width: 760px) {

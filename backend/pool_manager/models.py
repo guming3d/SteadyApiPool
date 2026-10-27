@@ -286,7 +286,9 @@ class Capabilities(StrictModel):
     discovery_subscriptions: list[str]
 
 
-CostItemKind = Literal["container_apps", "environment", "postgres", "redis"]
+CostItemKind = Literal[
+    "container_apps", "environment", "postgres", "redis", "aks_nodes", "aks_tier"
+]
 
 
 class CostItem(StrictModel):
@@ -630,6 +632,8 @@ _RESOURCE_GROUP = r"^[-\w.()]{0,89}[-\w()]$"
 GATEWAY_NAME_PATTERN = r"^[a-z](?:[a-z0-9]|-[a-z0-9]){1,30}$"
 # ``dev``: one replica and no Redis; ``production``: 2-5 replicas sharing cooldowns in Redis.
 GatewayProfile = Literal["dev", "production"]
+# Where a gateway the app deploys runs: Azure Container Apps, or a new AKS cluster.
+GatewayPlatform = Literal["aca", "aks"]
 # ``browser``: the public app, where each user's browser remembers their own choice.
 # ``guest``: the public app's read-only guest view, which shows one configured gateway.
 TargetSource = Literal["environment", "saved", "browser", "guest", "none"]
@@ -648,6 +652,9 @@ class TargetView(StrictModel):
     source: TargetSource
     # Locally without a fixed gateway in the environment; never in the Easy Auth deployment.
     can_change: bool
+    # An AKS gateway the app deployed: its cluster, and whether the app is still installing it.
+    cluster_id: str | None = None
+    provisioning: bool = False
 
 
 class TenantView(StrictModel):
@@ -678,6 +685,8 @@ class GatewayView(StrictModel):
     # Whether the signed-in user may read the app and its master key; None if unknown.
     can_manage: bool | None
     missing: list[str] = Field(default_factory=list)
+    # aks: an AKS cluster the app deployed LiteLLM on (id is the cluster's).
+    platform: GatewayPlatform = "aca"
 
 
 class ResourceGroupView(StrictModel):
@@ -708,6 +717,7 @@ class GatewayCreate(StrictModel):
     location: str = Field(pattern=r"^[a-z0-9]{2,40}$")
     name: str = Field(max_length=32, pattern=GATEWAY_NAME_PATTERN)
     profile: GatewayProfile = "dev"
+    platform: GatewayPlatform = "aca"
 
 
 class GatewayConnect(StrictModel):
@@ -738,13 +748,20 @@ class DeployStep(StrictModel):
 
 
 class GatewayDeployStatus(StrictModel):
-    """How far deploying a gateway has got (its ARM deployment)."""
+    """How far deploying a gateway has got: its ARM deployment, and on AKS the install in the
+    cluster and the HTTPS certificate after it."""
 
     name: str
     state: Literal["none", "running", "succeeded", "failed"]
     started_at: str | None
     steps: list[DeployStep]
     error: str | None
+    platform: GatewayPlatform = "aca"
+    # azure: the ARM deployment. cluster: installing LiteLLM in the cluster (AKS Run Command).
+    # certificate: waiting for its HTTPS address to answer. done: connected.
+    phase: Literal["azure", "cluster", "certificate", "done"] = "azure"
+    # The end of the install's output, when it has finished or failed.
+    log_tail: str | None = None
 
 
 class AksBundleFile(StrictModel):

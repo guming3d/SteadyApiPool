@@ -16,11 +16,13 @@ from __future__ import annotations
 
 import argparse
 import base64
+import io
 import json
 import math
 import sys
 import tempfile
 import time
+import zipfile
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -131,7 +133,8 @@ class DemoCredential:
 
 
 class DemoAzure(FakeAzure):
-    """A deployment started from the wizard finishes after a few status polls."""
+    """A deployment started from the wizard finishes after a few status polls; on AKS the
+    install in the cluster follows, and the gateway answers with the key it was given."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -153,8 +156,16 @@ class DemoAzure(FakeAzure):
                 name = record["parameters"]["name"]
                 self.finish_deployment(name, group=parts[4], subscription=parts[2])
                 assert isinstance(self.litellm, DemoLiteLLM)
-                self.litellm.other_keys.add(record["parameters"]["masterKey"])
+                if "masterKey" in record["parameters"]:  # Container Apps; AKS: Run Command
+                    self.litellm.other_keys.add(record["parameters"]["masterKey"])
         return super()._deployment(request, caller, path, body)
+
+    def _aks(self, request: httpx.Request, caller: str, path: str, body: Any) -> httpx.Response:
+        if path.endswith("/runCommand") and body:
+            files = zipfile.ZipFile(io.BytesIO(base64.b64decode(body["context"])))
+            assert isinstance(self.litellm, DemoLiteLLM)
+            self.litellm.other_keys.add(files.read("secrets/master-key").decode())
+        return super()._aks(request, caller, path, body)
 
 
 class DemoLiteLLM(FakeLiteLLM):
@@ -387,7 +398,9 @@ def wire(stage: str) -> None:
     settings = base if stage == "sign-in" else base.with_saved_target(TARGET)
     # Like deps._secrets: kept when the wizard switches gateways.
     secrets = SecretStore(Path(tempfile.mkdtemp()) / "keys.bin", persistent=False)
-    _wire(azure, settings, credential, secrets)
+    # Like the app's backend/.pool-manager.json: one file the wizard's choices are saved to.
+    state_file = Path(tempfile.mkdtemp()) / "state.json"
+    _wire(azure, settings, credential, secrets, state_file)
     if stage == "pool":
         _pool_in_use(azure, accounts)
 
@@ -397,8 +410,8 @@ def _wire(
     settings: Settings,
     credential: DemoCredential,
     secrets: SecretStore,
+    state_file: Path,
 ) -> None:
-    state_file = Path(tempfile.mkdtemp()) / "state.json"
     arm = ArmClient(settings, credential, azure.transport(), sleep=lambda _: None)  # type: ignore[arg-type]
     gateway = GatewayConnection(
         settings,
@@ -424,7 +437,8 @@ def _wire(
 
         saved = read_saved_target(state_file)
         base = Settings(_env_file=None, auth_mode="disabled", **NO_TARGET)  # type: ignore[call-arg]
-        _wire(azure, base.with_saved_target(saved) if saved else base, credential, secrets)
+        settings = base.with_saved_target(saved) if saved else base
+        _wire(azure, settings, credential, secrets, state_file)
 
     chooser = TargetChooser(
         settings,

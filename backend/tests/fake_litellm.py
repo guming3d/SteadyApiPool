@@ -37,6 +37,8 @@ class FakeLiteLLM:
     # Rows (model_info.id) that answer this status instead of 200.
     failing: dict[str, int] = field(default_factory=dict)
     requests: list[httpx.Request] = field(default_factory=list)
+    # Hosts that don't answer yet.
+    unreachable_hosts: set[str] = field(default_factory=set)
     _keys: count = field(default_factory=lambda: count(1))  # type: ignore[type-arg]
 
     def transport(self) -> httpx.MockTransport:
@@ -59,17 +61,23 @@ class FakeLiteLLM:
 
     def _handle(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
+        if request.url.host in self.unreachable_hosts:
+            # e.g. an AKS gateway whose certificate isn't issued yet.
+            raise httpx.ConnectError("unreachable", request=request)
         path = unquote(request.url.path)
         body = json.loads(request.content) if request.content else None
         auth = request.headers.get("Authorization", "").removeprefix("Bearer ")
         if path in {"/health/readiness", "/health/liveliness"}:
-            return httpx.Response(
-                200, json={"status": "healthy", "db": self.db, "litellm_version": self.version}
-            )
+            # As LiteLLM 1.106 answers anyone: no version (that is behind the master key).
+            return httpx.Response(200, json={"status": "healthy", "db": self.db})
         if path.startswith("/v1/"):
             return self._inference(request, path, body, auth)
         if auth != self.master_key:
             return _error(401, "Authentication Error, invalid master key")
+        if path == "/health/readiness/details":
+            return httpx.Response(
+                200, json={"status": "healthy", "db": self.db, "litellm_version": self.version}
+            )
         if path == "/model/info":
             return httpx.Response(200, json={"data": [self._public(row) for row in self.rows]})
         if path == "/model/new":
@@ -139,6 +147,14 @@ class FakeLiteLLM:
         return httpx.Response(200, json={"model_id": row_id})
 
     def _generate(self, body: dict[str, Any]) -> httpx.Response:
+        alias = body.get("key_alias")
+        if alias and any(key.get("key_alias") == alias for key in self.keys.values()):
+            # As LiteLLM (1.106) answers: aliases are unique across keys.
+            return _error(
+                400,
+                f"Key with alias '{alias}' already exists. Unique key aliases across all keys "
+                "are required.",
+            )
         number = next(self._keys)
         secret = f"sk-test{number:04d}abcdef"
         token = hashlib.sha256(secret.encode()).hexdigest()

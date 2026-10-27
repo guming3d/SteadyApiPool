@@ -598,6 +598,13 @@ def delete_gateway(body: GatewayDelete, targets: Targets, principal: Actor) -> R
     return Response(status_code=204)
 
 
+# An AKS gateway whose install in the cluster failed: run it again (it is safe to repeat).
+@api.post("/target/gateways/retry-install", status_code=204)
+def retry_install(body: TargetSelect, targets: Targets, _: Actor) -> Response:
+    targets.retry_install(body)
+    return Response(status_code=204)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()  # Fail fast on missing or unsafe configuration.

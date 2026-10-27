@@ -100,6 +100,11 @@ class PoolManagerService:
 
     # -- helpers -----------------------------------------------------------------------
 
+    @property
+    def arm(self) -> ArmClient:
+        """The operator's ARM client (e.g. for reading an AKS gateway's cluster)."""
+        return self._arm
+
     def client(self) -> LiteLLMClient:
         """The gateway's admin client; ``ServiceError`` while it can't be reached."""
         try:

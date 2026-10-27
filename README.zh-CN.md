@@ -87,11 +87,24 @@ scripts/start-local.sh         # macOS、Linux、WSL
   **生产**），并附有标价估算。点击**部署**。应用以你自己的 Azure 权限部署 LiteLLM、PostgreSQL、一个托管标识和
   Application Insights，并跟踪部署进度，通常需要 5–15 分钟（PostgreSQL 最慢）。期间可以关闭应用，设置会接着跟踪。
   资源从创建起就开始计费。
-- **生成 AKS 部署文件**会询问你的集群、它所在的资源组和命名空间，然后生成 `values.yaml`、`deploy.sh` 和
-  `README.md`（Helm 图表、工作负载标识、PostgreSQL 灵活服务器）。集群需要启用 OIDC 颁发者和工作负载标识。运行该
-  脚本（例如在 Azure Cloud Shell 中），然后点击**已部署，去连接**。脚本通过公共 IP 以纯 HTTP 公开 LiteLLM，而
-  **连接**只接受 HTTPS URL（纯 HTTP 仅限 localhost，主密钥不会以明文经过网络）。想在运行本应用的电脑上先试用，可保持
-  `kubectl -n <命名空间> port-forward svc/litellm 4000:4000` 运行并连接 `http://localhost:4000`；正式使用时，请在它前面放一个带 TLS 的入口，并连接其 HTTPS URL。
+- **在 AKS 上部署**为**新的 AKS 群集**打开同样的表单。点击**部署**后，应用分三个阶段进行，并实时显示进度（通常共
+  15–25 分钟）：
+  1. **Azure 资源**：群集（Microsoft Entra ID 与 Azure RBAC、工作负载标识、托管 Gateway API）、PostgreSQL、网关
+     的托管标识、Application Insights，以及生产配置的 Redis。你会获得该群集的“Azure Kubernetes 服务 RBAC 群集管理员”
+     角色，因此部署需要资源组上的所有者或用户访问管理员权限。
+  2. **在群集中安装**：通过 AKS 运行命令（你的电脑上无需 kubectl 或 Helm）安装 cert-manager、OpenTelemetry
+     Collector、LiteLLM 的 Helm 图表和 HTTPS 网关。
+  3. **HTTPS 证书**：Let's Encrypt 为 `https://<名称>.<区域>.cloudapp.azure.com` 签发证书；LiteLLM 在该地址上
+     应答后，应用就像连接任何网关一样连接它。
+
+  运行期间请保持此页打开（进度会推动安装继续；关闭后回到“AI 网关”这一步即可继续）。安装失败时会显示其输出，并提供
+  **重新运行安装**。此后群集**由你维护**，见[AKS 上的网关](#aks-上的网关)。
+- **使用已有群集（生成文件）**适用于你已有的群集：它会询问群集、其资源组和命名空间，然后生成 `values.yaml`、
+  `deploy.sh` 和 `README.md`（Helm 图表、工作负载标识、PostgreSQL 灵活服务器）。群集需要启用 OIDC 颁发者和工作负载
+  标识。运行该脚本（例如在 Azure Cloud Shell 中），然后点击**已部署，去连接**。脚本通过公共 IP 以纯 HTTP 公开
+  LiteLLM，而**连接**只接受 HTTPS URL（纯 HTTP 仅限 localhost，主密钥不会以明文经过网络）。想在运行本应用的电脑上
+  先试用，可保持 `kubectl -n <命名空间> port-forward svc/litellm 4000:4000` 运行并连接 `http://localhost:4000`；
+  正式使用时，请在它前面加上 HTTPS，并连接其 HTTPS URL。
 
 **连接已有网关**适用于任何带数据库（`STORE_MODEL_IN_DB`）的 LiteLLM 代理：输入它的 HTTPS URL、主密钥，以及可选的
 它调用 Foundry 时使用的托管标识对象 ID 和它的 Application Insights 资源 ID。应用会用网关本身验证 URL 和主密钥，
@@ -107,10 +120,10 @@ scripts/start-local.sh         # macOS、Linux、WSL
 
 | | Azure 容器应用（默认） | Azure Kubernetes 服务（AKS） |
 | --- | --- | --- |
-| 何时选择 | 大多数情况：试用，以及每秒约 250 个请求以内的生产流量（生产配置 5 个副本的承载量） | 你已有 AKS 集群和运维它的团队；要在网关旁运行自托管（GPU）模型；或峰值超过每秒约 250 个请求（峰值 TPM ÷ 60 ÷ 每个请求的 token 数） |
-| 如何部署 | 由本应用一步部署，无需运维集群 | 在你的集群上运行生成的 Helm 文件和脚本，然后连接 |
-| 规模 | **开发 / 试用**：1 个副本，无 Redis。**生产**：2–5 个副本按负载伸缩，通过 Redis 共享冷却状态 | 脚本部署 2 个副本；需要自行添加 Redis 才能共享冷却状态 |
-| 标价 | 开发约**每月 $46–115**；生产约**每月 $171–865** | 你的集群费用，加上 PostgreSQL |
+| 何时选择 | 大多数情况：试用，以及每秒约 250 个请求以内的生产流量（生产配置 5 个副本的承载量） | 你已有 AKS 群集和运维它的团队；要在网关旁运行自托管（GPU）模型；或峰值超过每秒约 250 个请求（峰值 TPM ÷ 60 ÷ 每个请求的 token 数） |
+| 如何部署 | 由本应用一步部署，无需运维群集 | 由本应用新建并配置好的群集（之后由你维护），或为已有群集生成的文件 |
+| 规模 | **开发 / 试用**：1 个副本，无 Redis。**生产**：2–5 个副本按负载伸缩，通过 Redis 共享冷却状态 | **开发 / 试用**：1 个 Standard_D4ds_v5 节点，免费层，无 Redis。**生产**：3–6 个节点跨可用性区域，标准层（运行时间 SLA），2–6 个 LiteLLM 副本通过 Redis 共享冷却状态 |
+| 标价 | 开发约**每月 $46–115**；生产约**每月 $171–865** | 新群集：开发约**每月 $190–230**；生产约**每月 $670–1,200**。已有群集：其费用，加上 PostgreSQL |
 
 这些价格是**零售标价估算**（美元，美国东部 2，从空闲到繁忙），涵盖每种规模部署的内容：容器应用副本、PostgreSQL，
 以及生产规模的 Redis。不包括免费额度、日志引入和折扣，当然也不包括模型用量，后者照常由 Foundry 计费。网关创建后，
@@ -217,7 +230,7 @@ backend/.venv/Scripts/python scripts/demo_server.py    # macOS 和 Linux 上为 
 | 功能 | 说明 |
 | --- | --- |
 | **设置向导** | 四个步骤：**登录**、**AI 网关**、**权限**和**网关 → Foundry**。它检查登录、网关（可访问、数据库已连接、主密钥有效、托管标识）、你对网关的访问权限，以及网关对 Foundry 的访问权限。能用你的 Azure 权限修复的就直接修复，其余的生成一份可以直接发给管理员的申请。在本地还可以选择、部署、连接、断开或删除网关。 |
-| **网关选择** | 根据几个回答推荐容器应用或 AKS，一步部署到容器应用，或生成 AKS 部署文件。 |
+| **网关选择** | 根据几个回答推荐容器应用或 AKS。可一步部署到容器应用，或新建 AKS 群集并在其上安装带 HTTPS 的 LiteLLM，或为已有群集生成部署文件。 |
 | **导览** | 面向 AI 网关新手的两分钟页面导览。设置完成后自动运行一次；顶栏的**导览**可以重新播放。 |
 | **部署发现** | 按模型分组，列出你的订阅中的 Azure OpenAI / Foundry 部署，并把选中的部署导入到新的或已有的后端池。 |
 | **部署模型** | 用你自己的 Azure 权限在 Foundry 帐户中创建按令牌计费的 OpenAI 模型部署，无需打开 Foundry 门户。 |
@@ -292,6 +305,39 @@ backend/.venv/Scripts/python scripts/demo_server.py    # macOS 和 Linux 上为 
 **删除网关**（网关面板中的**删除网关**，或网关列表中的**删除**）仅限此应用部署的网关，并需要再次输入名称。它会
 删除标记为该网关的资源（先删除容器应用），从不删除资源组。**没有软删除**：Azure 不保留副本，数据库连同其中的
 后端池、密钥和花费记录都会丢失。连接的网关绝不会被删除；**断开连接**只会让应用忘记它和它的密钥。
+
+### AKS 上的网关
+
+**在 AKS 上部署**会创建以下内容（`infra/gateway/litellm-aks.bicep`，编译为
+`backend/pool_manager/templates/litellm-aks.json`，随后是 `gateway_template.aks_bootstrap` 中的安装）。Azure
+资源的标记与容器应用网关相同。
+
+| 资源 | 说明 |
+| --- | --- |
+| AKS 群集 `<名称>` | Microsoft Entra ID 与 Azure RBAC（无本地帐户），OIDC 颁发者和工作负载标识，Azure CNI 覆盖网络，Azure Linux 节点（Standard_D4ds_v5）。入口使用托管 Gateway API 和应用程序路由的 Istio 实现（托管 NGINX 入口已停用）。补丁版本和节点映像自动升级 |
+| 群集中的 `litellm` 命名空间 | LiteLLM 的 Helm 图表（固定为 `1.106.4`，使用工作负载标识）、把模型调用跟踪发送到 Application Insights 的 OpenTelemetry Collector，以及位于公共 IP 上、DNS 名称为 `<名称>.<区域>.cloudapp.azure.com` 的网关。cert-manager（位于 `cert-manager`）获取并续订 Let's Encrypt 证书。纯 HTTP 只会重定向到 HTTPS |
+| 用户分配的托管标识 `id-<名称>` | 与 LiteLLM 的服务帐户联合；LiteLLM 以它的身份调用 Foundry。设置向导会在成员帐户上为它授予“认知服务 OpenAI 用户” |
+| PostgreSQL、Redis（生产）、Log Analytics、Application Insights | 与容器应用相同 |
+| 角色分配 | 你在该群集上的“Azure Kubernetes 服务 RBAC 群集管理员” |
+
+机密（主密钥、盐密钥、Postgres 密码）由应用生成，安装完成前保存在你的电脑上；它们只通过运行命令的文件作为
+Kubernetes 机密进入群集，安装过程从不打印它们。之后应用只保留加密的主密钥，与连接的网关相同。
+
+**群集由你维护。**本应用只管理 LiteLLM 中的后端池、别名和密钥，不管理群集中的任何内容。网关面板列出了可直接复制的
+命令，并链接到 Azure 门户中的群集：
+
+```sh
+az aks get-credentials -g <资源组> -n <名称>                  # kubectl 访问（Entra ID 登录）
+kubectl -n litellm get pods,gateway,certificate              # LiteLLM、HTTPS 和证书
+kubectl -n litellm get secret litellm-masterkey -o jsonpath='{.data.masterkey}' | base64 -d
+helm upgrade litellm oci://ghcr.io/berriai/litellm-helm -n litellm --reuse-values \
+  --version <新版本> --set image.tag=v<新版本>                # 升级 LiteLLM
+az aks get-upgrades -g <资源组> -n <名称> -o table && az aks upgrade -g <资源组> -n <名称> --kubernetes-version <版本>
+```
+
+以后想改用自己的域名：把域名指向该网关，修改 `litellm` 命名空间中的 `Certificate`、网关侦听器的 `hostname` 和
+HTTPRoute，然后用新 URL 重新连接应用。**删除网关**与容器应用相同：删除群集（Azure 会一并删除其节点资源组）和其他带
+标记的资源，从不删除资源组，且无法恢复。
 
 ## 部署到 Azure
 

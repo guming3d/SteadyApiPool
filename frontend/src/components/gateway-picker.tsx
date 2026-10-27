@@ -1,13 +1,14 @@
 // Choose the LiteLLM gateway to manage, deploy one on Container Apps, or connect one that runs
 // elsewhere (e.g. on AKS, with the files this app generates). Local only; the public app is not
 // available with the gateway yet.
-import { CheckCircle2, CircleAlert, Cloud, Download, ExternalLink, Link2, LoaderCircle, Plug, Plus, Server, Trash2, Unplug } from "lucide-react"
+import { CheckCircle2, CircleAlert, Cloud, Download, ExternalLink, Link2, LoaderCircle, Plug, Plus, RefreshCw, Server, Trash2, Unplug } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 
-import { api, ApiError, queries } from "../api"
+import { api, ApiError, keys, queries } from "../api"
 import { formatMoney } from "../cost"
 import {
+  AKS_PROFILE_ESTIMATE,
   DEFAULT_ANSWERS,
   isGatewayName,
   PROFILE_ESTIMATE,
@@ -19,7 +20,7 @@ import {
 import { fill, useI18n } from "../i18n"
 import { targetFromServiceId, targetFromView } from "../public-target"
 import { chooseTarget, isPublic, signIn as publicSignIn } from "../session"
-import type { AksBundle, GatewayProfile, GatewayView, SetupIdentity, TargetView } from "../types"
+import type { AksBundle, GatewayPlatform, GatewayProfile, GatewayView, SetupIdentity, TargetView } from "../types"
 import { CopyButton } from "./call-guide"
 import { Button, Dialog, ErrorText, Field } from "./ui"
 
@@ -77,6 +78,9 @@ export function GatewayPicker({ target, user }: { target: TargetView; user: Setu
   const external = target.gateway_kind === "external"
   // The current gateway, when it isn't in the list: its deployment may have failed before the
   // Container App existed, and what it did create can be cleaned up from here.
+  // A new AKS gateway the app is still installing: its progress drives the install on.
+  const provisioning = target.provisioning && Boolean(target.gateway_name && target.resource_group)
+    && target.subscription_id === subscriptionId
   const failedHere = !external && Boolean(target.gateway_name && target.resource_group)
     && target.subscription_id === subscriptionId && Boolean(gateways.data)
     && !gateways.data!.some((gateway) => gateway.name.toLowerCase() === target.gateway_name!.toLowerCase()
@@ -135,6 +139,7 @@ export function GatewayPicker({ target, user }: { target: TargetView; user: Setu
               <span className="muted">{gateway.resource_group} · {gateway.location}{gateway.profile && ` · ${t[gateway.profile === "dev" ? "profileDev" : "profileProduction"]}`}
                 {gateway.provisioning_state && gateway.provisioning_state !== "Succeeded" && ` · ${gateway.provisioning_state}`}</span>
               <span>
+                {gateway.platform === "aks" && <span className="tag">{t.targetAks}</span>}
                 {gateway.managed && <span className="tag">{t.targetManaged}</span>}
                 {gateway.can_manage === true && <span className="tag" data-tone="ok">{t.targetCanManage}</span>}
                 {gateway.can_manage === false && <span className="tag" data-tone="warn" title={gateway.missing.join("\n")}>{t.targetCannotManage}</span>}
@@ -154,7 +159,15 @@ export function GatewayPicker({ target, user }: { target: TargetView; user: Setu
           </li>
         })}</ul>
         : !failedHere && <div className="state">{t.targetNoGateways}</div>)}
-      {failedHere && <FailedDeployment
+      {provisioning && <DeployProgress
+        tenantId={tenantId}
+        subscriptionId={subscriptionId}
+        group={target.resource_group!}
+        name={target.gateway_name!}
+        onDone={switched}
+        onCleanedUp={switched}
+      />}
+      {failedHere && !provisioning && <FailedDeployment
         tenantId={tenantId}
         subscriptionId={subscriptionId}
         group={target.resource_group!}
@@ -222,13 +235,14 @@ function DeployGateway({ tenantId, subscriptionId, onConnect, onDeployed, onCanc
 }) {
   const { t } = useI18n()
   const [answers, setAnswers] = useState<ChoiceAnswers>(DEFAULT_ANSWERS)
-  const [platform, setPlatform] = useState<Platform | null>(null)
+  // aks: a new cluster the app deploys; aks-files: the files for a cluster the user has.
+  const [platform, setPlatform] = useState<Platform | "aks-files" | null>(null)
   const recommendation = recommend(answers)
   const set = (next: Partial<ChoiceAnswers>) => setAnswers((current) => ({ ...current, ...next }))
-  if (platform === "aca") {
-    return <CreateGatewayForm tenantId={tenantId} subscriptionId={subscriptionId} profile={recommendation.profile} onDeployed={onDeployed} onCancel={() => setPlatform(null)} />
+  if (platform === "aca" || platform === "aks") {
+    return <CreateGatewayForm tenantId={tenantId} subscriptionId={subscriptionId} platform={platform} profile={recommendation.profile} onDeployed={onDeployed} onCancel={() => setPlatform(null)} />
   }
-  if (platform === "aks") {
+  if (platform === "aks-files") {
     return <AksBundleForm subscriptionId={subscriptionId} onConnect={onConnect} onCancel={() => setPlatform(null)} />
   }
   return <section className="gateway-form gateway-choice">
@@ -263,9 +277,12 @@ function DeployGateway({ tenantId, subscriptionId, onConnect, onDeployed, onCanc
           </header>
           <p className="muted">{candidate === "aca" ? t.choiceAcaBody : t.choiceAksBody}</p>
           {recommended && <ul>{recommendation.reasons.map((reason) => <li key={reason}>{fill(t[reason], { replicas: recommendation.replicas })}</li>)}</ul>}
-          <Button variant={recommended ? "primary" : "outline"} onClick={() => setPlatform(candidate)}>
-            {candidate === "aca" ? t.choiceDeployAca : t.choiceAksFiles}
-          </Button>
+          <div className="choice-actions">
+            <Button variant={recommended ? "primary" : "outline"} onClick={() => setPlatform(candidate)}>
+              {candidate === "aca" ? t.choiceDeployAca : t.choiceDeployAks}
+            </Button>
+            {candidate === "aks" && <Button variant="ghost" onClick={() => setPlatform("aks-files")}><Download size={13} />{t.choiceAksFiles}</Button>}
+          </div>
         </div>
       })}
     </div>
@@ -275,9 +292,10 @@ function DeployGateway({ tenantId, subscriptionId, onConnect, onDeployed, onCanc
 
 // -- deploying on Container Apps --------------------------------------------------------------
 
-function CreateGatewayForm({ tenantId, subscriptionId, profile: suggested, onDeployed, onCancel }: {
+function CreateGatewayForm({ tenantId, subscriptionId, platform, profile: suggested, onDeployed, onCancel }: {
   tenantId: string | null
   subscriptionId: string
+  platform: GatewayPlatform
   profile: GatewayProfile
   onDeployed: () => void
   onCancel: () => void
@@ -298,9 +316,11 @@ function CreateGatewayForm({ tenantId, subscriptionId, profile: suggested, onDep
       location,
       name: name.trim(),
       profile,
+      platform,
     }),
     onSuccess: (gateway) => {
-      chooseTarget(targetFromServiceId(gateway.id, tenantId))
+      // The public app keeps the choice in the browser; it deploys only on Container Apps.
+      if (platform === "aca") chooseTarget(targetFromServiceId(gateway.id, tenantId))
       setStarted({ group: gateway.resource_group, name: gateway.name })
     },
   })
@@ -320,13 +340,17 @@ function CreateGatewayForm({ tenantId, subscriptionId, profile: suggested, onDep
   if (options.isLoading) return <div className="state"><LoaderCircle className="spin" size={14} />{t.loading}</div>
   if (!options.data) return <ErrorText error={options.error} />
   const valid = isGatewayName(name.trim()) && RESOURCE_GROUP.test(group.trim()) && Boolean(location)
-  const estimate = PROFILE_ESTIMATE[profile]
+  const aks = platform === "aks"
+  const estimate = (aks ? AKS_PROFILE_ESTIMATE : PROFILE_ESTIMATE)[profile]
+  const profileHint = profile === "dev"
+    ? aks ? t.aksProfileDevHint : t.profileDevHint
+    : aks ? t.aksProfileProductionHint : t.profileProductionHint
   return <form className="gateway-form" onSubmit={(event) => { event.preventDefault(); if (valid) create.mutate() }}>
-    <h3>{t.targetCreate}</h3>
+    <h3>{aks ? t.aksCreateTitle : t.targetCreate}</h3>
     <div className="form-grid">
       <label className="field">{t.createName}
         <input value={name} onChange={(event) => setName(event.target.value)} aria-invalid={!isGatewayName(name.trim())} />
-        <small>{isGatewayName(name.trim()) ? t.createNameHint : t.createNameInvalid}</small>
+        <small>{!isGatewayName(name.trim()) ? t.createNameInvalid : aks ? fill(t.aksNameHint, { url: `https://${name.trim()}.${location || "<region>"}.cloudapp.azure.com` }) : t.createNameHint}</small>
       </label>
       <label className="field">{t.createGroup}
         <input value={group} list="gateway-create-groups" onChange={(event) => setGroup(event.target.value)} aria-invalid={!RESOURCE_GROUP.test(group.trim())} />
@@ -338,7 +362,7 @@ function CreateGatewayForm({ tenantId, subscriptionId, profile: suggested, onDep
           <option value="dev">{t.profileDev}</option>
           <option value="production">{t.profileProduction}</option>
         </select>
-        <small>{profile === "dev" ? t.profileDevHint : t.profileProductionHint}</small>
+        <small>{profileHint}</small>
       </label>
       <label className="field">{t.createLocation}
         <select value={location} disabled={!locations.length} onChange={(event) => setLocation(event.target.value)}>
@@ -352,7 +376,7 @@ function CreateGatewayForm({ tenantId, subscriptionId, profile: suggested, onDep
       high: formatMoney(estimate.high, "USD", locale, 0),
     })}</div>
     {options.data.unregistered_providers.length > 0 && <div className="state">{fill(t.createRegisterProvider, { providers: options.data.unregistered_providers.join(", ") })}</div>}
-    <div className="callout warning"><CircleAlert size={15} /><div><span>{t.createBilling}</span></div></div>
+    <div className="callout warning"><CircleAlert size={15} /><div><span>{aks ? t.aksBilling : t.createBilling}</span></div></div>
     <ErrorText error={create.error} />
     <div className="gateway-form-actions">
       <Button onClick={onCancel} disabled={create.isPending}>{t.back}</Button>
@@ -363,7 +387,10 @@ function CreateGatewayForm({ tenantId, subscriptionId, profile: suggested, onDep
   </form>
 }
 
-/** Follows the ARM deployment, resource by resource, until the gateway is up. */
+const AKS_PHASES = ["azure", "cluster", "certificate"] as const
+
+/** Follows the ARM deployment, resource by resource, until the gateway is up; on AKS also the
+ *  install in the cluster and the HTTPS certificate. */
 function DeployProgress({ tenantId, subscriptionId, group, name, onDone, onCleanedUp }: {
   tenantId: string | null
   subscriptionId: string
@@ -374,8 +401,15 @@ function DeployProgress({ tenantId, subscriptionId, group, name, onDone, onClean
 }) {
   const { t } = useI18n()
   const status = useQuery(queries.deployStatus(tenantId, subscriptionId, group, name))
+  const queryClient = useQueryClient()
   const [cleaning, setCleaning] = useState(false)
+  const retry = useMutation({
+    mutationFn: () => api.retryInstall({ tenant_id: tenantId, subscription_id: subscriptionId, resource_group: group, gateway_name: name }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: keys.deployStatus(subscriptionId, group, name) }),
+  })
   const state = status.data?.state
+  const aks = status.data?.platform === "aks"
+  const phase = status.data?.phase ?? ("azure" as const)
   // Once: reloading everything re-renders this, with a new onDone.
   const finished = useRef(false)
   useEffect(() => {
@@ -383,10 +417,24 @@ function DeployProgress({ tenantId, subscriptionId, group, name, onDone, onClean
     finished.current = true
     onDone()
   }, [state, onDone])
+  const phaseLabel = { azure: t.deployPhaseAzure, cluster: t.deployPhaseCluster, certificate: t.deployPhaseCertificate }
   return <section className="gateway-form gateway-deploy">
     <h3>{fill(t.deployTitle, { name })}</h3>
-    <p className="muted">{t.deployHint}</p>
-    {status.data && <ul className="deploy-steps">
+    <p className="muted">{aks ? t.deployHintAks : t.deployHint}</p>
+    {aks && <ol className="deploy-phases">
+      {AKS_PHASES.map((item, index) => {
+        const current = AKS_PHASES.indexOf(phase === "done" ? "certificate" : phase)
+        const done = phase === "done" || index < current
+        const failed = state === "failed" && index === current
+        return <li key={item} data-state={failed ? "failed" : done ? "succeeded" : index === current ? "running" : "pending"}>
+          {failed ? <CircleAlert size={14} /> : done ? <CheckCircle2 size={14} /> : index === current ? <LoaderCircle className="spin" size={14} /> : <span className="phase-dot" />}
+          <span>{phaseLabel[item]}</span>
+        </li>
+      })}
+    </ol>}
+    {aks && state === "running" && phase === "cluster" && <p className="muted">{t.deployPhaseClusterHint}</p>}
+    {aks && state === "running" && phase === "certificate" && <p className="muted">{fill(t.deployPhaseCertificateHint, { url: `https://${name}.<region>.cloudapp.azure.com` })}</p>}
+    {status.data && (!aks || phase === "azure") && <ul className="deploy-steps">
       {status.data.steps.map((step) => <li key={`${step.resource_type}/${step.name}`} data-state={step.state.toLowerCase()}>
         {step.state === "Succeeded" ? <CheckCircle2 size={14} /> : step.state === "Failed" ? <CircleAlert size={14} /> : <LoaderCircle className="spin" size={14} />}
         <span><b>{step.name}</b><small className="muted">{step.resource_type}</small>{step.error && <small className="warn-text">{step.error}</small>}</span>
@@ -394,10 +442,20 @@ function DeployProgress({ tenantId, subscriptionId, group, name, onDone, onClean
     </ul>}
     {(!status.data || state === "running" || state === "none") && <div className="state"><LoaderCircle className="spin" size={14} />{t.deployRunning}</div>}
     {state === "succeeded" && <div className="state" data-status="active"><CheckCircle2 size={14} />{t.deployDone}</div>}
+    {status.data?.log_tail && <details className="deploy-log" open={state === "failed"}>
+      <summary>{t.deployLog}</summary>
+      <pre>{status.data.log_tail}</pre>
+    </details>}
     {state === "failed" && <div className="callout warning"><CircleAlert size={15} /><div>
       <b>{t.deployFailed}</b><span>{status.data?.error}</span>
       <span className="muted">{t.deployCleanupHint}</span>
-      <div><Button variant="ghost" className="danger" onClick={() => setCleaning(true)}><Trash2 size={13} />{t.deployCleanup}</Button></div>
+      <div className="picker-actions">
+        {aks && phase === "cluster" && <Button disabled={retry.isPending} onClick={() => retry.mutate()}>
+          {retry.isPending ? <LoaderCircle className="spin" size={13} /> : <RefreshCw size={13} />}{t.deployRetryInstall}
+        </Button>}
+        <Button variant="ghost" className="danger" onClick={() => setCleaning(true)}><Trash2 size={13} />{t.deployCleanup}</Button>
+      </div>
+      <ErrorText error={retry.error} />
     </div></div>}
     {cleaning && <DeleteGatewayDialog
       gateway={{ id: `deployment:${group}/${name}`, name, resource_group: group }}

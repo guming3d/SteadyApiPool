@@ -25,6 +25,9 @@ SAVED_FIELDS = (
     "gateway_url",
     "gateway_principal_id",
     "gateway_app_insights_id",
+    "gateway_cluster_id",
+    "gateway_provisioning",
+    "gateway_started_at",
 )
 # Where the local app remembers the gateway chosen in the setup wizard.
 STATE_FILE = Path(__file__).resolve().parent.parent / ".pool-manager.json"
@@ -49,6 +52,11 @@ class Settings(BaseSettings):
     # Application Insights component its OpenTelemetry goes to. Container Apps report their own.
     gateway_principal_id: str = ""
     gateway_app_insights_id: str = ""
+    # An external gateway the app deployed on AKS: its cluster (for the maintenance commands and
+    # deleting it), and while the app is still installing it, "aks" and when it started.
+    gateway_cluster_id: str = ""
+    gateway_provisioning: str = ""
+    gateway_started_at: str = ""
     # Tenant of the subscription, so local tokens are requested there and not in the home tenant.
     tenant_id: str = ""
 

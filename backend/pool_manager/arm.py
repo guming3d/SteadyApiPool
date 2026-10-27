@@ -249,9 +249,12 @@ class ArmClient:
         query = urlencode({"api-version": api_version, **(params or {})})
         yield from self._pages(self._absolute_get(f"{self._origin}{arm_path}?{query}"))
 
-    def get_arm_json(self, arm_path: str, *, api_version: str) -> dict[str, Any] | None:
+    def get_arm_json(
+        self, arm_path: str, *, api_version: str, params: Mapping[str, str] | None = None
+    ) -> dict[str, Any] | None:
         """Reads any resource addressed from the ARM root; ``None`` for 404."""
-        url = f"{self._origin}{arm_path}?api-version={quote(api_version, safe='')}"
+        query = urlencode({"api-version": api_version, **(params or {})})
+        url = f"{self._origin}{arm_path}?{query}"
         try:
             body: dict[str, Any] = self._absolute_get(url).json()
         except ArmError as error:

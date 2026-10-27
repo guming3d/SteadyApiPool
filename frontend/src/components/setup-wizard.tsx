@@ -38,7 +38,7 @@ function checkText(check: SetupCheck, report: SetupReport, t: Messages, gateway:
       return text(t.chkSignIn, check.detail?.startsWith("signed in to tenant") ? t.chkSignInTenant : t.chkSignInHint)
     case "gateway_target":
       if (ok) return text(t.chkTargetOk)
-      if (check.status === "pending") return text(t.chkTargetPending, t.chkTargetPendingHint)
+      if (check.status === "pending") return text(t.chkTargetPending, check.detail === "DeployingAks" ? t.chkTargetPendingAksHint : t.chkTargetPendingHint)
       if (check.detail === "Failed" || check.detail === "DeployFailed") return text(t.chkTargetFailed, t.chkTargetFailedHint)
       if (check.status === "blocked") return text(t.chkTargetMissing, t.chkTargetMissingHint)
       if (check.status === "unknown") return text(t.chkTargetUnknown)
@@ -136,7 +136,16 @@ function useSetupActions() {
   // Starting returns the code at once; DeviceCodePanel follows the sign-in to the end.
   const device = useMutation({ mutationFn: () => api.startDeviceCode() })
   const signOut = useMutation({ mutationFn: api.signOut, onSuccess: switched })
-  const grant = useMutation({ mutationFn: api.grantFoundryAccess, onSuccess: recheck })
+  const grant = useMutation({
+    mutationFn: api.grantFoundryAccess,
+    onSuccess: async (checks) => {
+      // The grant's own answer counts at once: Azure lists a new assignment only a while later.
+      const fresh = new Map(checks.map((check) => [check.subject, check]))
+      queryClient.setQueriesData<SetupCheck[]>({ queryKey: ["setup", "foundry"] }, (old) =>
+        old?.map((check) => (check.subject && fresh.get(check.subject)) || check))
+      await recheck()
+    },
+  })
   const refresh = useMutation({ mutationFn: recheck })
   const consent = () => {
     // The public app asks Entra for consent again; it returns to this page.
@@ -201,7 +210,7 @@ function CheckRow({ check, report, gateway, actions }: { check: SetupCheck; repo
         {attention && <FixButton check={check} actions={actions} />}
       </div>
       {check.status !== "ok" && check.status !== "skipped" && hint && <p>{hint}</p>}
-      {check.kind === "gateway_target" && check.status === "pending" && <ProvisioningProgress startedAt={check.started_at} />}
+      {check.kind === "gateway_target" && check.status === "pending" && check.detail !== "DeployingAks" && <ProvisioningProgress startedAt={check.started_at} />}
       {check.kind === "gateway_target" && (check.detail === "Failed" || check.detail === "DeployFailed") && check.missing[0] && <p className="warn-text">{check.missing[0]}</p>}
       {attention && !check.fix && check.request && <p className="muted">{t.setupNoFix}</p>}
       {check.fix === "sign_in" && actions.signIn.isPending && <p className="setup-waiting"><LoaderCircle className="spin" size={13} />{t.setupSignInWaiting}</p>}
@@ -362,8 +371,9 @@ export function SetupWizard({ open = true, page = false, onClose }: { open?: boo
 /** Where the gateway comes from, and the picker when it can be changed here. */
 function TargetPanel({ target, report }: { target: TargetView; report: SetupReport }) {
   const { t } = useI18n()
-  // Open straight away when there is nothing to manage yet, or the gateway can't be reached.
-  const [open, setOpen] = useState(report.checks.some((item) =>
+  // Open straight away when there is nothing to manage yet, the gateway can't be reached, or
+  // a new AKS gateway is being installed (the picker's progress drives that on).
+  const [open, setOpen] = useState(target.provisioning || report.checks.some((item) =>
     (item.kind === "gateway_target" || item.kind === "gateway_health")
     && (item.status === "action" || item.status === "blocked")))
   if (!target.can_change) {

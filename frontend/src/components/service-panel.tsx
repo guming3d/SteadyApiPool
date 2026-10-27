@@ -4,9 +4,11 @@ import { Eraser, ExternalLink, LoaderCircle, RefreshCw, Server, Trash2 } from "l
 import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 
+import { clusterPortalUrl, maintenanceCommands } from "../aks-maintenance"
 import { api, keys, queries } from "../api"
 import { COST_NOTE, formatMoney } from "../cost"
 import { fill, useI18n } from "../i18n"
+import { CopyButton } from "./call-guide"
 import { DeleteGatewayDialog } from "./gateway-picker"
 import { CleanupDialog } from "./removal-dialog"
 import { Button, Dialog, ErrorText } from "./ui"
@@ -46,10 +48,12 @@ function ServiceCostSection() {
             <dt>{t.costListPrice}</dt>
             <dd>{price
               ? <>
-                <b>{fill(t.costPerMonth, {
-                  low: formatMoney(price.monthly_low, price.currency, locale, 0),
-                  high: formatMoney(price.monthly_high, price.currency, locale, 0),
-                })}</b>
+                <b>{Math.round(price.monthly_low) === Math.round(price.monthly_high)
+                  ? fill(t.costPerMonthOne, { amount: formatMoney(price.monthly_low, price.currency, locale, 0) })
+                  : fill(t.costPerMonth, {
+                    low: formatMoney(price.monthly_low, price.currency, locale, 0),
+                    high: formatMoney(price.monthly_high, price.currency, locale, 0),
+                  })}</b>
                 <ul className="cost-items">{price.items.map((item) => <li key={item.kind}>
                   <span>{t[`costItem_${item.kind}`]}</span>
                   <small className="muted">{item.detail}</small>
@@ -66,10 +70,28 @@ function ServiceCostSection() {
             </dd>
           </div>
         </dl>
-        <p className="muted">{t.costSources}</p>
+        <p className="muted">{price?.items.some((item) => item.kind === "aks_nodes") ? t.costSourcesAks : t.costSources}</p>
         {data.portal_url && <a href={data.portal_url} target="_blank" rel="noreferrer"><ExternalLink size={13} />{t.costOpenAnalysis}</a>}
         <ErrorText error={refresh.error} />
       </>}
+  </section>
+}
+
+/** An AKS gateway the app deployed: the user maintains its cluster with these. */
+function MaintainCluster({ clusterId }: { clusterId: string }) {
+  const { t } = useI18n()
+  return <section className="service-maintain">
+    <div>
+      <b>{t.serviceMaintainTitle}</b>
+      <span className="muted">{t.serviceMaintainHint}</span>
+      <a href={clusterPortalUrl(clusterId)} target="_blank" rel="noreferrer"><ExternalLink size={13} />{t.serviceMaintainOpen}</a>
+    </div>
+    <ul className="maintain-commands">
+      {maintenanceCommands(clusterId).map((item) => <li key={item.key}>
+        <span>{t[item.key]}</span>
+        <div className="code-block"><pre><code>{item.command}</code></pre><CopyButton text={item.command} label={t[item.key]} /></div>
+      </li>)}
+    </ul>
   </section>
 }
 
@@ -83,10 +105,14 @@ export function ServicePanel({ onClose }: { onClose: () => void }) {
   if (!service) return null
   const back = () => setAction(null)
 
+  const clusterId = target.data?.cluster_id ?? null
+  // A Container App gateway is its app; an AKS gateway the app deployed is its cluster.
+  const anchor = clusterId ?? service.gateway_resource_id
+  const group = target.data?.resource_group ?? service.resource_group
   if (action === "cleanup") return <CleanupDialog gatewayName={service.gateway_name} onClose={back} />
-  if (action === "delete" && target.data?.subscription_id && service.gateway_resource_id && service.resource_group) {
+  if (action === "delete" && target.data?.subscription_id && anchor && group) {
     return <DeleteGatewayDialog
-      gateway={{ id: service.gateway_resource_id, name: service.gateway_name, resource_group: service.resource_group }}
+      gateway={{ id: anchor, name: service.gateway_name, resource_group: group }}
       tenantId={target.data.tenant_id ?? null}
       subscriptionId={target.data.subscription_id}
       onClose={back}
@@ -94,9 +120,9 @@ export function ServicePanel({ onClose }: { onClose: () => void }) {
       onDeleted={onClose}
     />
   }
-  // Deleting is local-only, for a Container App gateway not fixed by the environment or
-  // deployment; a connected gateway is only disconnected (in setup).
-  const canDelete = target.data?.can_change === true && service.gateway_kind === "aca"
+  // Deleting is local-only, for a gateway this app deployed (on Container Apps or AKS) that
+  // the environment or deployment doesn't fix; a connected one is only disconnected (in setup).
+  const canDelete = target.data?.can_change === true && (service.gateway_kind === "aca" || Boolean(clusterId))
   return <Dialog
     open
     onClose={onClose}
@@ -111,12 +137,13 @@ export function ServicePanel({ onClose }: { onClose: () => void }) {
         {service.gateway_url && <div><dt>{t.serviceAdminUi}</dt><dd><a href={`${service.gateway_url}/ui`} target="_blank" rel="noreferrer"><ExternalLink size={13} />{t.serviceAdminUiOpen}</a></dd></div>}
       </dl>
       <ServiceCostSection />
+      {clusterId && <MaintainCluster clusterId={clusterId} />}
       <section className="service-action">
         <div><b>{t.serviceCleanup}</b><span className="muted">{me.data?.can_write ? t.serviceCleanupHint : t.serviceReadOnly}</span></div>
         <Button disabled={!me.data?.can_write} onClick={() => setAction("cleanup")}><Eraser size={13} />{t.serviceCleanupOpen}</Button>
       </section>
       <section className="service-action" data-tone="danger">
-        <div><b>{t.serviceRemove}</b><span className="muted">{canDelete ? t.serviceRemoveHint : service.gateway_kind === "external" ? t.serviceRemoveExternal : t.serviceRemoveFixed}</span></div>
+        <div><b>{t.serviceRemove}</b><span className="muted">{canDelete ? clusterId ? t.serviceRemoveHintAks : t.serviceRemoveHint : service.gateway_kind === "external" ? t.serviceRemoveExternal : t.serviceRemoveFixed}</span></div>
         {canDelete && <Button variant="destructive" onClick={() => setAction("delete")}><Trash2 size={13} />{t.targetDelete}</Button>}
       </section>
     </div>

@@ -85,6 +85,8 @@ def test_without_a_gateway_setup_asks_to_choose_one(wizard: _Wizard) -> None:
         "tenant_id": None,
         "source": "none",
         "can_change": True,
+        "cluster_id": None,
+        "provisioning": False,
     }
 
 

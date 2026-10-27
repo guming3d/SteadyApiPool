@@ -95,15 +95,32 @@ No gateway yet? Click **Deploy a gateway**. The app first asks **Where should th
   Insights with your own Azure rights, and follows the deployment, which usually takes 5–15
   minutes (PostgreSQL is the slowest). You can close the app meanwhile; setup picks it up again.
   Azure bills the resources from the moment they're created.
-- **Generate AKS files** asks for your cluster, its resource group and a namespace, and generates
-  a `values.yaml`, a `deploy.sh` and a `README.md` (Helm chart, workload identity, PostgreSQL
-  Flexible Server). The cluster needs the OIDC issuer and workload identity enabled. Run the
-  script, for example in Azure Cloud Shell, then click **Deployed, connect it**. The script
-  exposes LiteLLM on plain HTTP on a public IP, and **Connect** accepts only HTTPS URLs (plain
-  HTTP only for localhost, so the master key never crosses the network unencrypted). To try it
-  from the machine running the app, keep `kubectl -n <namespace> port-forward svc/litellm 4000:4000`
-  running and connect to `http://localhost:4000`; for real traffic, put an ingress with TLS in
-  front and connect to its HTTPS URL.
+- **Deploy on AKS** opens the same form for a **new AKS cluster**. Click **Deploy**; the app
+  then works in three phases, shown as it goes (usually 15–25 minutes in all):
+  1. **Azure resources**: the cluster (Entra ID with Azure RBAC, workload identity, the managed
+     Gateway API), PostgreSQL, the gateway's identity, Application Insights and, for production,
+     Redis. You get *Azure Kubernetes Service RBAC Cluster Admin* on the cluster, so deploying
+     needs Owner or User Access Administrator on the resource group.
+  2. **Install in the cluster**: through AKS Run Command (no kubectl or Helm needed on your
+     machine) the app installs cert-manager, an OpenTelemetry Collector, LiteLLM's Helm chart and
+     an HTTPS Gateway.
+  3. **HTTPS certificate**: Let's Encrypt issues a certificate for
+     `https://<name>.<region>.cloudapp.azure.com`; once LiteLLM answers there, the app connects
+     to it like any gateway.
+
+  Keep the page open while it runs (the progress drives the install on; if you close it, come
+  back to the **AI gateway** step). If the install fails, its output is shown with **Run the
+  install again**. After that the cluster is **yours to maintain**; see
+  [A gateway on AKS](#a-gateway-on-aks).
+- **Use my own cluster (files)** is for a cluster you already have: it asks for the cluster, its
+  resource group and a namespace, and generates a `values.yaml`, a `deploy.sh` and a `README.md`
+  (Helm chart, workload identity, PostgreSQL Flexible Server). The cluster needs the OIDC issuer
+  and workload identity enabled. Run the script, for example in Azure Cloud Shell, then click
+  **Deployed, connect it**. The script exposes LiteLLM on plain HTTP on a public IP, and
+  **Connect** accepts only HTTPS URLs (plain HTTP only for localhost, so the master key never
+  crosses the network unencrypted). To try it from the machine running the app, keep
+  `kubectl -n <namespace> port-forward svc/litellm 4000:4000` running and connect to
+  `http://localhost:4000`; for real traffic, put HTTPS in front and connect to its HTTPS URL.
 
 **Connect a gateway** works for any LiteLLM proxy with a database (`STORE_MODEL_IN_DB`): enter its
 HTTPS URL, its master key and, optionally, the object ID of the managed identity it calls Foundry
@@ -122,9 +139,9 @@ request, and three yes/no questions. It recommends:
 | | Azure Container Apps (the default) | Azure Kubernetes Service (AKS) |
 | --- | --- | --- |
 | When | Most cases: trials, and production traffic up to about 250 requests a second (what the production profile's 5 replicas serve) | You already run an AKS cluster and have people for it; self-hosted (GPU) models should run next to the gateway; or the peak is over about 250 requests a second (peak TPM ÷ 60 ÷ tokens per request) |
-| How | Deployed by this app in one step, with no cluster to run | You run the generated Helm files and script on your cluster, then connect it |
-| Size | **Dev / trial**: one replica, no Redis. **Production**: 2–5 replicas scaling with load, sharing cooldowns through Redis | The script deploys 2 replicas; add Redis yourself so they share cooldowns |
-| List price | Dev about **$46–115 a month**; production about **$171–865 a month** | Your cluster's cost, plus PostgreSQL |
+| How | Deployed by this app in one step, with no cluster to run | A new cluster deployed and set up by this app (then maintained by you), or the generated files for a cluster you already have |
+| Size | **Dev / trial**: one replica, no Redis. **Production**: 2–5 replicas scaling with load, sharing cooldowns through Redis | **Dev / trial**: one Standard_D4ds_v5 node, Free tier, no Redis. **Production**: 3–6 nodes across zones, Standard tier (uptime SLA), 2–6 LiteLLM replicas sharing cooldowns through Redis |
+| List price | Dev about **$46–115 a month**; production about **$171–865 a month** | New cluster: dev about **$190–230 a month**; production about **$670–1,200 a month**. Your own cluster: its cost, plus PostgreSQL |
 
 The prices are **retail list-price estimates** (USD, East US 2, from quiet to busy) for what each
 profile deploys: Container Apps replicas, PostgreSQL and, for production, Redis. They leave out
@@ -251,7 +268,7 @@ in onboarding (`pool` is a pool already in use, with an hour of metrics).
 | Area | What it does |
 | --- | --- |
 | **Setup wizard** | Four steps: **Sign in**, **AI gateway**, **Permissions** and **Gateway → Foundry**. It checks sign-in, the gateway (reachable, database connected, master key valid, managed identity), your access to it and the gateway's access to Foundry. It fixes what your Azure rights allow and writes a ready-to-send admin request for the rest. Locally it also chooses, deploys, connects, disconnects or deletes the gateway. |
-| **Gateway choice** | Recommends Container Apps or AKS from a few answers, deploys on Container Apps in one step, or generates the AKS files. |
+| **Gateway choice** | Recommends Container Apps or AKS from a few answers. Deploys on Container Apps in one step, or creates a new AKS cluster and installs LiteLLM with HTTPS on it, or generates the files for a cluster you already have. |
 | **Guided tour** | A two-minute walkthrough for people new to AI gateways. It runs once after setup; **Tour** in the top bar replays it. |
 | **Deployment discovery** | Lists the Azure OpenAI / Foundry deployments in your subscriptions, grouped by model, and imports the ones you select into a new or existing pool. |
 | **Deploy a model** | Creates a pay-per-token OpenAI model deployment in a Foundry account, using your own Azure rights, so you don't need the Foundry portal. |
@@ -336,6 +353,44 @@ resources tagged as that gateway's, starting with the Container App, and never t
 group. There is **no soft-delete**: Azure keeps no copy, and the database with its pools, keys and
 spend history is gone. A connected gateway is never deleted; **Disconnect** only forgets it and
 its key.
+
+### A gateway on AKS
+
+What **Deploy on AKS** creates (`infra/gateway/litellm-aks.bicep`, compiled into
+`backend/pool_manager/templates/litellm-aks.json`, then the install in
+`gateway_template.aks_bootstrap`). The Azure resources are tagged like a Container Apps gateway's.
+
+| Resource | Notes |
+| --- | --- |
+| AKS cluster `<name>` | Entra ID with Azure RBAC and no local accounts, OIDC issuer and workload identity, Azure CNI overlay, Azure Linux nodes (Standard_D4ds_v5). The managed Gateway API with application routing's Istio implementation is the ingress (the managed NGINX ingress is retired). Patch versions and node images upgrade automatically |
+| In the cluster, namespace `litellm` | LiteLLM's Helm chart (pinned `1.106.4`) with workload identity, an OpenTelemetry Collector sending model-call spans to Application Insights, and a Gateway on a public IP whose DNS name is `<name>.<region>.cloudapp.azure.com`. cert-manager (in `cert-manager`) gets its Let's Encrypt certificate and renews it. Plain HTTP only redirects to HTTPS |
+| User-assigned identity `id-<name>` | Federated with LiteLLM's service account; what LiteLLM calls Foundry as. The setup wizard grants it *Cognitive Services OpenAI User* on member accounts |
+| PostgreSQL, Redis (production), Log Analytics, Application Insights | As for Container Apps |
+| Role assignment | *Azure Kubernetes Service RBAC Cluster Admin* for you, on the cluster |
+
+The app made the secrets (master key, salt key, Postgres password) and kept them on your machine
+until the install finished; they reached the cluster only as Kubernetes secrets, through Run
+Command's files, and the install never prints them. Afterwards the app keeps only the master key,
+encrypted, like for a connected gateway.
+
+**You maintain the cluster.** The app manages pools, aliases and keys in LiteLLM, and nothing in
+the cluster. The gateway panel lists the commands, ready to copy, and links to the cluster in the
+portal:
+
+```sh
+az aks get-credentials -g <group> -n <name>                 # kubectl access (Entra ID sign-in)
+kubectl -n litellm get pods,gateway,certificate             # LiteLLM, HTTPS and the certificate
+kubectl -n litellm get secret litellm-masterkey -o jsonpath='{.data.masterkey}' | base64 -d
+helm upgrade litellm oci://ghcr.io/berriai/litellm-helm -n litellm --reuse-values \
+  --version <new-version> --set image.tag=v<new-version>  # a newer LiteLLM
+az aks get-upgrades -g <group> -n <name> -o table && az aks upgrade -g <group> -n <name> --kubernetes-version <version>
+```
+
+To use your own domain later, point it at the Gateway and change the `Certificate`, the Gateway's
+listener `hostname` and the HTTPRoutes in namespace `litellm`, then reconnect the app with the
+new URL. **Delete the gateway** works as for Container Apps: it deletes the cluster (Azure removes
+its node resource group with it) and the other tagged resources, never the resource group, and
+can't be undone.
 
 ## Deploy to Azure
 

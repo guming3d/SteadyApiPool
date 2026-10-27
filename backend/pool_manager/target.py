@@ -26,6 +26,7 @@ import logging
 import time
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -34,8 +35,9 @@ from urllib.parse import urlsplit
 import httpx
 
 from .access import AUTHORIZATION_API_VERSION, GATEWAY_ACTIONS, Permissions, missing
+from .aks_deploy import CONTAINER_SERVICE_API_VERSION, AksDeployer, cluster_path
 from .arm import ArmClient, ArmError, TokenCredential, segment
-from .config import Settings, clear_saved_target, save_target
+from .config import Settings, clear_saved_target, read_saved_target, save_target
 from .gateway import GATEWAY_TAG, MANAGED_TAG, MANAGED_TAG_VALUE, container_app_info
 from .gateway_deploy import (
     DEPLOYMENTS_API_VERSION,
@@ -46,6 +48,7 @@ from .gateway_deploy import (
     group_path,
     translate,
 )
+from .gateway_template import aks_fqdn
 from .litellm import LiteLLMClient, LiteLLMError
 from .models import (
     GatewayConnect,
@@ -71,11 +74,13 @@ logger = logging.getLogger(__name__)
 SUBSCRIPTIONS_API_VERSION = "2022-12-01"
 _WORKERS = 8
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
-# Delete order and API versions of what the template creates: the app first (the environment
-# can't go while it has apps), the environment, then the rest.
+# Delete order and API versions of what the templates create: the Container App first (its
+# environment can't go while it has apps), the environment or the AKS cluster (which Azure takes
+# many minutes over, so it finishes on its own), then the rest.
 _DELETE_ORDER = {
     "microsoft.app/containerapps": (0, "2025-01-01"),
     "microsoft.app/managedenvironments": (1, "2025-01-01"),
+    "microsoft.containerservice/managedclusters": (1, CONTAINER_SERVICE_API_VERSION),
     "microsoft.dbforpostgresql/flexibleservers": (2, "2024-08-01"),
     "microsoft.cache/redisenterprise": (2, "2025-04-01"),
     "microsoft.managedidentity/userassignedidentities": (3, "2023-01-31"),
@@ -126,6 +131,7 @@ class TargetChooser:
         self._secrets = secrets
         self._on_change = on_change
         self._deployer = GatewayDeployer(settings, sleep)
+        self._aks = AksDeployer(settings, self._deployer, secrets, transport=gateway_transport)
         self._lock = Lock()
         self._clients: dict[str, ArmClient] = {}
 
@@ -201,6 +207,8 @@ class TargetChooser:
             tenant_id=settings.tenant_id or None,
             source=source,
             can_change=settings.can_choose_target,
+            cluster_id=settings.gateway_cluster_id or None,
+            provisioning=bool(settings.gateway_provisioning),
         )
 
     def tenants(self) -> list[TenantView]:
@@ -245,27 +253,59 @@ class TargetChooser:
         return sorted(views, key=lambda view: view.display_name.casefold())
 
     def gateways(self, tenant_id: str | None, subscription_id: str) -> list[GatewayView]:
-        """LiteLLM gateways on Container Apps in the subscription."""
+        """LiteLLM gateways on Container Apps in the subscription, and the AKS clusters this
+        app deployed LiteLLM on."""
         self._require_local()
         arm = self._arm(tenant_id)
-        path = f"/subscriptions/{segment(subscription_id)}/providers/Microsoft.App/containerApps"
+        subscription = f"/subscriptions/{segment(subscription_id)}"
         try:
             items = [
                 item
                 for item in arm.list_arm(
-                    path, api_version=self._settings.container_apps_api_version
+                    f"{subscription}/providers/Microsoft.App/containerApps",
+                    api_version=self._settings.container_apps_api_version,
                 )
                 if _is_litellm(item)
             ]
         except ArmError as error:
-            if error.code == "MissingSubscriptionRegistration":
-                return []  # No Container Apps in this subscription yet.
-            raise translate(error, "list the Container Apps of this subscription") from error
-        if not items:
-            return []
-        with ThreadPoolExecutor(max_workers=min(_WORKERS, len(items))) as executor:
-            views = list(executor.map(lambda item: self._gateway_view(arm, item), items))
+            if error.code != "MissingSubscriptionRegistration":  # No Container Apps yet.
+                raise translate(error, "list the Container Apps of this subscription") from error
+            items = []
+        try:
+            clusters = [
+                item
+                for item in arm.list_arm(
+                    f"{subscription}/providers/Microsoft.ContainerService/managedClusters",
+                    api_version=CONTAINER_SERVICE_API_VERSION,
+                )
+                if (item.get("tags") or {}).get(MANAGED_TAG) == MANAGED_TAG_VALUE
+            ]
+        except ArmError as error:
+            logger.info("Cannot list the AKS clusters of %s: %s", subscription_id, error.message)
+            clusters = []
+        views = [self._cluster_view(item) for item in clusters]
+        if items:
+            with ThreadPoolExecutor(max_workers=min(_WORKERS, len(items))) as executor:
+                views += list(executor.map(lambda item: self._gateway_view(arm, item), items))
         return sorted(views, key=lambda view: view.name.casefold())
+
+    def _cluster_view(self, item: Mapping[str, Any]) -> GatewayView:
+        cluster_id = str(item.get("id") or "")
+        name = str(item.get("name") or "")
+        location = str(item.get("location") or "")
+        state = str((item.get("properties") or {}).get("provisioningState") or "") or None
+        return GatewayView(
+            id=cluster_id,
+            name=name,
+            resource_group=_resource_group(cluster_id),
+            location=location,
+            url=f"https://{aks_fqdn(name, location)}",
+            profile=_profile(item),
+            provisioning_state=state,
+            managed=True,
+            can_manage=None,
+            platform="aks",
+        )
 
     def _gateway_view(self, arm: ArmClient, item: Mapping[str, Any]) -> GatewayView:
         app_id = str(item.get("id") or "")
@@ -348,6 +388,9 @@ class TargetChooser:
         except ArmError as error:
             raise translate(error, "read this Container App") from error
         if found is None:
+            cluster = self._managed_cluster(arm, body)
+            if cluster is not None:
+                return self._select_cluster(arm, body, cluster, actor)
             raise ServiceError(
                 404, f"Container App {body.gateway_name} not found in {body.resource_group}"
             )
@@ -365,6 +408,60 @@ class TargetChooser:
         logger.info("%s chose gateway %s", actor, resource_id)
         return self._view(target)
 
+    def _managed_cluster(self, arm: ArmClient, body: TargetSelect) -> dict[str, Any] | None:
+        """The AKS cluster of that name, when this app deployed LiteLLM on it."""
+        try:
+            found = arm.get_arm_json(
+                cluster_path(body.subscription_id, body.resource_group, body.gateway_name),
+                api_version=CONTAINER_SERVICE_API_VERSION,
+            )
+        except ArmError as error:
+            raise translate(error, "read this AKS cluster") from error
+        if found and (found.get("tags") or {}).get(MANAGED_TAG) == MANAGED_TAG_VALUE:
+            return found
+        return None
+
+    def _select_cluster(
+        self, arm: ArmClient, body: TargetSelect, cluster: Mapping[str, Any], actor: str
+    ) -> TargetView:
+        """Chooses an AKS gateway this app deployed, with the master key it keeps for it."""
+        name = str(cluster.get("name") or body.gateway_name)
+        url = f"https://{aks_fqdn(name, str(cluster.get('location') or ''))}"
+        if self._secrets is None or not self._secrets.get(url):
+            raise ServiceError(
+                409,
+                f"This machine doesn't have {name}'s master key. Choose Connect a gateway, enter "
+                f"{url} and the key, which you can read with: kubectl -n litellm get secret "
+                "litellm-masterkey -o jsonpath='{.data.masterkey}' | base64 -d",
+            )
+        cluster_id = str(cluster.get("id") or "")
+        group = _resource_group(cluster_id) or body.resource_group
+        try:
+            identity = arm.get_arm_json(
+                f"{group_path(body.subscription_id, group)}/providers"
+                f"/Microsoft.ManagedIdentity/userAssignedIdentities/id-{segment(name)}",
+                api_version="2023-01-31",
+            )
+        except ArmError as error:
+            raise translate(error, "read the gateway's identity") from error
+        target = {
+            "subscription_id": body.subscription_id,
+            "resource_group": group,
+            "gateway_name": name,
+            "tenant_id": body.tenant_id or arm.subscription_tenant(body.subscription_id) or "",
+            "gateway_url": url,
+            "gateway_principal_id": str(
+                ((identity or {}).get("properties") or {}).get("principalId") or ""
+            ),
+            "gateway_app_insights_id": str(
+                (cluster.get("tags") or {}).get("ai-gateway-app-insights") or ""
+            ),
+            "gateway_cluster_id": cluster_id,
+        }
+        self._save(target)
+        logger.info("%s chose AKS gateway %s", actor, cluster_id)
+        return self._view(target)
+
     def _view(self, target: Mapping[str, str]) -> TargetView:
         return TargetView(
             gateway_name=target.get("gateway_name") or None,
@@ -375,12 +472,16 @@ class TargetChooser:
             tenant_id=target.get("tenant_id") or None,
             source="browser" if self._settings.public else "saved",
             can_change=True,
+            cluster_id=target.get("gateway_cluster_id") or None,
+            provisioning=bool(target.get("gateway_provisioning")),
         )
 
     def create(self, body: GatewayCreate, actor: str) -> GatewayView:
         """Starts deploying a gateway and selects it. Setup follows the deployment."""
         self._require_changeable()
         arm = self._arm(body.tenant_id)
+        if body.platform == "aks":
+            return self._create_aks(arm, body, actor)
         self._deployer.start(arm, body, actor)
         self._save(
             {
@@ -402,11 +503,73 @@ class TargetChooser:
             can_manage=True,
         )
 
+    def _create_aks(self, arm: ArmClient, body: GatewayCreate, actor: str) -> GatewayView:
+        """Starts deploying a gateway on a new AKS cluster and selects it; it is reached by its
+        URL, like a gateway the user connected, once the install in the cluster is done."""
+        deployer = str(arm.token_claims().get("oid") or "")
+        url = self._aks.start(arm, body, deployer, actor)
+        cluster_id = cluster_path(body.subscription_id, body.resource_group, body.name)
+        self._save(
+            {
+                "subscription_id": body.subscription_id,
+                "resource_group": body.resource_group,
+                "gateway_name": body.name,
+                "tenant_id": body.tenant_id or arm.subscription_tenant(body.subscription_id) or "",
+                "gateway_url": url,
+                "gateway_cluster_id": cluster_id,
+                "gateway_provisioning": "aks",
+                "gateway_started_at": datetime.now(UTC).isoformat(timespec="seconds"),
+            }
+        )
+        return GatewayView(
+            id=cluster_id,
+            name=body.name,
+            resource_group=body.resource_group,
+            location=body.location,
+            url=url,
+            profile=body.profile,
+            provisioning_state="Deploying",
+            managed=True,
+            can_manage=True,
+            platform="aks",
+        )
+
     def deploy_status(
         self, tenant_id: str | None, subscription_id: str, resource_group: str, name: str
     ) -> GatewayDeployStatus:
         self._require_local()
-        return self._deployer.status(self._arm(tenant_id), subscription_id, resource_group, name)
+        arm = self._arm(tenant_id)
+        if not self._aks.is_aks(arm, subscription_id, resource_group, name):
+            return self._deployer.status(arm, subscription_id, resource_group, name)
+        status, finished = self._aks.status(arm, subscription_id, resource_group, name)
+        # The saved target, not this chooser's settings: those are from before the deployment
+        # started, until the app rebuilds what is bound to the gateway.
+        saved = read_saved_target(self._state_file) or {}
+        if (
+            finished is not None
+            and saved.get("gateway_provisioning")
+            and saved.get("gateway_name", "").casefold() == name.casefold()
+            and saved.get("resource_group", "").casefold() == resource_group.casefold()
+        ):
+            self._save(
+                {
+                    "subscription_id": subscription_id,
+                    "resource_group": resource_group,
+                    "gateway_name": name,
+                    "tenant_id": saved.get("tenant_id", ""),
+                    "gateway_url": finished.url,
+                    "gateway_principal_id": finished.principal_id,
+                    "gateway_app_insights_id": finished.app_insights_id,
+                    "gateway_cluster_id": finished.cluster_id,
+                }
+            )
+            logger.info("Gateway %s on AKS is ready at %s", name, finished.url)
+        return status
+
+    def retry_install(self, body: TargetSelect) -> None:
+        """Runs an AKS gateway's install in its cluster again, after it failed."""
+        self._require_changeable()
+        self._aks.retry_install(body.subscription_id, body.resource_group, body.gateway_name)
 
     def connect(self, body: GatewayConnect, actor: str) -> TargetView:
         """Checks an external gateway's URL and master key, then selects it."""
@@ -466,9 +629,10 @@ class TargetChooser:
 
     def _is_current(self, body: TargetSelect) -> bool:
         settings = self._settings
+        # A gateway someone connected is never deleted here; one the app deployed on AKS is.
         return (
             settings.has_target
-            and not settings.external
+            and (not settings.external or bool(settings.gateway_cluster_id))
             and (
                 settings.subscription_id.casefold(),
                 settings.resource_group.casefold(),
@@ -485,6 +649,11 @@ class TargetChooser:
         path = app_path(body.subscription_id, body.resource_group, body.gateway_name)
         try:
             found = arm.get_arm_json(path, api_version=self._settings.container_apps_api_version)
+            if found is None:
+                found = arm.get_arm_json(
+                    cluster_path(body.subscription_id, body.resource_group, body.gateway_name),
+                    api_version=CONTAINER_SERVICE_API_VERSION,
+                )
             if found is None:
                 # A deployment that failed before its Container App existed still left
                 # resources; its deployment record, tagged like them, stands in for the app.
@@ -570,9 +739,13 @@ class TargetChooser:
             raise ServiceError(400, f"Type the gateway name ({name}) to confirm")
         deleted: list[str] = []
         failed: list[tuple[str, ServiceError]] = []
+        cluster: Mapping[str, Any] | None = None
         for item in self._resources(arm, body, name):
             resource = str(item.get("name"))
-            order, api_version = _DELETE_ORDER[str(item["type"]).casefold()]
+            kind = str(item["type"]).casefold()
+            order, api_version = _DELETE_ORDER[kind]
+            if kind == "microsoft.containerservice/managedclusters":
+                cluster = item
             try:
                 if order == 1 and self._deleting(arm, str(item["id"]), api_version):
                     # Asked before; Azure is still on it.
@@ -608,6 +781,10 @@ class TargetChooser:
             )
         except ArmError as error:
             logger.warning("Could not delete the deployment record of %s: %s", name, error.message)
+        if cluster is not None:
+            # The keys this machine kept for an AKS gateway go with it.
+            location = str(cluster.get("location") or "")
+            self._aks.forget(str(cluster.get("id") or ""), f"https://{aks_fqdn(name, location)}")
         logger.warning("%s deleted gateway %s and %s", actor, name, ", ".join(deleted))
         if self._is_current(body) and not self._settings.public:
             clear_saved_target(self._state_file)

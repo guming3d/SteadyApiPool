@@ -171,9 +171,23 @@ class GatewayDeployer:
             )
         return [region for region, reason in zip(candidates, blocked, strict=True) if not reason]
 
-    def unregistered(self, arm: ArmClient, subscription_id: str, *, redis: bool) -> list[str]:
+    def unregistered(
+        self,
+        arm: ArmClient,
+        subscription_id: str,
+        *,
+        redis: bool,
+        providers: tuple[str, ...] = PROVIDERS,
+    ) -> list[str]:
+        return self._unregistered_of(
+            arm, subscription_id, [*providers, *([REDIS_PROVIDER] if redis else [])]
+        )
+
+    def _unregistered_of(
+        self, arm: ArmClient, subscription_id: str, providers: list[str]
+    ) -> list[str]:
         missing = []
-        for provider in (*PROVIDERS, *([REDIS_PROVIDER] if redis else [])):
+        for provider in providers:
             found = arm.get_arm_json(
                 f"/subscriptions/{segment(subscription_id)}/providers/{provider}",
                 api_version=RESOURCES_API_VERSION,
@@ -191,7 +205,7 @@ class GatewayDeployer:
                 api_version=RESOURCES_API_VERSION,
             )
         for _ in range(_REGISTER_POLLS):
-            if not self.unregistered(arm, subscription_id, redis=REDIS_PROVIDER in providers):
+            if not self._unregistered_of(arm, subscription_id, providers):
                 return
             self._sleep(_REGISTER_POLL_SECONDS)
         raise ServiceError(
@@ -200,68 +214,101 @@ class GatewayDeployer:
 
     def start(self, arm: ArmClient, body: GatewayCreate, actor: str) -> None:
         """Starts the deployment; ``status`` follows it."""
-        group = group_path(body.subscription_id, body.resource_group)
         try:
-            if arm.get_arm_json(
-                app_path(body.subscription_id, body.resource_group, body.name),
-                api_version=self._settings.container_apps_api_version,
-            ):
-                raise ServiceError(409, f"{body.name} already exists; choose it in the list")
-            running = self.status(arm, body.subscription_id, body.resource_group, body.name)
-            if running.state in {"running", "succeeded"}:
-                raise ServiceError(409, f"{body.name} is already being deployed")
-            if leftovers := self._leftovers(
-                arm, body.subscription_id, body.resource_group, body.name
-            ):
-                raise ServiceError(
-                    409,
-                    f"Resources of an earlier {body.name} are still in {body.resource_group} "
-                    f"({', '.join(leftovers)}), perhaps still being deleted. Choose another "
-                    "name, or wait until they are gone.",
-                )
-            if reason := self.postgres_blocked(arm, body.subscription_id, body.location):
-                regions = self.open_regions(arm, body.subscription_id, body.location)
-                hint = (
-                    f" Regions open to this subscription: {', '.join(regions[:5])}."
-                    if regions
-                    else ""
-                )
-                raise ServiceError(
-                    409,
-                    f"The gateway's database (PostgreSQL Flexible Server) can't be created in "
-                    f"{body.location} with this subscription: {reason}{hint}",
-                )
-            missing = self.unregistered(
-                arm, body.subscription_id, redis=body.profile == "production"
+            self.check(
+                arm,
+                body,
+                existing=app_path(body.subscription_id, body.resource_group, body.name),
+                existing_api=self._settings.container_apps_api_version,
             )
-            if missing:
-                logger.info("%s registers %s", actor, ", ".join(missing))
-                self._register(arm, body.subscription_id, missing)
-            if arm.get_arm_json(group, api_version=RESOURCES_API_VERSION) is None:
-                arm.request(
-                    "PUT",
-                    arm.arm_url(group),
-                    api_version=RESOURCES_API_VERSION,
-                    json_body={"location": body.location, "tags": {MANAGED_TAG: MANAGED_TAG_VALUE}},
-                )
-                logger.info("%s created resource group %s", actor, group)
-            arm.request(
-                "PUT",
-                arm.arm_url(_deployment_path(body.subscription_id, body.resource_group, body.name)),
-                api_version=DEPLOYMENTS_API_VERSION,
-                json_body={
-                    "properties": {
-                        "mode": "Incremental",
-                        "template": aca_template(),
-                        "parameters": aca_parameters(body.name, body.location, body.profile),
-                    },
-                    "tags": {MANAGED_TAG: MANAGED_TAG_VALUE},
-                },
+            self.provision(arm, body, actor, providers=PROVIDERS)
+            self.put_deployment(
+                arm,
+                body,
+                template=aca_template(),
+                parameters=aca_parameters(body.name, body.location, body.profile),
+                tags={MANAGED_TAG: MANAGED_TAG_VALUE},
             )
         except ArmError as error:
             raise translate(error, "deploy this gateway") from error
         logger.info(
-            "%s started deploying gateway %s (%s) in %s", actor, body.name, body.profile, group
+            "%s started deploying gateway %s (%s) in %s",
+            actor,
+            body.name,
+            body.profile,
+            group_path(body.subscription_id, body.resource_group),
+        )
+
+    def check(
+        self, arm: ArmClient, body: GatewayCreate, *, existing: str, existing_api: str
+    ) -> None:
+        """Refuses what a deployment would collide with or Azure would refuse halfway: a gateway
+        of that name, its deployment still running, leftovers, a region without PostgreSQL."""
+        if arm.get_arm_json(existing, api_version=existing_api):
+            raise ServiceError(409, f"{body.name} already exists; choose it in the list")
+        running = self.status(arm, body.subscription_id, body.resource_group, body.name)
+        if running.state in {"running", "succeeded"}:
+            raise ServiceError(409, f"{body.name} is already being deployed")
+        if leftovers := self._leftovers(arm, body.subscription_id, body.resource_group, body.name):
+            raise ServiceError(
+                409,
+                f"Resources of an earlier {body.name} are still in {body.resource_group} "
+                f"({', '.join(leftovers)}), perhaps still being deleted. Choose another "
+                "name, or wait until they are gone.",
+            )
+        if reason := self.postgres_blocked(arm, body.subscription_id, body.location):
+            regions = self.open_regions(arm, body.subscription_id, body.location)
+            hint = (
+                f" Regions open to this subscription: {', '.join(regions[:5])}." if regions else ""
+            )
+            raise ServiceError(
+                409,
+                f"The gateway's database (PostgreSQL Flexible Server) can't be created in "
+                f"{body.location} with this subscription: {reason}{hint}",
+            )
+
+    def provision(
+        self, arm: ArmClient, body: GatewayCreate, actor: str, *, providers: tuple[str, ...]
+    ) -> None:
+        """Registers the resource providers the template needs and creates the resource group
+        when it is missing (tagged as this app's); an existing group is never changed."""
+        missing = self.unregistered(
+            arm, body.subscription_id, redis=body.profile == "production", providers=providers
+        )
+        if missing:
+            logger.info("%s registers %s", actor, ", ".join(missing))
+            self._register(arm, body.subscription_id, missing)
+        group = group_path(body.subscription_id, body.resource_group)
+        if arm.get_arm_json(group, api_version=RESOURCES_API_VERSION) is None:
+            arm.request(
+                "PUT",
+                arm.arm_url(group),
+                api_version=RESOURCES_API_VERSION,
+                json_body={"location": body.location, "tags": {MANAGED_TAG: MANAGED_TAG_VALUE}},
+            )
+            logger.info("%s created resource group %s", actor, group)
+
+    def put_deployment(
+        self,
+        arm: ArmClient,
+        body: GatewayCreate,
+        *,
+        template: dict[str, Any],
+        parameters: dict[str, Any],
+        tags: dict[str, str],
+    ) -> None:
+        arm.request(
+            "PUT",
+            arm.arm_url(_deployment_path(body.subscription_id, body.resource_group, body.name)),
+            api_version=DEPLOYMENTS_API_VERSION,
+            json_body={
+                "properties": {
+                    "mode": "Incremental",
+                    "template": template,
+                    "parameters": parameters,
+                },
+                "tags": tags,
+            },
         )
 
     def status(

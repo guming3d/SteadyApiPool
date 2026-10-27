@@ -1,0 +1,328 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.44.1.10279",
+      "templateHash": "2244198913029172525"
+    }
+  },
+  "parameters": {
+    "name": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 32,
+      "metadata": {
+        "description": "Name of the gateway: the cluster, the DNS label of its HTTPS address and the resource prefix."
+      }
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]"
+    },
+    "profile": {
+      "type": "string",
+      "defaultValue": "dev",
+      "allowedValues": [
+        "dev",
+        "production"
+      ],
+      "metadata": {
+        "description": "dev: one node, Free tier, no Redis. production: 3-6 nodes across zones, Standard tier, Redis."
+      }
+    },
+    "nodeVmSize": {
+      "type": "string",
+      "defaultValue": "Standard_D4ds_v5",
+      "metadata": {
+        "description": "VM size of the cluster nodes."
+      }
+    },
+    "zones": {
+      "type": "array",
+      "defaultValue": [],
+      "metadata": {
+        "description": "Availability zones the VM size has in this region (production only; empty for none)."
+      }
+    },
+    "deployerPrincipalId": {
+      "type": "string",
+      "metadata": {
+        "description": "Object ID of the user deploying it: granted Azure Kubernetes Service RBAC Cluster Admin on the cluster."
+      }
+    },
+    "postgresPassword": {
+      "type": "securestring",
+      "metadata": {
+        "description": "Password of the Postgres administrator (letters and digits)."
+      }
+    },
+    "tags": {
+      "type": "object",
+      "defaultValue": {}
+    }
+  },
+  "variables": {
+    "production": "[equals(parameters('profile'), 'production')]",
+    "suffix": "[uniqueString(resourceGroup().id, parameters('name'))]",
+    "gatewayTags": "[union(parameters('tags'), createObject('managed-by', 'ai-gateway-pool', 'ai-gateway', parameters('name')))]",
+    "postgresName": "[take(format('psql-{0}-{1}', parameters('name'), variables('suffix')), 63)]",
+    "redisName": "[take(format('redis-{0}-{1}', parameters('name'), variables('suffix')), 60)]",
+    "serviceAccountSubject": "system:serviceaccount:litellm:litellm",
+    "rbacClusterAdmin": "b1ff04bb-8a4e-4dc4-8eb5-8693973ce19b"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.DBforPostgreSQL/flexibleServers/databases",
+      "apiVersion": "2024-08-01",
+      "name": "[format('{0}/{1}', variables('postgresName'), 'litellm')]",
+      "properties": {
+        "charset": "UTF8",
+        "collation": "en_US.utf8"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.DBforPostgreSQL/flexibleServers', variables('postgresName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.DBforPostgreSQL/flexibleServers/firewallRules",
+      "apiVersion": "2024-08-01",
+      "name": "[format('{0}/{1}', variables('postgresName'), 'AllowAllAzureServicesAndResourcesWithinAzureIps')]",
+      "properties": {
+        "startIpAddress": "0.0.0.0",
+        "endIpAddress": "0.0.0.0"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.DBforPostgreSQL/flexibleServers', variables('postgresName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces",
+      "apiVersion": "2023-09-01",
+      "name": "[format('log-{0}', parameters('name'))]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('gatewayTags')]",
+      "properties": {
+        "sku": {
+          "name": "PerGB2018"
+        },
+        "retentionInDays": 30
+      }
+    },
+    {
+      "type": "Microsoft.Insights/components",
+      "apiVersion": "2020-02-02",
+      "name": "[format('appi-{0}', parameters('name'))]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('gatewayTags')]",
+      "kind": "web",
+      "properties": {
+        "Application_Type": "web",
+        "WorkspaceResourceId": "[resourceId('Microsoft.OperationalInsights/workspaces', format('log-{0}', parameters('name')))]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.OperationalInsights/workspaces', format('log-{0}', parameters('name')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+      "apiVersion": "2023-01-31",
+      "name": "[format('id-{0}', parameters('name'))]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('gatewayTags')]"
+    },
+    {
+      "type": "Microsoft.DBforPostgreSQL/flexibleServers",
+      "apiVersion": "2024-08-01",
+      "name": "[variables('postgresName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('gatewayTags')]",
+      "sku": {
+        "name": "[if(variables('production'), 'Standard_B2s', 'Standard_B1ms')]",
+        "tier": "Burstable"
+      },
+      "properties": {
+        "version": "16",
+        "administratorLogin": "litellm",
+        "administratorLoginPassword": "[parameters('postgresPassword')]",
+        "storage": {
+          "storageSizeGB": 32
+        },
+        "backup": {
+          "backupRetentionDays": 7,
+          "geoRedundantBackup": "Disabled"
+        },
+        "highAvailability": {
+          "mode": "Disabled"
+        },
+        "network": {
+          "publicNetworkAccess": "Enabled"
+        },
+        "authConfig": {
+          "activeDirectoryAuth": "Disabled",
+          "passwordAuth": "Enabled"
+        }
+      }
+    },
+    {
+      "condition": "[variables('production')]",
+      "type": "Microsoft.Cache/redisEnterprise",
+      "apiVersion": "2025-04-01",
+      "name": "[variables('redisName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('gatewayTags')]",
+      "sku": {
+        "name": "Balanced_B0"
+      },
+      "properties": {
+        "minimumTlsVersion": "1.2"
+      }
+    },
+    {
+      "condition": "[variables('production')]",
+      "type": "Microsoft.Cache/redisEnterprise/databases",
+      "apiVersion": "2025-04-01",
+      "name": "[format('{0}/{1}', variables('redisName'), 'default')]",
+      "properties": {
+        "clientProtocol": "Encrypted",
+        "port": 10000,
+        "clusteringPolicy": "EnterpriseCluster",
+        "evictionPolicy": "NoEviction",
+        "accessKeysAuthentication": "Enabled"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Cache/redisEnterprise', variables('redisName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.ContainerService/managedClusters",
+      "apiVersion": "2026-03-01",
+      "name": "[parameters('name')]",
+      "location": "[parameters('location')]",
+      "tags": "[union(variables('gatewayTags'), createObject('ai-gateway-app-insights', resourceId('Microsoft.Insights/components', format('appi-{0}', parameters('name'))), 'ai-gateway-profile', parameters('profile')))]",
+      "sku": {
+        "name": "Base",
+        "tier": "[if(variables('production'), 'Standard', 'Free')]"
+      },
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "dnsPrefix": "[parameters('name')]",
+        "aadProfile": {
+          "managed": true,
+          "enableAzureRBAC": true
+        },
+        "disableLocalAccounts": true,
+        "oidcIssuerProfile": {
+          "enabled": true
+        },
+        "securityProfile": {
+          "workloadIdentity": {
+            "enabled": true
+          }
+        },
+        "agentPoolProfiles": [
+          {
+            "name": "system",
+            "mode": "System",
+            "osType": "Linux",
+            "osSKU": "AzureLinux",
+            "vmSize": "[parameters('nodeVmSize')]",
+            "count": "[if(variables('production'), 3, 1)]",
+            "enableAutoScaling": "[variables('production')]",
+            "minCount": "[if(variables('production'), 3, null())]",
+            "maxCount": "[if(variables('production'), 6, null())]",
+            "availabilityZones": "[if(variables('production'), parameters('zones'), createArray())]"
+          }
+        ],
+        "networkProfile": {
+          "networkPlugin": "azure",
+          "networkPluginMode": "overlay",
+          "loadBalancerSku": "standard",
+          "outboundType": "loadBalancer"
+        },
+        "ingressProfile": {
+          "gatewayAPI": {
+            "installation": "Standard"
+          },
+          "webAppRouting": {
+            "gatewayAPIImplementations": {
+              "appRoutingIstio": {
+                "mode": "Enabled"
+              }
+            }
+          }
+        },
+        "autoUpgradeProfile": {
+          "upgradeChannel": "patch",
+          "nodeOSUpgradeChannel": "NodeImage"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/components', format('appi-{0}', parameters('name')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials",
+      "apiVersion": "2023-01-31",
+      "name": "[format('{0}/{1}', format('id-{0}', parameters('name')), 'litellm')]",
+      "properties": {
+        "issuer": "[reference(resourceId('Microsoft.ContainerService/managedClusters', parameters('name')), '2026-03-01').oidcIssuerProfile.issuerURL]",
+        "subject": "[variables('serviceAccountSubject')]",
+        "audiences": [
+          "api://AzureADTokenExchange"
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ContainerService/managedClusters', parameters('name'))]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('id-{0}', parameters('name')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.ContainerService/managedClusters', parameters('name'))]",
+      "name": "[guid(resourceId('Microsoft.ContainerService/managedClusters', parameters('name')), parameters('deployerPrincipalId'), variables('rbacClusterAdmin'))]",
+      "properties": {
+        "principalId": "[parameters('deployerPrincipalId')]",
+        "principalType": "User",
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('rbacClusterAdmin'))]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ContainerService/managedClusters', parameters('name'))]"
+      ]
+    }
+  ],
+  "outputs": {
+    "clusterId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.ContainerService/managedClusters', parameters('name'))]"
+    },
+    "fqdn": {
+      "type": "string",
+      "value": "[format('{0}.{1}.cloudapp.azure.com', parameters('name'), parameters('location'))]"
+    },
+    "identityClientId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('id-{0}', parameters('name'))), '2023-01-31').clientId]"
+    },
+    "principalId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('id-{0}', parameters('name'))), '2023-01-31').principalId]"
+    },
+    "appInsightsId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Insights/components', format('appi-{0}', parameters('name')))]"
+    },
+    "postgresHost": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.DBforPostgreSQL/flexibleServers', variables('postgresName')), '2024-08-01').fullyQualifiedDomainName]"
+    },
+    "redisHost": {
+      "type": "string",
+      "value": "[if(variables('production'), reference(resourceId('Microsoft.Cache/redisEnterprise', variables('redisName')), '2025-04-01').hostName, '')]"
+    }
+  }
+}

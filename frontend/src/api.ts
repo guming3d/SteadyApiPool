@@ -200,6 +200,8 @@ export const api = {
   // Checks the URL and master key against the gateway, then selects it.
   connectGateway: (body: GatewayConnect) => request<TargetView>("/api/target/connect", json("POST", body)),
   disconnectGateway: () => request<void>("/api/target/disconnect", { method: "POST" }),
+  // An AKS gateway whose install in the cluster failed: run it again on the next status.
+  retryInstall: (body: TargetSelect) => request<void>("/api/target/gateways/retry-install", json("POST", body)),
   // Only gateways this app deployed; their resources go, the resource group stays.
   deleteCheck: (body: TargetSelect) =>
     request<GatewayDeleteCheck>("/api/target/gateways/delete-check", json("POST", body)),

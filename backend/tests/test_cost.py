@@ -136,6 +136,41 @@ def test_an_external_gateways_bill_is_not_ours_to_read(azure: FakeAzure) -> None
     assert not _cost_requests(azure)
 
 
+def test_an_aks_gateway_is_priced_from_its_cluster(azure: FakeAzure) -> None:
+    outputs = azure.add_aks_gateway(
+        "gw-aks", group="rg-aks", subscription="sub", location="eastus2", profile="production"
+    )
+    azure.costs["gw-aks"] = (412.5, "USD")
+    client = _client(
+        azure,
+        _settings(
+            resource_group="rg-aks",
+            gateway_name="gw-aks",
+            gateway_url="https://gw-aks.eastus2.cloudapp.azure.com",
+            gateway_master_key=MASTER_KEY,
+            gateway_cluster_id=outputs["clusterId"],
+        ),
+    )
+    try:
+        cost = client.get("/api/cost").json()
+    finally:
+        app.dependency_overrides.clear()
+
+    items = {item["kind"]: item for item in cost["list_price"]["items"]}
+    # Three to six Linux nodes, the Standard tier, then the database and Redis.
+    assert (items["aks_nodes"]["monthly_low"], items["aks_nodes"]["monthly_high"]) == (
+        round(0.24 * 730 * 3, 2),
+        round(0.24 * 730 * 6, 2),
+    )
+    assert items["aks_tier"]["monthly_low"] == 73.0
+    assert {"postgres", "redis"} <= set(items)
+    assert (cost["profile"], cost["location"]) == ("production", "eastus2")
+    assert cost["month_to_date"]["amount"] == 412.5
+    # The node resource group's costs count: the query runs on the subscription, by tag.
+    query = next(r for r in azure.requests if "CostManagement" in r.url.path)
+    assert query.url.path == "/subscriptions/sub/providers/Microsoft.CostManagement/query"
+
+
 def test_deployed_spend_is_read_with_the_users_own_token(azure: FakeAzure) -> None:
     client = _client(
         azure, _settings(auth_mode="easy_auth", owners="dev@contoso.com", delegated_access=True)

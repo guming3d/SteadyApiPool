@@ -111,6 +111,8 @@ class ApiTester:
             old = [
                 str(key["token"]) for key in client.list_keys(key_alias=alias) if key.get("token")
             ]
+            # LiteLLM keeps aliases unique, so the old test key goes first.
+            client.delete_keys(old)
             created = client.generate_key(
                 {
                     "key_alias": alias,
@@ -123,7 +125,6 @@ class ApiTester:
                     },
                 }
             )
-            client.delete_keys(old)
         except LiteLLMError as error:
             raise translate_error(error) from error
         logger.info("%s created the test key of pool %s", actor, endpoint.pool_id)

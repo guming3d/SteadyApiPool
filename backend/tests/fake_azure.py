@@ -36,6 +36,28 @@ LOGS_HOST = "api.loganalytics.azure.com"
 _PG_COMPUTE = "Azure Database for PostgreSQL Flexible Server Burstable BS Series Compute"
 # The Retail Prices API's meters for one region, trimmed to what cost.py reads.
 RETAIL_PRICES = {
+    # An AKS gateway's nodes (Linux; the Windows and Spot meters must not be taken) and tier.
+    "Virtual Machines": [
+        {
+            "productName": "Virtual Machines Ddsv5 Series",
+            "meterName": "D4ds v5",
+            "retailPrice": 0.24,
+        },
+        {
+            "productName": "Virtual Machines Ddsv5 Series Windows",
+            "meterName": "D4ds v5",
+            "retailPrice": 0.424,
+        },
+        {
+            "productName": "Virtual Machines Ddsv5 Series",
+            "meterName": "D4ds v5 Spot",
+            "retailPrice": 0.04,
+        },
+    ],
+    "Azure Kubernetes Service": [
+        {"skuName": "Standard", "meterName": "Standard Uptime SLA", "retailPrice": 0.1},
+        {"skuName": "Standard", "meterName": "Standard Long Term Support", "retailPrice": 0.6},
+    ],
     "Azure Container Apps": [
         {"skuName": "Standard", "meterName": "Standard vCPU Active Usage", "retailPrice": 2.4e-05},
         {"skuName": "Standard", "meterName": "Standard vCPU Idle Usage", "retailPrice": 3e-06},
@@ -84,7 +106,11 @@ PROVIDERS = (
     "Microsoft.ManagedIdentity",
     "Microsoft.DBforPostgreSQL",
     "Microsoft.Cache",
+    "Microsoft.ContainerService",
+    "Microsoft.Network",
 )
+_CLUSTERS = "/providers/Microsoft.ContainerService/managedClusters"
+AKS_CLUSTER_TYPE = "Microsoft.ContainerService/managedClusters"
 
 
 @dataclass
@@ -124,6 +150,9 @@ class FakeAzure:
     permissions: dict[tuple[str, str], list[dict[str, Any]]] = field(default_factory=dict)
     # Role assignments (ARM bodies) and role definitions keyed by lower-case ID.
     role_assignments: list[dict[str, Any]] = field(default_factory=list)
+    # Azure lists a new role assignment only a while after creating it: these are hidden.
+    role_assignment_lag: bool = False
+    hidden_assignments: list[dict[str, Any]] = field(default_factory=list)
     role_definitions: dict[str, dict[str, Any]] = field(
         default_factory=lambda: {
             OPENAI_USER.casefold(): {
@@ -199,7 +228,16 @@ class FakeAzure:
     slow_deletes: set[str] = field(default_factory=set)
     # Polls of those operations' status.
     operation_polls: int = 0
-    # The LiteLLM proxy running in the gateway's Container App.
+    # AKS: DNS labels already taken, the node size refused to the subscription, its free
+    # vCPUs, and Run Command: requests, results by ID, polls before a result and its outcome.
+    dns_taken: set[str] = field(default_factory=set)
+    vm_restricted: bool = False
+    vcpus_free: int = 100
+    run_commands: list[dict[str, Any]] = field(default_factory=list)
+    command_results: dict[str, dict[str, Any]] = field(default_factory=dict)
+    run_command_polls: int = 1
+    run_command_exit: int = 0
+    # The LiteLLM proxy running in the gateway's Container App (and on AKS clusters).
     litellm: FakeLiteLLM = field(default_factory=FakeLiteLLM)
 
     def __post_init__(self) -> None:
@@ -433,6 +471,10 @@ class FakeAzure:
             return self._cognitive(request, caller, path)
         if _DEPLOYMENTS in path:
             return self._deployment(request, caller, path, body)
+        if _CLUSTERS in path or "/Microsoft.Compute/" in path or "/Microsoft.Network/" in path:
+            return self._aks(request, caller, path, body)
+        if path.endswith("/databases/default/listKeys"):
+            return httpx.Response(200, json={"primaryKey": "redis-key"})
         if _CONTAINER_APPS in path:
             return self._container_app(request, caller, path)
         if path.casefold() in self.resources:
@@ -519,6 +561,79 @@ class FakeAzure:
             and (name is None or (item.get("tags") or {}).get(name) == value)
         ]
         return httpx.Response(200, json={"value": items})
+
+    def _aks(self, request: httpx.Request, caller: str, path: str, body: Any) -> httpx.Response:
+        """AKS clusters, Run Command, and the Compute and Network reads before deploying one."""
+        if "/CheckDnsNameAvailability" in path:
+            label = request.url.params["domainNameLabel"]
+            return httpx.Response(200, json={"available": label not in self.dns_taken})
+        if path.endswith("/providers/Microsoft.Compute/skus"):
+            restrictions = (
+                [{"type": "Location", "reasonCode": "NotAvailableForSubscription"}]
+                if self.vm_restricted
+                else []
+            )
+            sku = {
+                "resourceType": "virtualMachines",
+                "name": "Standard_D4ds_v5",
+                "locationInfo": [{"location": "x", "zones": ["3", "1", "2"]}],
+                "restrictions": restrictions,
+            }
+            return httpx.Response(200, json={"value": [sku]})
+        if path.endswith("/usages"):
+            usage = {
+                "name": {"value": "standardDDSv5Family", "localizedValue": "DDSv5 vCPUs"},
+                "limit": self.vcpus_free,
+                "currentValue": 0,
+            }
+            return httpx.Response(200, json={"value": [usage]})
+        if path.endswith(_CLUSTERS):
+            prefix = path.removesuffix(_CLUSTERS).casefold() + "/"
+            clusters = [
+                item
+                for key, item in self.resources.items()
+                if key.startswith(prefix) and item["type"] == AKS_CLUSTER_TYPE
+            ]
+            return httpx.Response(200, json={"value": clusters})
+        cluster, _, rest = path.partition(f"{_CLUSTERS}/")
+        name, _, action = rest.partition("/")
+        cluster_id = f"{cluster}{_CLUSTERS}/{name}"
+        if action == "runCommand":
+            if not self._may(
+                caller, cluster_id, "Microsoft.ContainerService/managedClusters/runcommand/action"
+            ):
+                return _error(403, "AuthorizationFailed")
+            command = f"cmd{len(self.run_commands) + 1}"
+            self.run_commands.append({"cluster": cluster_id, "id": command, **body})
+            self.command_results[command] = {
+                "polls": self.run_command_polls,
+                "exitCode": self.run_command_exit,
+            }
+            location = f"https://management.azure.com{cluster_id}/commandResults/{command}"
+            return httpx.Response(202, headers={"Location": location})
+        if action.startswith("commandResults/"):
+            result = self.command_results.get(action.removeprefix("commandResults/"))
+            if result is None:
+                return _error(404, "NotFound")
+            if result["polls"] > 0:
+                result["polls"] -= 1
+                return httpx.Response(202)
+            failed = result["exitCode"] != 0
+            return httpx.Response(
+                200,
+                json={
+                    "properties": {
+                        "provisioningState": "Failed" if failed else "Succeeded",
+                        "exitCode": result["exitCode"],
+                        "logs": "==> cert-manager\nError: timed out" if failed else "==> done",
+                    }
+                },
+            )
+        if path.casefold() in self.resources:
+            return self._tagged(request, caller, path)
+        if request.method == "GET":
+            return _error(404, "ResourceNotFound")
+        return _error(400, f"unhandled {request.method} {path}")
 
     def _tagged(self, request: httpx.Request, caller: str, path: str) -> httpx.Response:
         if request.method == "DELETE":
@@ -659,10 +774,82 @@ class FakeAzure:
         }
         return httpx.Response(201, json={"id": deployment_id})
 
+    def add_aks_gateway(
+        self,
+        name: str,
+        *,
+        group: str = "rg-new",
+        subscription: str = SUBSCRIPTION,
+        location: str = "swedencentral",
+        profile: str = "dev",
+    ) -> dict[str, Any]:
+        """An AKS cluster this app deployed LiteLLM on, with the resources next to it; returns
+        its deployment's outputs."""
+        base = f"/subscriptions/{subscription}/resourceGroups/{group}/providers"
+        tags = {"managed-by": "ai-gateway-pool", "ai-gateway": name}
+        cluster_id = f"{base}/{AKS_CLUSTER_TYPE}/{name}"
+        insights_id = f"{base}/Microsoft.Insights/components/appi-{name}"
+        resources: list[tuple[str, str, dict[str, Any]]] = [
+            (
+                AKS_CLUSTER_TYPE,
+                name,
+                {
+                    "provisioningState": "Succeeded",
+                    "oidcIssuerProfile": {"issuerURL": "https://oidc"},
+                    "agentPoolProfiles": [
+                        {"name": "system", "count": 3, "minCount": 3, "maxCount": 6}
+                        if profile == "production"
+                        else {"name": "system", "count": 1}
+                    ],
+                },
+            ),
+            ("Microsoft.DBforPostgreSQL/flexibleServers", f"psql-{name}-x1", {}),
+            (
+                "Microsoft.ManagedIdentity/userAssignedIdentities",
+                f"id-{name}",
+                {"principalId": f"{name}-mi", "clientId": f"{name}-client"},
+            ),
+            (
+                "Microsoft.Insights/components",
+                f"appi-{name}",
+                {"ConnectionString": f"InstrumentationKey={name}"},
+            ),
+            ("Microsoft.OperationalInsights/workspaces", f"log-{name}", {}),
+        ]
+        if profile == "production":
+            resources.append(("Microsoft.Cache/redisEnterprise", f"redis-{name}-x1", {}))
+        for kind, resource, properties in resources:
+            resource_id = f"{base}/{kind}/{resource}"
+            extra = (
+                {"ai-gateway-app-insights": insights_id, "ai-gateway-profile": profile}
+                if kind == AKS_CLUSTER_TYPE
+                else {}
+            )
+            self.resources[resource_id.casefold()] = {
+                "id": resource_id,
+                "name": resource,
+                "type": kind,
+                "location": location,
+                "tags": {**tags, **extra},
+                "properties": properties,
+            }
+        return {
+            "clusterId": cluster_id,
+            "fqdn": f"{name}.{location}.cloudapp.azure.com",
+            "identityClientId": f"{name}-client",
+            "principalId": f"{name}-mi",
+            "appInsightsId": insights_id,
+            "postgresHost": f"psql-{name}-x1.postgres.database.azure.com",
+            "redisHost": f"redis-{name}-x1.{location}.redis.azure.net"
+            if profile == "production"
+            else "",
+        }
+
     def finish_deployment(
         self, name: str, *, group: str = "rg-new", subscription: str = SUBSCRIPTION
     ) -> None:
-        """Completes a running gateway deployment: its Container App and resources appear."""
+        """Completes a running gateway deployment: its Container App (or AKS cluster) and
+        resources appear."""
         key = (
             f"/subscriptions/{subscription}/resourceGroups/{group}{_DEPLOYMENTS}ai-gateway-{name}"
         ).casefold()
@@ -670,6 +857,18 @@ class FakeAzure:
         record["properties"]["provisioningState"] = "Succeeded"
         for operation in record["operations"]:
             operation["properties"]["provisioningState"] = "Succeeded"
+        if (record.get("tags") or {}).get("ai-gateway-platform") == "aks":
+            outputs = self.add_aks_gateway(
+                name,
+                group=group,
+                subscription=subscription,
+                location=record["parameters"]["location"],
+                profile=record["parameters"]["profile"],
+            )
+            record["properties"]["outputs"] = {
+                key: {"type": "String", "value": value} for key, value in outputs.items()
+            }
+            return
         self.add_gateway(
             name,
             group=group,
@@ -689,6 +888,7 @@ class FakeAzure:
                 item
                 for item in self.role_assignments
                 if item["properties"]["principalId"] == principal
+                and not any(item is hidden for hidden in self.hidden_assignments)
             ]
             return httpx.Response(200, json={"value": matching})
         if rest.startswith("roleAssignments/") and request.method == "PUT":
@@ -706,6 +906,8 @@ class FakeAzure:
                     return _error(409, "RoleAssignmentExists")
             item = {"id": path, "properties": {**properties, "scope": scope}}
             self.role_assignments.append(item)
+            if self.role_assignment_lag:
+                self.hidden_assignments.append(item)
             return httpx.Response(201, json=item)
         if rest == "roleDefinitions":
             custom = [
