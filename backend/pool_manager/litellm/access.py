@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # Reading the gateway's Container App and its master key is all the app needs in Azure to
 # manage pools: everything else goes through LiteLLM's admin API. Mirrors
-# infra/modules/gateway-rbac.bicep.
+# infra/modules/litellm-rbac.bicep.
 GATEWAY_ACTIONS = (
     "Microsoft.App/containerApps/read",
     "Microsoft.App/containerApps/listSecrets/action",

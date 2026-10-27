@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Starts the backend (uvicorn) with the browser frontend (Vite dev server), or with the terminal
-# UI (--tui), for local development. Checks the machine first (scripts/doctor.py), installs
-# dependencies when they are missing or out of date, then runs until Ctrl+C (or q in the TUI).
+# Starts the backend (uvicorn) with the browser frontend (Vite dev server) for local development.
+# Checks the machine first (scripts/doctor.py), installs dependencies when they are missing or
+# out of date, then runs until Ctrl+C.
 # Without Node.js 22+ the backend serves the UI already built into backend/pool_manager/static
 # (the release package has it; --prebuilt does the same with Node.js installed).
 #
 # Local development uses your Azure identity (the app's sign-in, or az / azd / PowerShell)
-# against a real LiteLLM gateway and Foundry. Writes are live.
+# against a real gateway (Azure API Management or LiteLLM) and Foundry. Writes are live.
 #
-# Usage: scripts/start-local.sh [--tui] [--prebuilt] [--backend-port 8000] [--frontend-port 5174]
+# Usage: scripts/start-local.sh [--prebuilt] [--backend-port 8000] [--frontend-port 5174]
 #                               [--skip-install] [--skip-checks]
 set -euo pipefail
 
@@ -17,8 +17,6 @@ FRONTEND_PORT=5174
 SKIP_INSTALL=0
 SKIP_CHECKS=0
 PREBUILT=0
-# The terminal UI (tui/) instead of the browser one; Node.js isn't needed then.
-TUI=0
 
 usage() {
   sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
@@ -31,7 +29,6 @@ while [ $# -gt 0 ]; do
     --skip-install) SKIP_INSTALL=1; shift ;;
     --skip-checks) SKIP_CHECKS=1; shift ;;
     --prebuilt) PREBUILT=1; shift ;;
-    --tui) TUI=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) printf 'error: unknown option %s\n\n' "$1" >&2; usage >&2; exit 2 ;;
   esac
@@ -40,16 +37,12 @@ done
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BACKEND="$ROOT/backend"
 FRONTEND="$ROOT/frontend"
-TUI_DIR="$ROOT/tui"
 DOCTOR="$ROOT/scripts/doctor.py"
 STATIC_INDEX="$BACKEND/pool_manager/static/index.html"
 
 step() { printf '\033[36m==>\033[0m %s\n' "$*"; }
 fail() { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 warn() { printf '\033[33mwarning:\033[0m %s\n' "$*" >&2; }
-
-# tui/ is a client of the APIM version's API and hasn't been ported to the LiteLLM gateway.
-[ "$TUI" -eq 0 ] || fail "The terminal UI still targets the APIM version and doesn't work with the LiteLLM gateway yet; run without --tui for the browser UI."
 
 # --- Prerequisites -------------------------------------------------------------------
 
@@ -89,27 +82,23 @@ fi
 
 if [ "$SKIP_CHECKS" -eq 0 ]; then
   # Prints only problems: an old Node.js, no network to Azure, proxy or TLS inspection trouble.
-  if [ "$TUI" -eq 1 ]; then "$PYTHON" "$DOCTOR" --brief --tui || exit 1
-  else "$PYTHON" "$DOCTOR" --brief || exit 1
-  fi
+  "$PYTHON" "$DOCTOR" --brief || exit 1
 fi
 
 # The browser UI: the Vite dev server with Node.js 22+, else the build the backend serves itself.
 USE_VITE=0
-if [ "$TUI" -eq 0 ]; then
-  NODE_MAJOR=0
-  if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
-    NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
-  fi
-  if [ "$PREBUILT" -eq 0 ] && [ -f "$FRONTEND/package.json" ] && [ "$NODE_MAJOR" -ge 22 ]; then
-    USE_VITE=1
-  elif [ ! -f "$STATIC_INDEX" ]; then
-    fail "The browser UI needs Node.js 22 or later to build (https://nodejs.org/), or the release package, which has it built in. Or use --tui for the terminal UI."
-  elif [ "$PREBUILT" -eq 0 ] && [ -f "$FRONTEND/package.json" ]; then
-    step "Node.js 22+ not found: serving the prebuilt UI from backend/pool_manager/static"
-  elif [ "$PREBUILT" -eq 0 ]; then
-    step "Serving the UI built into this package"
-  fi
+NODE_MAJOR=0
+if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
+  NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
+fi
+if [ "$PREBUILT" -eq 0 ] && [ -f "$FRONTEND/package.json" ] && [ "$NODE_MAJOR" -ge 22 ]; then
+  USE_VITE=1
+elif [ ! -f "$STATIC_INDEX" ]; then
+  fail "The browser UI needs Node.js 22 or later to build (https://nodejs.org/), or the release package, which has it built in."
+elif [ "$PREBUILT" -eq 0 ] && [ -f "$FRONTEND/package.json" ]; then
+  step "Node.js 22+ not found: serving the prebuilt UI from backend/pool_manager/static"
+elif [ "$PREBUILT" -eq 0 ]; then
+  step "Serving the UI built into this package"
 fi
 
 # --- Configuration -------------------------------------------------------------------
@@ -128,19 +117,25 @@ env_value() {
 
 SUBSCRIPTION="${POOL_MANAGER_SUBSCRIPTION_ID:-$(env_value POOL_MANAGER_SUBSCRIPTION_ID)}"
 RESOURCE_GROUP="${POOL_MANAGER_RESOURCE_GROUP:-$(env_value POOL_MANAGER_RESOURCE_GROUP)}"
+APIM_NAME="${POOL_MANAGER_APIM_NAME:-$(env_value POOL_MANAGER_APIM_NAME)}"
 GATEWAY_NAME="${POOL_MANAGER_GATEWAY_NAME:-$(env_value POOL_MANAGER_GATEWAY_NAME)}"
 GATEWAY_URL="${POOL_MANAGER_GATEWAY_URL:-$(env_value POOL_MANAGER_GATEWAY_URL)}"
 AUTH_MODE="${POOL_MANAGER_AUTH_MODE:-$(env_value POOL_MANAGER_AUTH_MODE)}"
-# The gateway is optional here (the setup page chooses one). A Container App needs all three
-# settings; a gateway elsewhere needs its name and URL.
-if [ -n "$GATEWAY_URL" ]; then
+# The gateway is optional here (the setup page chooses one). An APIM service or a LiteLLM
+# Container App needs its subscription, resource group and name; a LiteLLM gateway elsewhere
+# needs its name and URL.
+NAME="$APIM_NAME$GATEWAY_NAME"
+if [ -n "$APIM_NAME" ] && [ -n "$GATEWAY_NAME$GATEWAY_URL" ]; then
+  fail "backend/.env names both an APIM service and a LiteLLM gateway; keep one."
+elif [ -n "$GATEWAY_URL" ]; then
   [ -n "$GATEWAY_NAME" ] || fail "POOL_MANAGER_GATEWAY_URL needs POOL_MANAGER_GATEWAY_NAME in backend/.env."
-elif [ -n "$SUBSCRIPTION$RESOURCE_GROUP$GATEWAY_NAME" ] \
-  && { [ -z "$SUBSCRIPTION" ] || [ -z "$RESOURCE_GROUP" ] || [ -z "$GATEWAY_NAME" ]; }; then
-  fail "Set all of POOL_MANAGER_SUBSCRIPTION_ID, POOL_MANAGER_RESOURCE_GROUP and POOL_MANAGER_GATEWAY_NAME in backend/.env, or remove them to choose the gateway in the app."
+elif [ -n "$SUBSCRIPTION$RESOURCE_GROUP$NAME" ] \
+  && { [ -z "$SUBSCRIPTION" ] || [ -z "$RESOURCE_GROUP" ] || [ -z "$NAME" ]; }; then
+  fail "Set POOL_MANAGER_SUBSCRIPTION_ID, POOL_MANAGER_RESOURCE_GROUP and POOL_MANAGER_APIM_NAME (or POOL_MANAGER_GATEWAY_NAME) in backend/.env, or remove them to choose the gateway in the app."
 fi
-if [ "$SUBSCRIPTION" = "00000000-0000-0000-0000-000000000000" ] || [ "$RESOURCE_GROUP" = "my-gateway-rg" ] \
-  || [ "$GATEWAY_NAME" = "my-gateway" ]; then
+if [ "$SUBSCRIPTION" = "00000000-0000-0000-0000-000000000000" ] \
+  || [ "$RESOURCE_GROUP" = "my-apim-rg" ] || [ "$APIM_NAME" = "my-apim" ] \
+  || [ "$RESOURCE_GROUP" = "my-gateway-rg" ] || [ "$GATEWAY_NAME" = "my-gateway" ]; then
   fail "backend/.env still has the example gateway values; set real ones or remove them to choose the gateway in the app."
 fi
 # Locally there is no App Service Authentication, so easy_auth would answer 401 to everything.
@@ -152,12 +147,6 @@ if [ -x "$BACKEND/.venv/Scripts/python.exe" ]; then
   VENV_PYTHON="$BACKEND/.venv/Scripts/python.exe"
 else
   VENV_PYTHON="$BACKEND/.venv/bin/python"
-fi
-
-if [ -x "$TUI_DIR/.venv/Scripts/python.exe" ]; then
-  TUI_PYTHON="$TUI_DIR/.venv/Scripts/python.exe"
-else
-  TUI_PYTHON="$TUI_DIR/.venv/bin/python"
 fi
 
 if [ "$SKIP_INSTALL" -eq 0 ]; then
@@ -175,31 +164,15 @@ if [ "$SKIP_INSTALL" -eq 0 ]; then
       || fail "pip install failed; '$PYTHON scripts/doctor.py' checks the network, proxy and TLS."
     printf '%s' "$CHECKSUM" > "$STAMP"
   fi
-  if [ "$TUI" -eq 1 ]; then
-    if [ ! -x "$TUI_PYTHON" ]; then
-      step "Creating tui/.venv"
-      "$PYTHON" -m venv "$TUI_DIR/.venv"
-      if [ -x "$TUI_DIR/.venv/Scripts/python.exe" ]; then TUI_PYTHON="$TUI_DIR/.venv/Scripts/python.exe"; fi
-    fi
-    TUI_STAMP="$TUI_DIR/.venv/.requirements.cksum"
-    TUI_CHECKSUM="$(cksum < "$TUI_DIR/requirements.txt")"
-    if [ ! -f "$TUI_STAMP" ] || [ "$(cat "$TUI_STAMP")" != "$TUI_CHECKSUM" ]; then
-      step "Installing TUI requirements"
-      "$TUI_PYTHON" -m pip install --disable-pip-version-check --quiet -r "$TUI_DIR/requirements.txt" \
-        || fail "pip install failed; '$PYTHON scripts/doctor.py' checks the network, proxy and TLS."
-      printf '%s' "$TUI_CHECKSUM" > "$TUI_STAMP"
-    fi
   # npm ci writes node_modules/.package-lock.json; a newer lockfile means dependencies changed.
-  elif [ "$USE_VITE" -eq 1 ] && { [ ! -f "$FRONTEND/node_modules/.package-lock.json" ] \
+  if [ "$USE_VITE" -eq 1 ] && { [ ! -f "$FRONTEND/node_modules/.package-lock.json" ] \
     || [ "$FRONTEND/package-lock.json" -nt "$FRONTEND/node_modules/.package-lock.json" ]; }; then
     step "Installing frontend dependencies"
     (cd "$FRONTEND" && npm ci --no-audit --no-fund)
   fi
 else
   [ -x "$VENV_PYTHON" ] || fail "backend/.venv is missing; run without --skip-install."
-  if [ "$TUI" -eq 1 ]; then
-    [ -x "$TUI_PYTHON" ] || fail "tui/.venv is missing; run without --skip-install."
-  elif [ "$USE_VITE" -eq 1 ]; then
+  if [ "$USE_VITE" -eq 1 ]; then
     [ -d "$FRONTEND/node_modules" ] || fail "frontend/node_modules is missing; run without --skip-install."
   fi
 fi
@@ -247,11 +220,8 @@ assert_port_free "$BACKEND_PORT" --backend-port
 [ "$USE_VITE" -eq 0 ] || assert_port_free "$FRONTEND_PORT" --frontend-port
 
 step "Starting backend on http://127.0.0.1:$BACKEND_PORT"
-BACKEND_LOG=/dev/stdout
-# Request logs would draw over the TUI; they go to a file instead.
-[ "$TUI" -eq 0 ] || BACKEND_LOG="${TMPDIR:-/tmp}/SteadyApiPool-backend.log"
 (cd "$BACKEND" && exec "$VENV_PYTHON" -m uvicorn pool_manager.app:app \
-  --host 127.0.0.1 --port "$BACKEND_PORT" --reload --reload-dir pool_manager >>"$BACKEND_LOG" 2>&1) &
+  --host 127.0.0.1 --port "$BACKEND_PORT" --reload --reload-dir pool_manager) &
 BACKEND_PID=$!
 
 if command -v curl >/dev/null 2>&1; then
@@ -260,14 +230,6 @@ if command -v curl >/dev/null 2>&1; then
     kill -0 "$BACKEND_PID" 2>/dev/null || fail "The backend exited during startup (is port $BACKEND_PORT in use?)."
     sleep 0.5
   done
-fi
-
-if [ "$TUI" -eq 1 ]; then
-  step "Starting the terminal UI (backend log: $BACKEND_LOG)"
-  # In the foreground, so it owns the terminal; the EXIT trap stops the backend afterwards.
-  # pool_tui is a package in tui/, not installed into the venv, so run it from there.
-  (cd "$TUI_DIR" && "$TUI_PYTHON" -m pool_tui --api "http://127.0.0.1:$BACKEND_PORT")
-  exit $?
 fi
 
 APP_URL="http://127.0.0.1:$BACKEND_PORT"
@@ -281,7 +243,9 @@ fi
 
 printf '\n  App:     \033[1m%s\033[0m\n' "$APP_URL"
 printf '  API:     http://127.0.0.1:%s/api\n' "$BACKEND_PORT"
-if [ -n "$GATEWAY_URL" ]; then
+if [ -n "$APIM_NAME" ]; then
+  printf '  \033[33mAPIM:    %s (resource group %s). Changes are live.\033[0m\n' "$APIM_NAME" "$RESOURCE_GROUP"
+elif [ -n "$GATEWAY_URL" ]; then
   printf '  \033[33mGateway: %s (%s). Changes are live.\033[0m\n' "$GATEWAY_NAME" "$GATEWAY_URL"
 elif [ -n "$GATEWAY_NAME" ]; then
   printf '  \033[33mGateway: %s (resource group %s). Changes are live.\033[0m\n' "$GATEWAY_NAME" "$RESOURCE_GROUP"

@@ -1,6 +1,6 @@
 # A real LiteLLM gateway with Postgres and two fake Azure OpenAI regions, for the opt-in
 # integration tests (pytest -m litellm). Nothing here reaches Azure.
-#   docker compose -f backend/tests/litellm_stack/docker-compose.yml up -d --wait
+#   docker compose -f backend/tests/litellm/litellm_stack/docker-compose.yml up -d --wait
 name: pool-manager-litellm
 services:
   db:

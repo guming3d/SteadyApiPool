@@ -17,6 +17,5 @@ backend/tests
 .playwright-mcp
 dist
 docs
-tui
 *.log
 *.zip

@@ -6,7 +6,6 @@ installed and on the old Python a machine may have (it then says so):
 
     python scripts/doctor.py            # everything, for any OS
     python scripts/doctor.py --brief    # only problems; start-local runs this
-    python scripts/doctor.py --tui      # for the terminal UI (Node.js not needed)
 
 Exits 1 when something blocks running the app, 0 otherwise.
 """
@@ -227,11 +226,7 @@ def node_version(machine: Machine, run: Callable[[list[str]], str | None]) -> in
         return None
 
 
-def check_node(
-    machine: Machine, tui: bool, prebuilt: bool, has_frontend: bool, major: int | None
-) -> Result | None:
-    if tui:
-        return None
+def check_node(machine: Machine, prebuilt: bool, has_frontend: bool, major: int | None) -> Result:
     install = NODE_INSTALL.get(machine.kind, NODE_INSTALL_OTHER)
     if major is not None and major >= MIN_NODE and has_frontend:
         return Result(OK, f"Node.js {major} for the browser UI")
@@ -252,7 +247,6 @@ def check_node(
         + [
             "Or download the release package, which has the UI built in and needs no Node.js:"
             " https://github.com/guming3d/SteadyApiPool/releases",
-            "Or use the terminal UI: start-local with -Tui (PowerShell) or --tui (bash).",
         ],
     )
 
@@ -518,18 +512,18 @@ def _run(command: list[str], cwd: Path | None = None) -> str | None:
     return done.stdout if done.returncode == 0 else None
 
 
-def diagnose(machine: Machine, tui: bool, brief: bool = False) -> list[Result]:
+def diagnose(machine: Machine, brief: bool = False) -> list[Result]:
     venv_exists = (BACKEND / ".venv").exists()
     prebuilt = STATIC_INDEX.exists()
     has_frontend = (FRONTEND / "package.json").exists()
     major = node_version(machine, _run)
-    use_vite = not tui and has_frontend and major is not None and major >= MIN_NODE
+    use_vite = has_frontend and major is not None and major >= MIN_NODE
     results = [check_python(machine)]
     if machine.python < MIN_PYTHON:
         return results  # Install a newer Python first; the rest depends on it.
     for result in (
         check_venv(machine, venv_exists, _ensurepip_works),
-        check_node(machine, tui, prebuilt, has_frontend, major),
+        check_node(machine, prebuilt, has_frontend, major),
         check_sign_in_tools(machine),
         check_browser(machine),
         # Starting the backend's Python takes a second, and --brief wouldn't show it anyway.
@@ -567,9 +561,6 @@ def describe(machine: Machine) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--brief", action="store_true", help="print only problems")
-    parser.add_argument(
-        "--tui", action="store_true", help="for the terminal UI: Node.js isn't needed"
-    )
     args = parser.parse_args(argv)
     # Plain ASCII output, but paths and proxy URLs may not be.
     for stream in (sys.stdout, sys.stderr):
@@ -578,7 +569,7 @@ def main(argv: list[str] | None = None) -> int:
             reconfigure(errors="replace")
 
     machine = this_machine()
-    results = diagnose(machine, args.tui, args.brief)
+    results = diagnose(machine, args.brief)
     shown = [r for r in results if r.status in (WARN, FAIL)] if args.brief else results
     if not args.brief:
         print(f"SteadyApiPool doctor: {describe(machine)}\n")

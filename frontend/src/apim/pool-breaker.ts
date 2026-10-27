@@ -1,7 +1,6 @@
 // The pool's circuit breaker. APIM keeps a breaker on each member backend; this app treats it as
 // one pool setting and, on publish, writes it to every member it manages (the backend skips
-// members whose rule already matches). Pure, so node --test can import it; tui/pool_tui/logic.py
-// ports it.
+// members whose rule already matches). Pure, so node --test can import it.
 import type { BackendView, CircuitBreaker } from "./types"
 
 /** The app's platform breaker; the same as the backend's CircuitBreaker defaults. */

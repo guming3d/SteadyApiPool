@@ -1,6 +1,6 @@
 @echo off
 rem Runs start-local.ps1 where the PowerShell execution policy blocks scripts; same options.
-rem   scripts\start-local.cmd -Tui
+rem   scripts\start-local.cmd -Prebuilt
 setlocal
 where pwsh >nul 2>nul
 if %errorlevel%==0 (

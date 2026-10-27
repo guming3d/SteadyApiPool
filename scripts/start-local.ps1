@@ -1,28 +1,25 @@
 <#
 .SYNOPSIS
-  Starts the backend (uvicorn) with the browser frontend (Vite dev server), or with the
-  terminal UI (-Tui), for local development.
+  Starts the backend (uvicorn) with the browser frontend (Vite dev server) for local
+  development.
 
 .DESCRIPTION
   Checks the machine first (scripts/doctor.py), installs dependencies when they are missing or
-  out of date, then runs both in this console until Ctrl+C (or q in the TUI). Without Node.js 22+
-  the backend serves the UI already built into backend/pool_manager/static (the release package
-  has it). Local development uses your Azure identity (the app's sign-in, or az / azd /
-  PowerShell) against a real LiteLLM gateway and Foundry. Writes are live.
+  out of date, then runs both in this console until Ctrl+C. Without Node.js 22+ the backend
+  serves the UI already built into backend/pool_manager/static (the release package has it).
+  Local development uses your Azure identity (the app's sign-in, or az / azd / PowerShell)
+  against a real gateway (Azure API Management or LiteLLM) and Foundry. Writes are live.
 
   Where the execution policy blocks scripts, run scripts\start-local.cmd instead.
 
 .EXAMPLE
   scripts/start-local.ps1
-  scripts/start-local.ps1 -Tui
   scripts/start-local.ps1 -Prebuilt
   scripts/start-local.ps1 -BackendPort 8001 -FrontendPort 5175 -SkipInstall
 #>
 param(
   [int]$BackendPort = 8000,
   [int]$FrontendPort = 5174,
-  # The terminal UI (tui/) instead of the browser one; Node.js isn't needed then.
-  [switch]$Tui,
   # Serve the prebuilt UI from the backend, as without Node.js, even when Node.js is installed.
   [switch]$Prebuilt,
   [switch]$SkipInstall,
@@ -34,7 +31,6 @@ $ErrorActionPreference = "Stop"
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 $Backend = Join-Path $Root "backend"
 $Frontend = Join-Path $Root "frontend"
-$TuiDir = Join-Path $Root "tui"
 $Doctor = Join-Path $PSScriptRoot "doctor.py"
 $StaticIndex = Join-Path $Backend "pool_manager/static/index.html"
 # Windows PowerShell 5.1 has no $IsWindows and only runs on Windows.
@@ -79,31 +75,26 @@ if (-not $Python) {
   Fail "Python 3.11 or later is required: https://www.python.org/downloads/ (macOS: brew install python@3.13)."
 }
 $PythonArgs = @($Python | Select-Object -Skip 1)
-# tui/ is a client of the APIM version's API and hasn't been ported to the LiteLLM gateway.
-if ($Tui) { Fail "The terminal UI still targets the APIM version and doesn't work with the LiteLLM gateway yet; run without -Tui for the browser UI." }
 
 if (-not $SkipChecks) {
   # Prints only problems: an old Node.js, no network to Azure, proxy or TLS inspection trouble.
-  $arguments = $PythonArgs + @($Doctor, "--brief") + $(if ($Tui) { @("--tui") } else { @() })
+  $arguments = $PythonArgs + @($Doctor, "--brief")
   & $Python[0] @arguments
   if ($LASTEXITCODE -ne 0) { exit 1 }
 }
 
 # The browser UI: the Vite dev server with Node.js 22+, else the build the backend serves itself.
-$UseVite = $false
-if (-not $Tui) {
-  $nodeMajor = 0
-  if ((Test-Command "node") -and (Test-Command "npm")) {
-    $nodeMajor = [int](& node -p "process.versions.node.split('.')[0]")
-  }
-  $UseVite = -not $Prebuilt -and (Test-Path (Join-Path $Frontend "package.json")) -and $nodeMajor -ge 22
-  if (-not $UseVite -and -not (Test-Path $StaticIndex)) {
-    Fail "The browser UI needs Node.js 22 or later to build (https://nodejs.org/), or the release package, which has it built in. Or use -Tui for the terminal UI."
-  }
-  if (-not $UseVite -and -not $Prebuilt) {
-    if (Test-Path (Join-Path $Frontend "package.json")) { Step "Node.js 22+ not found: serving the prebuilt UI from backend/pool_manager/static" }
-    else { Step "Serving the UI built into this package" }
-  }
+$nodeMajor = 0
+if ((Test-Command "node") -and (Test-Command "npm")) {
+  $nodeMajor = [int](& node -p "process.versions.node.split('.')[0]")
+}
+$UseVite = -not $Prebuilt -and (Test-Path (Join-Path $Frontend "package.json")) -and $nodeMajor -ge 22
+if (-not $UseVite -and -not (Test-Path $StaticIndex)) {
+  Fail "The browser UI needs Node.js 22 or later to build (https://nodejs.org/), or the release package, which has it built in."
+}
+if (-not $UseVite -and -not $Prebuilt) {
+  if (Test-Path (Join-Path $Frontend "package.json")) { Step "Node.js 22+ not found: serving the prebuilt UI from backend/pool_manager/static" }
+  else { Step "Serving the UI built into this package" }
 }
 
 # --- Configuration -------------------------------------------------------------------
@@ -124,17 +115,21 @@ function Get-Setting([string]$Name) {
 }
 $Subscription = Get-Setting "POOL_MANAGER_SUBSCRIPTION_ID"
 $ResourceGroup = Get-Setting "POOL_MANAGER_RESOURCE_GROUP"
+$ApimName = Get-Setting "POOL_MANAGER_APIM_NAME"
 $GatewayName = Get-Setting "POOL_MANAGER_GATEWAY_NAME"
 $GatewayUrl = Get-Setting "POOL_MANAGER_GATEWAY_URL"
-# The gateway is optional here (the setup page chooses one). A Container App needs all three
-# settings; a gateway elsewhere needs its name and URL.
-$TargetValues = @($Subscription, $ResourceGroup, $GatewayName)
-if ($GatewayUrl) {
+# The gateway is optional here (the setup page chooses one). An APIM service or a LiteLLM
+# Container App needs its subscription, resource group and name; a LiteLLM gateway elsewhere
+# needs its name and URL.
+$TargetValues = @($Subscription, $ResourceGroup, "$ApimName$GatewayName")
+if ($ApimName -and ($GatewayName -or $GatewayUrl)) {
+  Fail "backend/.env names both an APIM service and a LiteLLM gateway; keep one."
+} elseif ($GatewayUrl) {
   if (-not $GatewayName) { Fail "POOL_MANAGER_GATEWAY_URL needs POOL_MANAGER_GATEWAY_NAME in backend/.env." }
 } elseif (($TargetValues | Where-Object { $_ }).Count -notin @(0, 3)) {
-  Fail "Set all of POOL_MANAGER_SUBSCRIPTION_ID, POOL_MANAGER_RESOURCE_GROUP and POOL_MANAGER_GATEWAY_NAME in backend/.env, or remove them to choose the gateway in the app."
+  Fail "Set POOL_MANAGER_SUBSCRIPTION_ID, POOL_MANAGER_RESOURCE_GROUP and POOL_MANAGER_APIM_NAME (or POOL_MANAGER_GATEWAY_NAME) in backend/.env, or remove them to choose the gateway in the app."
 }
-if ($Subscription -eq "00000000-0000-0000-0000-000000000000" -or $ResourceGroup -eq "my-gateway-rg" -or $GatewayName -eq "my-gateway") {
+if ($Subscription -eq "00000000-0000-0000-0000-000000000000" -or $ResourceGroup -in @("my-apim-rg", "my-gateway-rg") -or $ApimName -eq "my-apim" -or $GatewayName -eq "my-gateway") {
   Fail "backend/.env still has the example gateway values; set real ones or remove them to choose the gateway in the app."
 }
 # Locally there is no App Service Authentication, so easy_auth would answer 401 to everything.
@@ -145,7 +140,6 @@ if ((Get-Setting "POOL_MANAGER_AUTH_MODE") -ne "disabled") {
 # --- Dependencies --------------------------------------------------------------------
 
 $VenvPython = if ($OnWindows) { Join-Path $Backend ".venv\Scripts\python.exe" } else { Join-Path $Backend ".venv/bin/python" }
-$TuiPython = if ($OnWindows) { Join-Path $TuiDir ".venv\Scripts\python.exe" } else { Join-Path $TuiDir ".venv/bin/python" }
 $Npm = if ($OnWindows) { "npm.cmd" } else { "npm" }
 # Vite runs through node rather than npm.cmd, whose cmd.exe asks "Terminate batch job?" on Ctrl+C.
 $Vite = Join-Path $Frontend "node_modules/vite/bin/vite.js"
@@ -165,28 +159,10 @@ if (-not $SkipInstall) {
     if ($LASTEXITCODE -ne 0) { Fail "pip install failed; 'python scripts/doctor.py' checks the network, proxy and TLS." }
     Set-Content -Path $stamp -Value $hash -NoNewline
   }
-  if ($Tui) {
-    if (-not (Test-Path $TuiPython)) {
-      Step "Creating tui/.venv"
-      & $Python[0] @PythonArgs -m venv (Join-Path $TuiDir ".venv")
-      if ($LASTEXITCODE -ne 0) { Fail "Could not create tui/.venv." }
-    }
-    $tuiRequirements = Join-Path $TuiDir "requirements.txt"
-    $tuiStamp = Join-Path $TuiDir ".venv/.requirements.sha256"
-    $tuiHash = (Get-FileHash $tuiRequirements -Algorithm SHA256).Hash
-    if (-not (Test-Path $tuiStamp) -or (Get-Content $tuiStamp -Raw).Trim() -ne $tuiHash) {
-      Step "Installing TUI requirements"
-      & $TuiPython -m pip install --disable-pip-version-check --quiet -r $tuiRequirements
-      if ($LASTEXITCODE -ne 0) { Fail "pip install failed; 'python scripts/doctor.py' checks the network, proxy and TLS." }
-      Set-Content -Path $tuiStamp -Value $tuiHash -NoNewline
-    }
-  }
   # npm ci writes node_modules/.package-lock.json; a newer lockfile means dependencies changed.
   $installed = Join-Path $Frontend "node_modules/.package-lock.json"
   $lockfile = Join-Path $Frontend "package-lock.json"
-  if (-not $UseVite) {
-    # The TUI, or the prebuilt UI: no frontend dependencies.
-  } elseif (-not (Test-Path $installed) -or (Get-Item $lockfile).LastWriteTime -gt (Get-Item $installed).LastWriteTime) {
+  if ($UseVite -and (-not (Test-Path $installed) -or (Get-Item $lockfile).LastWriteTime -gt (Get-Item $installed).LastWriteTime)) {
     Step "Installing frontend dependencies"
     Push-Location $Frontend
     try {
@@ -198,7 +174,6 @@ if (-not $SkipInstall) {
   }
 } else {
   if (-not (Test-Path $VenvPython)) { Fail "backend/.venv is missing; run without -SkipInstall." }
-  if ($Tui -and -not (Test-Path $TuiPython)) { Fail "tui/.venv is missing; run without -SkipInstall." }
   if ($UseVite -and -not (Test-Path $Vite)) { Fail "frontend/node_modules is missing; run without -SkipInstall." }
 }
 
@@ -237,14 +212,7 @@ try {
     "-m", "uvicorn", "pool_manager.app:app",
     "--host", "127.0.0.1", "--port", "$BackendPort", "--reload", "--reload-dir", "pool_manager"
   )
-  if ($Tui) {
-    # Request logs would draw over the TUI; they go to files instead.
-    $backendLog = Join-Path ([System.IO.Path]::GetTempPath()) "SteadyApiPool-backend.log"
-    $backendProcess = Start-Process -FilePath $VenvPython -WorkingDirectory $Backend -NoNewWindow -PassThru `
-      -RedirectStandardOutput $backendLog -RedirectStandardError "$backendLog.err" -ArgumentList $backendArguments
-  } else {
-    $backendProcess = Start-Process -FilePath $VenvPython -WorkingDirectory $Backend -NoNewWindow -PassThru -ArgumentList $backendArguments
-  }
+  $backendProcess = Start-Process -FilePath $VenvPython -WorkingDirectory $Backend -NoNewWindow -PassThru -ArgumentList $backendArguments
 
   $healthy = $false
   for ($i = 0; $i -lt 60 -and -not $healthy; $i++) {
@@ -257,18 +225,6 @@ try {
     }
   }
   if (-not $healthy) { Fail "The backend did not answer on http://127.0.0.1:$BackendPort/health within 30 seconds." }
-
-  if ($Tui) {
-    Step "Starting the terminal UI (backend log: $backendLog)"
-    # pool_tui is a package in tui/, not installed into the venv, so run it from there.
-    Push-Location $TuiDir
-    try {
-      & $TuiPython -m pool_tui --api "http://127.0.0.1:$BackendPort"
-    } finally {
-      Pop-Location
-    }
-    return
-  }
 
   $AppUrl = "http://127.0.0.1:$BackendPort"
   if ($UseVite) {
@@ -284,7 +240,9 @@ try {
   Write-Host ""
   Write-Host "  App:     $AppUrl" -ForegroundColor White
   Write-Host "  API:     http://127.0.0.1:$BackendPort/api"
-  if ($GatewayUrl) {
+  if ($ApimName) {
+    Write-Host "  APIM:    $ApimName (resource group $ResourceGroup). Changes are live." -ForegroundColor Yellow
+  } elseif ($GatewayUrl) {
     Write-Host "  Gateway: $GatewayName ($GatewayUrl). Changes are live." -ForegroundColor Yellow
   } elseif ($GatewayName) {
     Write-Host "  Gateway: $GatewayName (resource group $ResourceGroup). Changes are live." -ForegroundColor Yellow

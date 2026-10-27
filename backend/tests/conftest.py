@@ -16,7 +16,7 @@ def _no_real_azure(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     def refuse(*_: Any, **__: Any) -> Any:
         raise AssertionError(
             "A test reached the real ARM factories in deps.py; override the dependency "
-            "(see tests/test_app.py::_client)"
+            "(see tests/apim/test_app.py::_client or tests/litellm/test_app.py::_client)"
         )
 
     caches = (

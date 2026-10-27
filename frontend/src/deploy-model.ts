@@ -1,5 +1,5 @@
-// The choices in the deploy-a-model dialog. Pure, so node --test can import it;
-// tui/pool_tui/logic.py ports it. The server checks every choice again before deploying.
+// The choices in the deploy-a-model dialog. Pure, so node --test can import it.
+// The server checks every choice again before deploying.
 import type { DeployableModel, ModelSkuOption } from "./types"
 
 /** Same as DEPLOYMENT_NAME_PATTERN in backend/pool_manager/models.py. */

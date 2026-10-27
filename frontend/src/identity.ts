@@ -1,4 +1,4 @@
-// Who the top bar names. Pure, so node --test can import it; tui/pool_tui/logic.py ports it.
+// Who the top bar names. Pure, so node --test can import it.
 import type { Principal, SetupIdentity } from "./types"
 
 export type DisplayUser =

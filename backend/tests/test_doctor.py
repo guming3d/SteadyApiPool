@@ -85,18 +85,16 @@ def test_debian_without_venv_names_the_package() -> None:
 def test_node_is_only_needed_without_a_prebuilt_ui() -> None:
     machine = _machine(system="Windows")
 
-    missing = doctor.check_node(machine, False, False, True, None)
-    old = doctor.check_node(machine, False, True, True, 18)
-    release = doctor.check_node(machine, False, True, False, None)
+    missing = doctor.check_node(machine, False, True, None)
+    old = doctor.check_node(machine, True, True, 18)
+    release = doctor.check_node(machine, True, False, None)
 
     assert missing.status == "fail"
     assert "winget install -e --id OpenJS.NodeJS.LTS" in missing.fix
     assert any("releases" in line for line in missing.fix)
-    assert any("-Tui" in line for line in missing.fix)
     assert old.status == "info" and "older than 22" in old.title
     assert release.status == "ok" and "isn't needed" in release.title
-    assert doctor.check_node(machine, False, False, True, 22).status == "ok"
-    assert doctor.check_node(machine, True, False, True, None) is None  # The TUI.
+    assert doctor.check_node(machine, False, True, 22).status == "ok"
 
 
 @pytest.mark.parametrize(
@@ -188,6 +186,6 @@ def test_network_results_explain_the_fix() -> None:
 def test_an_old_python_stops_after_saying_so(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(doctor, "_run", lambda *_, **__: None)
 
-    results = doctor.diagnose(_machine(python=(3, 9, 6)), tui=False, brief=True)
+    results = doctor.diagnose(_machine(python=(3, 9, 6)), brief=True)
 
     assert [r.status for r in results] == ["fail"]

@@ -6,9 +6,8 @@ Python only (no Node.js, no git):
     python scripts/package-release.py [--version v0.2.0] [--out dist]
 
 The zip holds backend/ (with pool_manager/static and the gateway template), the start scripts
-and the doctor, under one SteadyApiPool-<version>/ folder. tui/ still targets the APIM
-version and is left out. Tests, virtual environments, local settings and sign-ins
-are left out. .github/workflows/release.yml runs this for every v* tag.
+and the doctor, under one SteadyApiPool-<version>/ folder. Tests, virtual environments, local
+settings and sign-ins are left out. .github/workflows/release.yml runs this for every v* tag.
 """
 
 from __future__ import annotations

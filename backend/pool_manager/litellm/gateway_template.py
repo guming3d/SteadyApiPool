@@ -29,7 +29,7 @@ from typing import Any, Literal
 from .models import AksBundle, AksBundleFile
 from .resources import to_yaml
 
-# Keep in step with tests/litellm_stack/docker-compose.yml and the Bicep default.
+# Keep in step with tests/litellm/litellm_stack/docker-compose.yml and the Bicep default.
 LITELLM_VERSION = "1.106.4"
 LITELLM_IMAGE = f"ghcr.io/berriai/litellm:v{LITELLM_VERSION}"
 LITELLM_HELM_CHART = "oci://ghcr.io/berriai/litellm-helm"
