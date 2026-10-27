@@ -1,4 +1,5 @@
-"""Minimal Azure Resource Manager client, scoped to the gateway's Container App when it has one."""
+"""Minimal Azure Resource Manager client, scoped to the gateway's resource when it has one: the
+APIM service, or a LiteLLM gateway's Container App."""
 
 from __future__ import annotations
 
@@ -41,6 +42,21 @@ def segment(value: str) -> str:
     return quote(value, safe="")
 
 
+def gateway_resource_id(settings: Settings) -> str:
+    """The gateway's ARM resource, which relative paths start from. An external LiteLLM gateway
+    has none (nor has the app before a gateway is chosen), so only the ARM-root methods
+    (Foundry, metrics, cost) make sense then."""
+    group = (
+        f"/subscriptions/{segment(settings.subscription_id)}"
+        f"/resourceGroups/{segment(settings.resource_group)}"
+    )
+    if settings.product == "apim":
+        return f"{group}/providers/Microsoft.ApiManagement/service/{segment(settings.apim_name)}"
+    if settings.product == "litellm" and not settings.external:
+        return f"{group}/providers/Microsoft.App/containerApps/{segment(settings.gateway_name)}"
+    return ""
+
+
 class ArmClient:
     """Calls ARM with a managed identity / developer token.
 
@@ -71,17 +87,7 @@ class ArmClient:
         # Locally the user may belong to several tenants; ask for a token in the target's.
         self._tenant_id = tenant_id or settings.tenant_id or None
         self._subscription_id = settings.subscription_id
-        # Paths are relative to the Container App; an external gateway has no ARM resource, so
-        # only the ARM-root methods (Foundry, metrics, cost) make sense for it.
-        self.resource_id = (
-            ""
-            if settings.external
-            else (
-                f"/subscriptions/{segment(settings.subscription_id)}"
-                f"/resourceGroups/{segment(settings.resource_group)}"
-                f"/providers/Microsoft.App/containerApps/{segment(settings.gateway_name)}"
-            )
-        )
+        self.resource_id = gateway_resource_id(settings)
         self._http = httpx.Client(
             base_url=f"{self._origin}{self.resource_id}",
             timeout=_REQUEST_TIMEOUT_SECONDS,
@@ -176,7 +182,7 @@ class ArmClient:
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             response = self._http.request(
                 method,
-                # An empty path addresses the Container App itself; httpx would add a trailing "/".
+                # An empty path addresses the gateway itself; httpx would add a trailing "/".
                 path or f"{self._origin}{self.resource_id}",
                 params=query,
                 json=json_body,
@@ -239,7 +245,7 @@ class ArmClient:
         return response.json(), response.headers.get("ETag")
 
     def list(self, path: str, *, api_version: str) -> Iterator[dict[str, Any]]:
-        """Lists a collection under the Container App."""
+        """Lists a collection under the gateway's resource."""
         yield from self._pages(self.request("GET", path, api_version=api_version))
 
     def list_arm(
