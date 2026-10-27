@@ -6,7 +6,7 @@ Python only (no Node.js, no git):
     python scripts/package-release.py [--version v0.2.0] [--out dist]
 
 The zip holds backend/ (with pool_manager/static), tui/, the start scripts and the doctor, under
-one apim-backend-pool-<version>/ folder. Tests, virtual environments, local settings and sign-ins
+one SteadyApiPool-<version>/ folder. Tests, virtual environments, local settings and sign-ins
 are left out. .github/workflows/release.yml runs this for every v* tag.
 """
 
@@ -79,7 +79,7 @@ def build(version: str, out: Path) -> Path:
         raise SystemExit(
             "error: the browser UI isn't built; run 'npm ci && npm run build' in frontend/ first"
         )
-    name = f"apim-backend-pool-{version.removeprefix('v')}"
+    name = f"SteadyApiPool-{version.removeprefix('v')}"
     out.mkdir(parents=True, exist_ok=True)
     target = out / f"{name}.zip"
     stamp = time.localtime()[:6]

@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A standalone manager for Azure API Management **native backend pools** (Single member backends, Pool backends, binding a pool to an API via policy, and discovering Azure OpenAI/Foundry deployments to import as members). Its defaults (circuit breaker, retry, priorities) and ARM body shapes are deliberate; keep them unless a change asks for it. FastAPI backend + React/Vite frontend, deployed to App Service with `azd`.
+**SteadyApiPool** (repository `guming3d/SteadyApiPool`, formerly `apim-backend-pool-manager`): a standalone manager for Azure API Management **native backend pools** (Single member backends, Pool backends, binding a pool to an API via policy, and discovering Azure OpenAI/Foundry deployments to import as members). Its defaults (circuit breaker, retry, priorities) and ARM body shapes are deliberate; keep them unless a change asks for it. FastAPI backend + React/Vite frontend, deployed to App Service with `azd`.
+
+The older names stay where something depends on them, so don't rename these to SteadyApiPool: the policy markers `<!-- apim-backend-pool:… -->` (`policy.py`, `policy-diff.ts`), `MANAGED_MARKER` ("Managed by APIM Backend Pool Manager."), the `managed-by: apim-backend-pool` tag (`MANAGED_TAG_VALUE`), the custom role names `APIM Backend Pool Manager` / `APIM Backend Pool Deployment Reader` (looked up by `access.py`) and the `guid()` seeds in the Bicep, the `apim-backend-pool:` storage keys, the MSAL cache name `apim-backend-pool` in `credentials.py`, and the default `apimPublisherName` (changing it would update an existing APIM service).
 
 ## Commands
 

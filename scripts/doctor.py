@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Checks this machine before apim-backend-pool runs locally, and says how to fix what's missing.
+"""Checks this machine before SteadyApiPool runs locally, and says how to fix what's missing.
 
 Standard library only, and no syntax newer than Python 3.8, so it runs before anything is
 installed and on the old Python a machine may have (it then says so):
@@ -251,7 +251,7 @@ def check_node(
         install
         + [
             "Or download the release package, which has the UI built in and needs no Node.js:"
-            " https://github.com/guming3d/apim-backend-pool-manager/releases",
+            " https://github.com/guming3d/SteadyApiPool/releases",
             "Or use the terminal UI: start-local with -Tui (PowerShell) or --tui (bash).",
         ],
     )
@@ -401,9 +401,7 @@ def tls_context(machine: Machine) -> ssl.SSLContext:
 
 def probe_endpoint(endpoint: Endpoint, context: ssl.SSLContext) -> str | None:
     """None when the host answers over HTTPS (any status), else why not."""
-    request = urllib.request.Request(
-        endpoint.url, headers={"User-Agent": "apim-backend-pool-doctor"}
-    )
+    request = urllib.request.Request(endpoint.url, headers={"User-Agent": "SteadyApiPool-doctor"})
     try:
         # urllib follows HTTPS_PROXY / NO_PROXY like pip, npm and the app (httpx).
         with urllib.request.urlopen(request, timeout=TIMEOUT, context=context):
@@ -583,7 +581,7 @@ def main(argv: list[str] | None = None) -> int:
     results = diagnose(machine, args.tui, args.brief)
     shown = [r for r in results if r.status in (WARN, FAIL)] if args.brief else results
     if not args.brief:
-        print(f"apim-backend-pool doctor: {describe(machine)}\n")
+        print(f"SteadyApiPool doctor: {describe(machine)}\n")
     for result in shown:
         print(f"  {LABELS[result.status]}  {result.title}")
         for line in result.fix:

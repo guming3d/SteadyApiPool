@@ -9,7 +9,7 @@ resource discoveryRole 'Microsoft.Authorization/roleDefinitions@2022-04-01' = {
   name: guid(subscription().id, 'apim-backend-pool-discovery')
   properties: {
     roleName: 'APIM Backend Pool Deployment Reader ${uniqueString(subscription().id)}'
-    description: 'Lists Cognitive Services accounts and model deployments for the APIM Backend Pool Manager.'
+    description: 'Lists Cognitive Services accounts and model deployments for SteadyApiPool.'
     type: 'CustomRole'
     permissions: [
       {

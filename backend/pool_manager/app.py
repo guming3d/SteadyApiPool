@@ -603,7 +603,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-app = FastAPI(title="APIM Backend Pool Manager", lifespan=lifespan)
+app = FastAPI(title="SteadyApiPool", lifespan=lifespan)
 app.include_router(api)
 
 

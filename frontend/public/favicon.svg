@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <!-- APIM backend pool: one gateway hub fanning out to three evenly spaced members; the serving
+  <!-- SteadyApiPool: one gateway hub fanning out to three evenly spaced members; the serving
        one is solid, standbys are rings of the same outer size. A light Azure blue. -->
   <defs>
     <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">

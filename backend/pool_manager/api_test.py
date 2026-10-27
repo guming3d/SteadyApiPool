@@ -170,7 +170,7 @@ class ApiTester:
         body = {
             "properties": {
                 "scope": f"/apis/{api_id}",
-                "displayName": f"Test key for {api.display_name} (APIM Backend Pool Manager)"[:100],
+                "displayName": f"Test key for {api.display_name} (SteadyApiPool)"[:100],
                 "state": "active",
             }
         }

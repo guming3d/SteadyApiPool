@@ -2,7 +2,7 @@ import { createContext, useContext, useState, type ReactNode } from "react"
 
 // Chinese is the source copy; English is the translation.
 const zh = {
-  appTitle: "Azure APIM 后端池管理",
+  appTitle: "SteadyApiPool",
   pools: "后端池",
   members: "成员",
   apis: "API 绑定",
@@ -585,8 +585,8 @@ const zh = {
   setupScope: "范围",
   setupOpenIam: "在门户中打开访问控制",
   setupCopyMessage: "复制申请消息",
-  setupMessageRole: "你好，我在使用 APIM 后端池管理工具时需要 Azure 权限。请在以下范围为 {assignee} 分配“{role}”角色：\n{scope}\n\nAzure CLI：\n{command}",
-  setupMessageCommand: "你好，APIM 后端池管理工具需要管理员运行：\n{command}",
+  setupMessageRole: "你好，我在使用 SteadyApiPool 时需要 Azure 权限。请在以下范围为 {assignee} 分配“{role}”角色：\n{scope}\n\nAzure CLI：\n{command}",
+  setupMessageCommand: "你好，SteadyApiPool 需要管理员运行：\n{command}",
   setupMissing: "缺少的权限",
   setupWorking: "正在处理",
   setupSignInBrowser: "用浏览器登录",
@@ -739,7 +739,7 @@ const zh = {
 type Messages = Record<keyof typeof zh, string>
 
 const en: Messages = {
-  appTitle: "Azure APIM Backend Pool Manager",
+  appTitle: "SteadyApiPool",
   pools: "Pools",
   members: "Members",
   apis: "API bindings",
@@ -1322,8 +1322,8 @@ const en: Messages = {
   setupScope: "Scope",
   setupOpenIam: "Open access control in the portal",
   setupCopyMessage: "Copy request message",
-  setupMessageRole: "Hi, I need Azure access for the APIM Backend Pool Manager. Please assign “{role}” to {assignee} on:\n{scope}\n\nAzure CLI:\n{command}",
-  setupMessageCommand: "Hi, the APIM Backend Pool Manager needs an administrator to run:\n{command}",
+  setupMessageRole: "Hi, I need Azure access for SteadyApiPool. Please assign “{role}” to {assignee} on:\n{scope}\n\nAzure CLI:\n{command}",
+  setupMessageCommand: "Hi, SteadyApiPool needs an administrator to run:\n{command}",
   setupMissing: "Missing permissions",
   setupWorking: "Working",
   setupSignInBrowser: "Sign in with browser",

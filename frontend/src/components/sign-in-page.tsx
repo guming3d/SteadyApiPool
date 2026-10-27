@@ -9,7 +9,7 @@ import { ThemeToggle } from "./theme-toggle"
 import { Button, ErrorText } from "./ui"
 
 // Where people can get the app to run on their own machine instead (README "Get started").
-const REPOSITORY = "https://github.com/guming3d/apim-backend-pool-manager/tree/main"
+const REPOSITORY = "https://github.com/guming3d/SteadyApiPool/tree/main"
 
 export function SignInPage({ error }: { error?: unknown }) {
   const { t, locale, setLocale } = useI18n()

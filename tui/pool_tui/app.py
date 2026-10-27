@@ -29,7 +29,7 @@ class TopBar(Static):
 
     def render_bar(self, active: str, context: Json) -> None:
         bar = Text(no_wrap=True, overflow="ellipsis")
-        bar.append(" ◆ apim-backend-pool ", style="bold #7aa2f7")
+        bar.append(" ◆ SteadyApiPool ", style="bold #7aa2f7")
         for index, (view, label) in enumerate(VIEWS, start=1):
             style = "bold #1a1b26 on #7aa2f7" if view == active else "#737aa2"
             bar.append(f" {index} {label} ", style=style)
@@ -62,7 +62,7 @@ class TopBar(Static):
 
 class PoolManagerApp(App[None]):
     CSS_PATH = "app.tcss"
-    TITLE = "APIM Backend Pool Manager"
+    TITLE = "SteadyApiPool"
     BINDINGS = [
         Binding("1", "view('pools')", "Pools", show=False),
         Binding("2", "view('deployments')", "Deployments", show=False),

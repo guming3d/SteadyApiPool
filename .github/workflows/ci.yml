@@ -80,7 +80,7 @@ jobs:
       - name: Package and start it
         run: |
           python scripts/package-release.py --version v0.0.0-ci
-          bash scripts/smoke-package.sh dist/apim-backend-pool-0.0.0-ci.zip
+          bash scripts/smoke-package.sh dist/SteadyApiPool-0.0.0-ci.zip
 
   # The preflight people run before installing anything, on each OS and on a Python too old for
   # the app (it has to say so, with the install command, rather than crash).

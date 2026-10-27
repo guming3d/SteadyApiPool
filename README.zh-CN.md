@@ -1,4 +1,4 @@
-# APIM Backend Pool Manager
+# SteadyApiPool
 
 [English](README.md) | **简体中文**
 
@@ -11,7 +11,7 @@
 就能看到它故障或被限流时会发生什么。*
 
 ```
-apim-backend-pool/
+SteadyApiPool/
 ├── backend/    FastAPI 应用（pool_manager）及测试；同时提供构建好的前端
 ├── frontend/   React/Vite 界面（构建到 backend/pool_manager/static）
 ├── tui/        终端界面（Textual），后端 /api 的另一个客户端
@@ -48,8 +48,8 @@ APIM 经验；应用会检查缺少什么，并和你一起补上。（如果想
 
 ### 1. 下载并启动
 
-从 [Releases](https://github.com/guming3d/apim-backend-pool-manager/releases) 下载
-`apim-backend-pool-<version>.zip`，解压后在解压出的文件夹中运行启动脚本：
+从 [Releases](https://github.com/guming3d/SteadyApiPool/releases) 下载
+`SteadyApiPool-<version>.zip`，解压后在解压出的文件夹中运行启动脚本：
 
 ```powershell
 scripts\start-local.cmd        # Windows
@@ -218,7 +218,7 @@ backend/.venv/Scripts/python scripts/demo_server.py    # macOS 和 Linux 上为 
 **1. 创建用于登录的 Entra 应用注册**（只需一次）：
 
 ```sh
-az ad app create --display-name "APIM Backend Pool Manager" \
+az ad app create --display-name "SteadyApiPool" \
   --sign-in-audience AzureADMyOrg --enable-id-token-issuance true
 # 记下 appId。首次预配后再添加重定向 URI（第 3 步）。
 ```
@@ -226,7 +226,7 @@ az ad app create --display-name "APIM Backend Pool Manager" \
 **2. 配置并预配：**
 
 ```sh
-cd apim-backend-pool
+cd SteadyApiPool
 azd env new pool-manager
 # 使用已有的 APIM 服务……
 azd env set APIM_NAME <apim-name>
@@ -401,8 +401,8 @@ azd provision && azd deploy
 在本地，应用运行在你的电脑上，并以**你**的身份操作 Azure。它只需要 **Python 3.11+**。只有开发浏览器界面时才需要
 Node.js，Azure CLI 是可选的。
 
-**最快的方式：发布包。** 从 [Releases](https://github.com/guming3d/apim-backend-pool-manager/releases) 下载
-`apim-backend-pool-<version>.zip`。它内置了浏览器界面，因此不需要 Node.js 和 git。解压后运行：
+**最快的方式：发布包。** 从 [Releases](https://github.com/guming3d/SteadyApiPool/releases) 下载
+`SteadyApiPool-<version>.zip`。它内置了浏览器界面，因此不需要 Node.js 和 git。解压后运行：
 
 ```powershell
 scripts\start-local.cmd                 # Windows；不受 PowerShell 执行策略影响

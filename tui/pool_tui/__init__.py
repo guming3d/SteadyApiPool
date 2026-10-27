@@ -1,1 +1,1 @@
-"""Terminal UI for the APIM Backend Pool Manager."""
+"""Terminal UI for SteadyApiPool."""

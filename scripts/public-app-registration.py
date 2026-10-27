@@ -27,7 +27,7 @@ import uuid
 from typing import Any
 from urllib.parse import quote
 
-DISPLAY_NAME = "APIM Backend Pool Manager (public)"
+DISPLAY_NAME = "SteadyApiPool (public)"
 GRAPH = "https://graph.microsoft.com/v1.0"
 SCOPE = "access_as_user"
 # Azure Service Management and its user_impersonation scope (the same IDs in every tenant).
@@ -103,12 +103,12 @@ def preprovision() -> None:
                 "value": SCOPE,
                 "type": "User",
                 "isEnabled": True,
-                "adminConsentDisplayName": "Use APIM Backend Pool Manager as you",
+                "adminConsentDisplayName": "Use SteadyApiPool as you",
                 "adminConsentDescription": (
                     "Lets the app manage API Management backend pools and Foundry deployments "
                     "with the signed-in user's own Azure rights."
                 ),
-                "userConsentDisplayName": "Use APIM Backend Pool Manager as you",
+                "userConsentDisplayName": "Use SteadyApiPool as you",
                 "userConsentDescription": (
                     "Lets the app manage API Management backend pools and Foundry deployments "
                     "with your own Azure rights."

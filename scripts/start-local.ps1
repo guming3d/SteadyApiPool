@@ -233,7 +233,7 @@ try {
   )
   if ($Tui) {
     # Request logs would draw over the TUI; they go to files instead.
-    $backendLog = Join-Path ([System.IO.Path]::GetTempPath()) "apim-backend-pool-backend.log"
+    $backendLog = Join-Path ([System.IO.Path]::GetTempPath()) "SteadyApiPool-backend.log"
     $backendProcess = Start-Process -FilePath $VenvPython -WorkingDirectory $Backend -NoNewWindow -PassThru `
       -RedirectStandardOutput $backendLog -RedirectStandardError "$backendLog.err" -ArgumentList $backendArguments
   } else {

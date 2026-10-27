@@ -1,4 +1,4 @@
-// APIM Backend Pool Manager: one Linux App Service with Entra sign-in (Easy Auth) and a
+// SteadyApiPool: one Linux App Service with Entra sign-in (Easy Auth) and a
 // system-assigned managed identity that manages backends, named values and API policies on an
 // API Management service. Give an existing service with apimName, or leave it empty to create a
 // new one in this resource group. An existing service is never changed here.
