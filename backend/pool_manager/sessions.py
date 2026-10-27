@@ -44,9 +44,9 @@ from .errors import ServiceError
 from .litellm.api_test import ApiTester
 from .litellm.benchmark import BenchmarkRunner
 from .litellm.gateway import GatewayConnection
+from .litellm.models import GATEWAY_NAME_PATTERN
 from .litellm.service import PoolManagerService
 from .metrics import PoolMonitor
-from .models import GATEWAY_NAME_PATTERN
 from .target import TargetChooser
 
 logger = logging.getLogger(__name__)
@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 TARGET_HEADER = "X-Pool-Manager-Target"
 # Subscription IDs are GUIDs; ARM itself rejects anything else, so this only keeps the header sane.
 _SUBSCRIPTION = re.compile(r"[0-9A-Za-z-]{1,64}")
-_RESOURCE_GROUP = re.compile(r"[-\w.()]{0,89}[-\w()]")
+RESOURCE_GROUP_PATTERN = re.compile(r"[-\w.()]{0,89}[-\w()]")
 _GATEWAY_NAME = re.compile(GATEWAY_NAME_PATTERN)
 # One user rarely needs more than a few gateways open at once.
 _SESSIONS_PER_USER = 8
@@ -72,7 +72,7 @@ def parse_target(value: str | None) -> Target | None:
     if (
         len(parts) != 3
         or not _SUBSCRIPTION.fullmatch(parts[0])
-        or not _RESOURCE_GROUP.fullmatch(parts[1])
+        or not RESOURCE_GROUP_PATTERN.fullmatch(parts[1])
         or not _GATEWAY_NAME.fullmatch(parts[2])
     ):
         raise ServiceError(400, f"{TARGET_HEADER} must be <subscription>/<resource group>/<name>")

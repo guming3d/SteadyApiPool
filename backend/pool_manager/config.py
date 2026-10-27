@@ -11,6 +11,8 @@ from typing import Literal
 from pydantic import Field, PrivateAttr, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from .models import Product
+
 logger = logging.getLogger(__name__)
 
 # Container Apps' GA ARM API version.
@@ -115,6 +117,11 @@ class Settings(BaseSettings):
     _target_saved: bool = PrivateAttr(default=False)
     # Settings of the public app's guest session (as_guest).
     _guest: bool = PrivateAttr(default=False)
+
+    @property
+    def product(self) -> Product | None:
+        """The kind of gateway chosen; None until one is."""
+        return "litellm" if self.has_target else None
 
     @property
     def external(self) -> bool:

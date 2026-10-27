@@ -22,7 +22,7 @@ from pool_manager.litellm.benchmark import (
     summarize,
     verdict,
 )
-from pool_manager.models import BenchmarkSpec
+from pool_manager.litellm.models import BenchmarkSpec
 from tests.fake_azure import FakeAzure
 from tests.fake_litellm import URL, FakeLiteLLM
 from tests.test_app import WRITE, _client, _settings, create_pool

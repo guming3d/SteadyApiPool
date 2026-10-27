@@ -22,16 +22,16 @@ from pool_manager.arm import ArmClient
 from pool_manager.config import Settings
 from pool_manager.litellm.api_test import ApiTester
 from pool_manager.litellm.gateway import GatewayConnection
-from pool_manager.litellm.service import PoolManagerService
-from pool_manager.models import (
+from pool_manager.litellm.models import (
     ApiTestRequest,
     CircuitBreaker,
     MemberAuth,
     MemberBackendWrite,
-    PoolMemberWrite,
     PoolWrite,
     RemovalConfirm,
 )
+from pool_manager.litellm.service import PoolManagerService
+from pool_manager.models import PoolMemberWrite
 from tests.fake_azure import FakeAzure, FakeCredential
 
 pytestmark = pytest.mark.litellm

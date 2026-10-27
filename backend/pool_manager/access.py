@@ -417,6 +417,7 @@ class AccessChecker:
     ) -> SetupReport:
         return SetupReport(
             mode=mode,
+            product=self._settings.product,
             user=identity,
             checks=checks,
             ready=not any(check.status in _NOT_READY for check in checks),

@@ -30,8 +30,9 @@ from .config import Settings
 from .litellm.aks_deploy import CONTAINER_SERVICE_API_VERSION
 from .litellm.gateway import GATEWAY_TAG, GatewayInfo, GatewayUnavailable
 from .litellm.gateway_template import AKS_NODE_SIZE
+from .litellm.models import CostItem, ListPrice, ServiceCost
 from .litellm.service import PoolManagerService
-from .models import CostItem, CostNote, ListPrice, MonthToDate, ServiceCost
+from .models import CostNote, MonthToDate
 
 logger = logging.getLogger(__name__)
 

@@ -51,7 +51,7 @@ from .litellm.gateway_deploy import (
     translate,
 )
 from .litellm.gateway_template import aks_fqdn
-from .models import (
+from .litellm.models import (
     GatewayConnect,
     GatewayCreate,
     GatewayCreateOptions,
@@ -60,13 +60,9 @@ from .models import (
     GatewayDeployStatus,
     GatewayProfile,
     GatewayView,
-    ResourceGroupView,
-    SubscriptionView,
     TargetSelect,
-    TargetSource,
-    TargetView,
-    TenantView,
 )
+from .models import ResourceGroupView, SubscriptionView, TargetSource, TargetView, TenantView
 from .secret_store import SecretStore
 
 logger = logging.getLogger(__name__)
@@ -175,7 +171,7 @@ class TargetChooser:
             raise ServiceError(
                 409,
                 "The gateway is set in the environment or backend/.env "
-                "(POOL_MANAGER_SUBSCRIPTION_ID, _RESOURCE_GROUP, _GATEWAY_NAME or "
+                "(POOL_MANAGER_SUBSCRIPTION_ID, RESOURCE_GROUP_PATTERN, _GATEWAY_NAME or "
                 "_GATEWAY_URL). Remove those to choose one here.",
             )
 
@@ -195,6 +191,7 @@ class TargetChooser:
             else "environment"
         )
         return TargetView(
+            product=settings.product,
             gateway_name=settings.gateway_name or None,
             gateway_kind=None
             if not settings.has_target
@@ -464,6 +461,7 @@ class TargetChooser:
 
     def _view(self, target: Mapping[str, str]) -> TargetView:
         return TargetView(
+            product="litellm",
             gateway_name=target.get("gateway_name") or None,
             gateway_kind="external" if target.get("gateway_url") else "aca",
             subscription_id=target.get("subscription_id") or None,

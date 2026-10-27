@@ -77,6 +77,7 @@ def test_without_a_gateway_setup_asks_to_choose_one(wizard: _Wizard) -> None:
     target = report["checks"][1]
     assert target | {"status": "action", "fix": "select_gateway"} == target
     assert wizard.client.get("/api/target").json() == {
+        "product": None,
         "gateway_name": None,
         "gateway_kind": None,
         "subscription_id": None,

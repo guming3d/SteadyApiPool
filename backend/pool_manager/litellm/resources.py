@@ -18,13 +18,13 @@ from urllib.parse import quote, unquote, urlsplit
 
 from pydantic import SecretStr
 
-from ..models import (
+from ..models import PoolMemberView
+from .models import (
     DEFAULT_RETRIES,
     DEFAULT_TIMEOUT_SECONDS,
     BackendView,
     CircuitBreaker,
     MemberAuthType,
-    PoolMemberView,
     PoolView,
 )
 

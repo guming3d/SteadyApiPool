@@ -30,7 +30,7 @@ from typing import Any
 import httpx
 
 from ..errors import ServiceError
-from ..models import (
+from .models import (
     BenchmarkMember,
     BenchmarkPoint,
     BenchmarkRun,

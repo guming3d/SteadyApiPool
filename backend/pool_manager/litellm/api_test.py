@@ -21,14 +21,9 @@ import httpx
 
 from ..config import Settings
 from ..errors import ServiceError
-from ..models import (
-    ApiTestRequest,
-    ApiTestResult,
-    PoolEndpoint,
-    VirtualKeySecret,
-    VirtualKeyView,
-)
+from ..models import ApiTestResult
 from .client import LiteLLMError
+from .models import ApiTestRequest, PoolEndpoint, VirtualKeySecret, VirtualKeyView
 from .service import PoolManagerService, test_key_alias, translate_error
 
 logger = logging.getLogger(__name__)

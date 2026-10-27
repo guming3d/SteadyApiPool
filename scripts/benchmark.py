@@ -45,7 +45,7 @@ from pool_manager.litellm.benchmark import (  # noqa: E402
     run_benchmark,
     summarize,
 )
-from pool_manager.models import (  # noqa: E402
+from pool_manager.litellm.models import (  # noqa: E402
     BENCHMARK_MAX_REQUESTS,
     BENCHMARK_MAX_SECONDS,
     BENCHMARK_MAX_USERS,

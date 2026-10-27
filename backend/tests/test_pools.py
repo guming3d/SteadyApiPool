@@ -15,21 +15,19 @@ from pool_manager.discovery import DeploymentDiscovery
 from pool_manager.errors import ServiceError
 from pool_manager.litellm.api_test import ApiTester
 from pool_manager.litellm.gateway import GatewayConnection
-from pool_manager.litellm.resources import MANAGED_MARKER
-from pool_manager.litellm.service import PoolManagerService
-from pool_manager.models import (
+from pool_manager.litellm.models import (
     AliasWrite,
     ApiTestRequest,
     CircuitBreaker,
     CleanupConfirm,
-    DeploymentImport,
-    DeploymentRef,
     MemberAuth,
     MemberBackendWrite,
-    PoolMemberWrite,
     PoolWrite,
     RemovalConfirm,
 )
+from pool_manager.litellm.resources import MANAGED_MARKER
+from pool_manager.litellm.service import PoolManagerService
+from pool_manager.models import DeploymentImport, DeploymentRef, PoolMemberWrite
 from tests.fake_azure import GATEWAY_APP, FakeAzure, FakeCredential
 from tests.fake_litellm import MASTER_KEY, URL, FakeLiteLLM
 

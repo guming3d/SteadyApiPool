@@ -26,7 +26,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
-from ..models import AksBundle, AksBundleFile
+from .models import AksBundle, AksBundleFile
 from .resources import to_yaml
 
 # Keep in step with tests/litellm_stack/docker-compose.yml and the Bicep default.
