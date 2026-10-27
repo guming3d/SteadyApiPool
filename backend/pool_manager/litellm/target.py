@@ -6,9 +6,11 @@ its URL and master key. ``TargetChooser`` (target.py) saves the choice.
 
 Every change here uses the signed-in user's own Azure rights:
 
-- Deploying registers the resource providers the template needs, creates the resource group when
-  it does not exist, and runs one ARM deployment (gateway_deploy.py). It never changes an
-  existing resource group or gateway.
+- Deploying checks the region's capacity first, registers the resource providers the template
+  needs, creates the resource group when it does not exist, and runs one ARM deployment
+  (gateway_deploy.py). It never changes an existing resource group or gateway. When a resource
+  of a deployment started with ``cleanup_on_failure`` fails, following its status stops the
+  deployment and deletes what it created (cleanup.py).
 - Deleting is limited to gateways this app deployed (the ``managed-by`` tag) and needs the name
   typed again. It deletes the resources tagged as that gateway's, starting with the Container
   App, and never the resource group. Azure keeps no copy: the gateway's database (pools, keys,
@@ -36,8 +38,9 @@ from ..secret_store import SecretStore
 from ..target import TargetChooser, resource_group_of
 from .access import GATEWAY_ACTIONS
 from .aks_deploy import CONTAINER_SERVICE_API_VERSION, AksDeployer, cluster_path
+from .cleanup import GatewayCleanup, delete_resources, tagged_resources
 from .client import LiteLLMClient, LiteLLMError
-from .gateway import GATEWAY_TAG, MANAGED_TAG, MANAGED_TAG_VALUE, container_app_info
+from .gateway import MANAGED_TAG, MANAGED_TAG_VALUE, container_app_info
 from .gateway_deploy import (
     DEPLOYMENTS_API_VERSION,
     RESOURCES_API_VERSION,
@@ -54,6 +57,7 @@ from .models import (
     GatewayDelete,
     GatewayDeleteCheck,
     GatewayDeployStatus,
+    GatewayPreflight,
     GatewayProfile,
     GatewayView,
     TargetSelect,
@@ -63,19 +67,6 @@ logger = logging.getLogger(__name__)
 
 _WORKERS = 8
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
-# Delete order and API versions of what the templates create: the Container App first (its
-# environment can't go while it has apps), the environment or the AKS cluster (which Azure takes
-# many minutes over, so it finishes on its own), then the rest.
-_DELETE_ORDER = {
-    "microsoft.app/containerapps": (0, "2025-01-01"),
-    "microsoft.app/managedenvironments": (1, "2025-01-01"),
-    "microsoft.containerservice/managedclusters": (1, CONTAINER_SERVICE_API_VERSION),
-    "microsoft.dbforpostgresql/flexibleservers": (2, "2024-08-01"),
-    "microsoft.cache/redisenterprise": (2, "2025-04-01"),
-    "microsoft.managedidentity/userassignedidentities": (3, "2023-01-31"),
-    "microsoft.insights/components": (3, "2020-02-02"),
-    "microsoft.operationalinsights/workspaces": (4, "2023-09-01"),
-}
 
 
 def _is_litellm(app: Mapping[str, Any]) -> bool:
@@ -100,6 +91,7 @@ class LiteLLMTargets:
         *,
         gateway_transport: httpx.BaseTransport | None = None,
         secrets: SecretStore | None = None,
+        cleanup: GatewayCleanup | None = None,
     ) -> None:
         self._targets = targets
         self._settings = targets.settings
@@ -110,6 +102,8 @@ class LiteLLMTargets:
         self._aks = AksDeployer(
             targets.settings, self._deployer, secrets, transport=gateway_transport
         )
+        # Process-wide in the app (deps.py), so a cleanup outlives a switch of gateway.
+        self._cleanup = cleanup or GatewayCleanup(sleep=targets.sleep)
 
     # -- reads -------------------------------------------------------------------------
 
@@ -231,6 +225,11 @@ class LiteLLMTargets:
             locations=locations,
             unregistered_providers=unregistered,
         )
+
+    def preflight(self, body: GatewayCreate) -> GatewayPreflight:
+        """What would keep a deployment there from succeeding, before anything is created."""
+        self._targets.require_local()
+        return self._deployer.preflight(self._targets.arm(body.tenant_id), body)
 
     # -- changes -----------------------------------------------------------------------
 
@@ -399,8 +398,10 @@ class LiteLLMTargets:
         self._targets.require_local()
         arm = self._targets.arm(tenant_id)
         if not self._aks.is_aks(arm, subscription_id, resource_group, name):
-            return self._deployer.status(arm, subscription_id, resource_group, name)
+            status = self._deployer.status(arm, subscription_id, resource_group, name)
+            return self._follow_failure(arm, subscription_id, resource_group, status)
         status, finished = self._aks.status(arm, subscription_id, resource_group, name)
+        status = self._follow_failure(arm, subscription_id, resource_group, status)
         # The saved target, not this chooser's settings: those are from before the deployment
         # started, until the app rebuilds what is bound to the gateway.
         saved = self._targets.saved() or {}
@@ -424,6 +425,49 @@ class LiteLLMTargets:
             )
             logger.info("Gateway %s on AKS is ready at %s", name, finished.url)
         return status
+
+    def _follow_failure(
+        self,
+        arm: ArmClient,
+        subscription_id: str,
+        resource_group: str,
+        status: GatewayDeployStatus,
+    ) -> GatewayDeployStatus:
+        """For a deployment started with cleanup_on_failure: once one of its resources fails,
+        stops it, and once it has stopped, deletes what it created.
+
+        Only the Azure resources' phase: an AKS install that fails in the cluster can run again.
+        This runs on a status read, so it goes on whenever the picker follows the deployment,
+        after a restart too; it only does what the user chose when deploying.
+        """
+        if not status.auto_cleanup or status.phase != "azure":
+            return status
+        name = status.name
+        if status.state == "running":
+            if any(step.state.casefold() == "failed" for step in status.steps):
+                self._deployer.cancel(arm, subscription_id, resource_group, name)
+            return status
+        if status.state != "failed":
+            return status
+        # One cleanup per deployment: a later deployment of the same name gets its own.
+        key = f"{deployment_path(subscription_id, resource_group, name)}@{status.started_at}"
+        cleanup = self._cleanup.get(key.casefold())
+        if cleanup is None:
+            cluster = cluster_path(subscription_id, resource_group, name)
+
+            def forget_keys() -> None:
+                # A cluster that never came up needs none of the keys kept for its install.
+                self._aks.forget_install(cluster)
+
+            cleanup = self._cleanup.start(
+                key.casefold(),
+                arm,
+                subscription_id,
+                resource_group,
+                name,
+                on_done=forget_keys if status.platform == "aks" else None,
+            )
+        return status.model_copy(update={"cleanup": cleanup})
 
     def retry_install(self, body: TargetSelect) -> None:
         """Runs an AKS gateway's install in its cluster again, after it failed."""
@@ -541,32 +585,11 @@ class LiteLLMTargets:
             )
         return found
 
-    def _deleting(self, arm: ArmClient, resource_id: str, api_version: str) -> bool:
-        found = arm.get_arm_json(resource_id, api_version=api_version)
-        state = str(((found or {}).get("properties") or {}).get("provisioningState") or "")
-        return state.casefold() in {"scheduledfordelete", "deleting"}
-
     def _resources(self, arm: ArmClient, body: TargetSelect, name: str) -> list[dict[str, Any]]:
-        """The resources tagged as this gateway's, in the order they are deleted."""
-        path = f"{group_path(body.subscription_id, body.resource_group)}/resources"
         try:
-            items = list(
-                arm.list_arm(
-                    path,
-                    api_version=RESOURCES_API_VERSION,
-                    params={"$filter": f"tagName eq '{GATEWAY_TAG}' and tagValue eq '{name}'"},
-                )
-            )
+            return tagged_resources(arm, body.subscription_id, body.resource_group, name)
         except ArmError as error:
             raise arm_failure(error, "list the gateway's resources") from error
-        owned = [
-            item
-            for item in items
-            if (item.get("tags") or {}).get(MANAGED_TAG) == MANAGED_TAG_VALUE
-            and (item.get("tags") or {}).get(GATEWAY_TAG) == name
-            and str(item.get("type") or "").casefold() in _DELETE_ORDER
-        ]
-        return sorted(owned, key=lambda item: _DELETE_ORDER[str(item["type"]).casefold()][0])
 
     def delete_check(self, body: TargetSelect) -> GatewayDeleteCheck:
         """What deleting the gateway would remove, for the confirmation."""
@@ -595,40 +618,17 @@ class LiteLLMTargets:
         name = str(found.get("name") or body.gateway_name)
         if body.confirm_name.strip().casefold() != name.casefold():
             raise ServiceError(400, f"Type the gateway name ({name}) to confirm")
-        deleted: list[str] = []
-        failed: list[tuple[str, ServiceError]] = []
-        cluster: Mapping[str, Any] | None = None
-        for item in self._resources(arm, body, name):
-            resource = str(item.get("name"))
-            kind = str(item["type"]).casefold()
-            order, api_version = _DELETE_ORDER[kind]
-            if kind == "microsoft.containerservice/managedclusters":
-                cluster = item
-            try:
-                if order == 1 and self._deleting(arm, str(item["id"]), api_version):
-                    # Asked before; Azure is still on it.
-                    deleted.append(resource)
-                    continue
-                response = arm.request(
-                    "DELETE",
-                    arm.arm_url(str(item["id"])),
-                    api_version=api_version,
-                    allow_not_found=True,
-                )
-                # Only the Container App is waited for: its environment can't go before it.
-                # Everything else, the environment included (Azure takes 10-20 minutes over
-                # one), finishes on its own.
-                if order == 0:
-                    arm.wait(response, timeout_seconds=600)
-                deleted.append(resource)
-            except ArmError as error:
-                failed.append((resource, arm_failure(error, f"delete {resource}")))
-                if order == 0:
-                    break
-        if failed:
+        result = delete_resources(arm, self._resources(arm, body, name))
+        deleted = [*result.deleted, *result.deleting]
+        if result.failed:
+            failed = [
+                (resource, arm_failure(error, f"delete {resource}"))
+                for resource, error in result.failed
+            ]
             done = ", ".join(deleted) or "nothing"
             reasons = "; ".join(f"{resource}: {error.message}" for resource, error in failed)
             raise ServiceError(failed[0][1].status, f"Could not delete {reasons}. Deleted: {done}.")
+        cluster = result.cluster
         try:
             # The deployment's record goes too, so the name can be deployed again cleanly.
             arm.request(

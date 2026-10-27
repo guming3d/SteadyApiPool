@@ -235,9 +235,28 @@ class FakeAzure:
     # Regions where the subscription may not create PostgreSQL Flexible Servers, with Azure's
     # reason (the capabilities API then offers no server versions there).
     postgres_restricted: dict[str, str] = field(default_factory=dict)
+    # Capacity before deploying: regions offering a resource type ("Namespace/type" -> display
+    # names; types not listed are offered everywhere), Burstable PostgreSQL sizes per region
+    # (default B1ms and B2s), and free quota: PostgreSQL Burstable vCores and Container Apps
+    # environments, per region (default 100 and 10).
+    offered: dict[str, list[str]] = field(default_factory=dict)
+    postgres_skus: dict[str, list[str]] = field(default_factory=dict)
+    postgres_vcores_free: dict[str, int] = field(default_factory=dict)
+    environments_free: dict[str, int] = field(default_factory=dict)
+    # ARM's validation of a deployment: errors it reports (code, message), whether it answers
+    # as a long-running operation, and the bodies it was asked to validate.
+    validation_errors: list[tuple[str, str]] = field(default_factory=list)
+    validation_async: bool = False
+    validations: list[dict[str, Any]] = field(default_factory=list)
+    # Deployments stopped with cancel (lower-case IDs), and deleted resource groups.
+    canceled: list[str] = field(default_factory=list)
+    deleted_groups: list[str] = field(default_factory=list)
     # Resource types whose delete Azure takes its time over (a Container Apps environment can
     # take 20 minutes): the resource stays, ScheduledForDelete, and its operation never ends.
     slow_deletes: set[str] = field(default_factory=set)
+    # Deletes Azure refuses (409) this many more times, by lower-case resource type: a
+    # dependency still there, or a resource still being created.
+    refused_deletes: dict[str, int] = field(default_factory=dict)
     # Polls of those operations' status.
     operation_polls: int = 0
     # AKS: DNS labels already taken, the node size refused to the subscription, its free
@@ -531,7 +550,17 @@ class FakeAzure:
             states[provider] = "Registering"
             return httpx.Response(200, json={"registrationState": "Registering"})
         if provider == "Microsoft.DBforPostgreSQL" and rest[:1] == ["locations"]:
-            reason = self.postgres_restricted.get(rest[1])
+            region = rest[1]
+            if rest[2:] == ["resourceType", "flexibleServers", "usages"]:
+                usage = {
+                    "name": {"value": "standardBSFamily", "localizedValue": "standardBSFamily"},
+                    "limit": self.postgres_vcores_free.get(region, 100),
+                    "currentValue": 0,
+                    "unit": "Count",
+                }
+                return httpx.Response(200, json={"value": [usage]})
+            reason = self.postgres_restricted.get(region)
+            skus = self.postgres_skus.get(region, ["Standard_B1ms", "Standard_B2s"])
             capability = {
                 "name": "FlexibleServerCapabilities",
                 "restricted": "Enabled" if reason else "Disabled",
@@ -539,19 +568,40 @@ class FakeAzure:
                 "supportedServerVersions": (
                     [] if reason else [{"name": v} for v in ("14", "15", "16", "17")]
                 ),
+                "supportedServerEditions": [
+                    {
+                        "name": "Burstable",
+                        "supportedServerSkus": [{"name": sku, "vCores": 1} for sku in skus],
+                    }
+                ],
             }
             return httpx.Response(200, json={"value": [capability]})
+        if provider == "Microsoft.App" and rest[:1] == ["locations"] and rest[2:] == ["usages"]:
+            usage = {
+                "name": {"value": "ManagedEnvironmentCount", "localizedValue": "Environments"},
+                "limit": self.environments_free.get(rest[1], 10),
+                "currentValue": 0,
+                "unit": "Count",
+            }
+            return httpx.Response(200, json={"value": [usage]})
         state = states.get(provider, "Registered")
         if state == "Registering":
             self.register_polls -= 1
             if self.register_polls < 0:
                 state = states[provider] = "Registered"
         answer: dict[str, Any] = {"namespace": provider, "registrationState": state}
+        types = [
+            {"resourceType": kind.partition("/")[2], "locations": locations}
+            for kind, locations in self.offered.items()
+            if kind.partition("/")[0] == provider
+        ]
         if provider == "Microsoft.App":
-            answer["resourceTypes"] = [
+            types += [
                 {"resourceType": "managedEnvironments", "locations": self.aca_locations},
                 {"resourceType": "containerApps", "locations": self.aca_locations},
             ]
+        if types:
+            answer["resourceTypes"] = types
         return httpx.Response(200, json=answer)
 
     def _resource_group(
@@ -565,6 +615,10 @@ class FakeAzure:
                 return _error(403, "AuthorizationFailed")
             self.resource_groups[key] = {"name": name, "location": body["location"], **body}
             return httpx.Response(201, json=self.resource_groups[key])
+        if request.method == "DELETE":
+            self.resource_groups.pop(key, None)
+            self.deleted_groups.append(key)
+            return httpx.Response(202)
         group = self.resource_groups.get(key)
         return httpx.Response(200, json=group) if group else _error(404, "ResourceGroupNotFound")
 
@@ -660,6 +714,10 @@ class FakeAzure:
             if not self._may(caller, path, "*/delete"):
                 return _error(403, "AuthorizationFailed")
             item = self.resources.get(path.casefold())
+            kind = str((item or {}).get("type") or "").casefold()
+            if self.refused_deletes.get(kind, 0) > 0:
+                self.refused_deletes[kind] -= 1
+                return _error(409, "Conflict")
             if item is not None and str(item["type"]).casefold() in self.slow_deletes:
                 item["properties"] = {"provisioningState": "ScheduledForDelete"}
                 status = f"https://management.azure.com{path}/operationStatuses/1"
@@ -702,6 +760,18 @@ class FakeAzure:
     def _deployment(
         self, request: httpx.Request, caller: str, path: str, body: Any
     ) -> httpx.Response:
+        if path.endswith("/validate"):
+            return self._validate(request, caller, path.removesuffix("/validate"), body)
+        if path.endswith("/cancel"):
+            record = self.arm_deployments.get(path.removesuffix("/cancel").casefold())
+            if record is None or record["properties"]["provisioningState"] != "Running":
+                return _error(409, "DeploymentCannotBeCancelled")
+            record["properties"]["provisioningState"] = "Canceled"
+            self.canceled.append(path.removesuffix("/cancel").casefold())
+            return httpx.Response(204)
+        if "/validationResults/" in path:
+            # The long-running validation's outcome.
+            return self._validation_result()
         deployment_id, _, rest = path.partition("/operations")
         key = deployment_id.casefold()
         if path.endswith("/operations"):
@@ -793,6 +863,84 @@ class FakeAzure:
             ],
         }
         return httpx.Response(201, json={"id": deployment_id})
+
+    def _validate(
+        self, request: httpx.Request, caller: str, deployment_id: str, body: Any
+    ) -> httpx.Response:
+        if not self._may(caller, deployment_id, "Microsoft.Resources/deployments/validate/action"):
+            return _error(403, "AuthorizationFailed")
+        group = deployment_id.split(_DEPLOYMENTS)[0]
+        if group.casefold() not in self.resource_groups:
+            return _error(404, "ResourceGroupNotFound")
+        self.validations.append(body)
+        if self.validation_async:
+            location = f"https://management.azure.com{deployment_id}/validationResults/1"
+            return httpx.Response(202, headers={"Location": location, "Retry-After": "1"})
+        return self._validation_result()
+
+    def _validation_result(self) -> httpx.Response:
+        if not self.validation_errors:
+            return httpx.Response(200, json={"properties": {"provisioningState": "Succeeded"}})
+        error = {
+            "code": "InvalidTemplateDeployment",
+            "message": "The template deployment is not valid. See inner errors for details.",
+            "details": [
+                {
+                    "code": "PreflightValidationCheckFailed",
+                    "message": "Preflight validation failed.",
+                    "details": [
+                        {"code": code, "message": message}
+                        for code, message in self.validation_errors
+                    ],
+                }
+            ],
+        }
+        return httpx.Response(400, json={"error": error})
+
+    def fail_resource(
+        self,
+        name: str,
+        *,
+        group: str = "rg-new",
+        subscription: str = SUBSCRIPTION,
+        message: str = "Insufficient capacity in this region.",
+        created: tuple[str, ...] = ("Microsoft.ManagedIdentity/userAssignedIdentities",),
+    ) -> list[str]:
+        """The database of a running gateway deployment fails while the deployment still runs;
+        ``created`` are the resource types it had already created (tagged). Returns their IDs."""
+        key = (
+            f"/subscriptions/{subscription}/resourceGroups/{group}{_DEPLOYMENTS}ai-gateway-{name}"
+        ).casefold()
+        record = self.arm_deployments[key]
+        for operation in record["operations"]:
+            target = operation["properties"].get("targetResource") or {}
+            if target.get("resourceType") == "Microsoft.DBforPostgreSQL/flexibleServers":
+                operation["properties"]["provisioningState"] = "Failed"
+                operation["properties"]["statusMessage"] = {
+                    "error": {"code": "ResourceDeploymentFailure", "message": message}
+                }
+        base = f"/subscriptions/{subscription}/resourceGroups/{group}/providers"
+        prefixes = {
+            "Microsoft.ManagedIdentity/userAssignedIdentities": "id",
+            "Microsoft.OperationalInsights/workspaces": "log",
+            "Microsoft.Insights/components": "appi",
+            "Microsoft.App/managedEnvironments": "cae",
+            "Microsoft.DBforPostgreSQL/flexibleServers": "psql",
+        }
+        ids = []
+        for kind in created:
+            resource = f"{prefixes[kind]}-{name}"
+            resource_id = f"{base}/{kind}/{resource}"
+            self.resources[resource_id.casefold()] = {
+                "id": resource_id,
+                "name": resource,
+                "type": kind,
+                "location": record["parameters"]["location"],
+                "tags": {"managed-by": "ai-gateway-pool", "ai-gateway": name},
+                "properties": {"provisioningState": "Succeeded"},
+            }
+            ids.append(resource_id)
+        return ids
 
     def add_aks_gateway(
         self,

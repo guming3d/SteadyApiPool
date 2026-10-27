@@ -3,7 +3,7 @@ import { queryOptions } from "@tanstack/react-query"
 
 import { api as sharedApi, id, json, keys as sharedKeys, queries as sharedQueries, request, scope } from "../api"
 import type { ApiTestResult, ModelCheck, TargetView } from "../types"
-import type { AksBundle, AliasView, ApiTestRequest, BackendView, BenchmarkRun, BenchmarkStart, Capabilities, CleanupConfirm, ConfigPreview, ConfigView, GatewayConnect, GatewayCreate, GatewayCreateOptions, GatewayDeleteCheck, GatewayDeployStatus, GatewayView, MemberBackendWrite, PoolEndpoint, PoolView, PoolWrite, RemovalConfirm, RemovalPlan, RemovalResult, ServiceCost, TargetSelect, VirtualKeySecret, VirtualKeyView } from "./types"
+import type { AksBundle, AliasView, ApiTestRequest, BackendView, BenchmarkRun, BenchmarkStart, Capabilities, CleanupConfirm, ConfigPreview, ConfigView, GatewayConnect, GatewayCreate, GatewayCreateOptions, GatewayDeleteCheck, GatewayDeployStatus, GatewayPlatform, GatewayPreflight, GatewayProfile, GatewayView, MemberBackendWrite, PoolEndpoint, PoolView, PoolWrite, RemovalConfirm, RemovalPlan, RemovalResult, ServiceCost, TargetSelect, VirtualKeySecret, VirtualKeyView } from "./types"
 
 export type AksBundleParams = {
   subscription_id: string
@@ -57,6 +57,9 @@ export const api = {
   selectTarget: (body: TargetSelect) => request<TargetView>("/api/litellm/target", json("PUT", body)),
   // Deploys billable Azure resources with the user's own rights, then selects the new gateway.
   createGateway: (body: GatewayCreate) => request<GatewayView>("/api/litellm/target/gateways", json("POST", body)),
+  // Read-only: what in the region would make the deployment fail (capacity, quota, sizes).
+  gatewayPreflight: (body: GatewayCreate) =>
+    request<GatewayPreflight>("/api/litellm/target/gateways/preflight", json("POST", body)),
   deployStatus: (tenantId: string | null, subscriptionId: string, resourceGroup: string, name: string) =>
     request<GatewayDeployStatus>(
       `/api/litellm/target/deploy-status?${scope(tenantId, subscriptionId)}&${new URLSearchParams({ resource_group: resourceGroup, name })}`,
@@ -109,6 +112,8 @@ export const keys = {
   createOptions: (tenantId: string | null, subscriptionId: string) => ["litellm", "target", "create-options", tenantId, subscriptionId] as const,
   deployStatus: (subscriptionId: string, resourceGroup: string, name: string) =>
     ["litellm", "target", "deploy", subscriptionId, resourceGroup, name] as const,
+  preflight: (subscriptionId: string, location: string, platform: GatewayPlatform, profile: GatewayProfile) =>
+    ["litellm", "target", "preflight", subscriptionId, location, platform, profile] as const,
 }
 
 export const queries = {
@@ -163,7 +168,16 @@ export const queries = {
     queryKey: keys.deployStatus(subscriptionId, resourceGroup, name),
     queryFn: () => api.deployStatus(tenantId, subscriptionId, resourceGroup, name),
     enabled: Boolean(subscriptionId && resourceGroup && name),
-    refetchInterval: (query) => query.state.data?.state === "running" ? 5_000 : false,
+    // Also while what a failed deployment created is being deleted.
+    refetchInterval: (query) => query.state.data?.state === "running" || query.state.data?.cleanup?.state === "running" ? 5_000 : false,
+    retry: false,
+  }),
+  // The region's capacity for the deployment the form describes; the name doesn't matter.
+  preflight: (body: GatewayCreate) => queryOptions({
+    queryKey: keys.preflight(body.subscription_id, body.location, body.platform, body.profile),
+    queryFn: () => api.gatewayPreflight(body),
+    enabled: Boolean(body.subscription_id && body.location),
+    staleTime: 5 * 60_000,
     retry: false,
   }),
   createOptions: (tenantId: string | null, subscriptionId: string) => queryOptions({

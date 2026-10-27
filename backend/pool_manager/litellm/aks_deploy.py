@@ -46,7 +46,6 @@ from .gateway_deploy import (
 )
 from .gateway_template import (
     AKS_COMMAND,
-    AKS_NODE_SIZE,
     AksInstall,
     aks_bootstrap,
     aks_fqdn,
@@ -60,8 +59,6 @@ from .models import GatewayCreate, GatewayDeployStatus
 logger = logging.getLogger(__name__)
 
 CONTAINER_SERVICE_API_VERSION = "2025-05-01"
-COMPUTE_API_VERSION = "2024-07-01"
-SKUS_API_VERSION = "2021-07-01"
 NETWORK_API_VERSION = "2024-05-01"
 INSIGHTS_API_VERSION = "2020-02-02"
 REDIS_API_VERSION = "2025-04-01"
@@ -70,9 +67,6 @@ AKS_SERVER_SCOPE = "6dae42f8-4368-4678-94ff-3960e28e3630/.default"
 AKS_PROVIDERS = (*PROVIDERS[1:], "Microsoft.ContainerService", "Microsoft.Network")
 PLATFORM_TAG = "ai-gateway-platform"
 ROLE_ASSIGNMENT_WRITE = "Microsoft.Authorization/roleAssignments/write"
-# The node VM family's quota name, and vCPUs per node (Standard_D4ds_v5).
-_VM_FAMILY = "standardDDSv5Family"
-_VCPUS_PER_NODE = 4
 # Lines of the install's output kept for the status.
 _LOG_LINES = 40
 
@@ -120,7 +114,6 @@ class AksDeployer:
     def preflight(self, arm: ArmClient, body: GatewayCreate) -> list[str]:
         """Read-only checks for what an AKS deployment needs; returns the VM size's zones."""
         subscription = f"/subscriptions/{segment(body.subscription_id)}"
-        nodes = 3 if body.profile == "production" else 1
         try:
             dns = arm.get_arm_json(
                 f"{subscription}/providers/Microsoft.Network/locations/{segment(body.location)}"
@@ -134,8 +127,8 @@ class AksDeployer:
                     f"{aks_fqdn(body.name, body.location)} is taken; choose another name "
                     "(it becomes the gateway's HTTPS address)",
                 )
-            zones = self._vm_zones(arm, subscription, body.location)
-            self._quota(arm, subscription, body.location, nodes * _VCPUS_PER_NODE)
+            # The node size, its zones and the vCPU quota, with everything else it creates.
+            zones = self._base.require_capacity(arm, body).zones
             scope = group_path(body.subscription_id, body.resource_group)
             if arm.get_arm_json(scope, api_version="2021-04-01") is None:
                 scope = subscription
@@ -156,56 +149,6 @@ class AksDeployer:
             )
         return zones
 
-    def _vm_zones(self, arm: ArmClient, subscription: str, location: str) -> list[str]:
-        """The node size's availability zones, or why the subscription can't use it there."""
-        skus = arm.list_arm(
-            f"{subscription}/providers/Microsoft.Compute/skus",
-            api_version=SKUS_API_VERSION,
-            params={"$filter": f"location eq '{location}'"},
-        )
-        for sku in skus:
-            if sku.get("resourceType") != "virtualMachines" or sku.get("name") != AKS_NODE_SIZE:
-                continue
-            restricted = {
-                str(item.get("type"))
-                for item in sku.get("restrictions") or []
-                if item.get("reasonCode") == "NotAvailableForSubscription"
-            }
-            if "Location" in restricted:
-                raise ServiceError(
-                    409,
-                    f"{AKS_NODE_SIZE} isn't available to this subscription in {location}; "
-                    "choose another region",
-                )
-            info = (sku.get("locationInfo") or [{}])[0]
-            blocked = {
-                zone
-                for item in sku.get("restrictions") or []
-                if item.get("type") == "Zone"
-                for zone in (item.get("restrictionInfo") or {}).get("zones") or []
-            }
-            return sorted(str(zone) for zone in info.get("zones") or [] if zone not in blocked)
-        raise ServiceError(409, f"{AKS_NODE_SIZE} isn't offered in {location}")
-
-    def _quota(self, arm: ArmClient, subscription: str, location: str, needed: int) -> None:
-        found = arm.get_arm_json(
-            f"{subscription}/providers/Microsoft.Compute/locations/{segment(location)}/usages",
-            api_version=COMPUTE_API_VERSION,
-        )
-        for usage in (found or {}).get("value") or []:
-            name = str((usage.get("name") or {}).get("value") or "")
-            if name.casefold() not in {_VM_FAMILY.casefold(), "cores"}:
-                continue
-            free = int(usage.get("limit") or 0) - int(usage.get("currentValue") or 0)
-            if free < needed:
-                label = (usage.get("name") or {}).get("localizedValue") or name
-                raise ServiceError(
-                    409,
-                    f"Not enough vCPU quota in {location}: {label} has {max(free, 0)} free, the "
-                    f"cluster needs {needed}. Request more in the portal (Quotas) or choose "
-                    "another region",
-                )
-
     # -- deploying ------------------------------------------------------------------------
 
     def start(self, arm: ArmClient, body: GatewayCreate, deployer: str, actor: str) -> str:
@@ -220,24 +163,30 @@ class AksDeployer:
                 arm, body, existing=cluster, existing_api=CONTAINER_SERVICE_API_VERSION
             )
             zones = self.preflight(arm, body)
-            self._base.provision(arm, body, actor, providers=AKS_PROVIDERS)
+            created = self._base.provision(arm, body, actor, providers=AKS_PROVIDERS)
             secrets = aks_secrets()
             # Kept before Azure sees anything, so a gateway never runs on keys the app lost.
             self._secrets.put(_pending_key(cluster), json.dumps(secrets))
-            self._base.put_deployment(
-                arm,
-                body,
-                template=aks_template(),
-                parameters=aks_parameters(
-                    name=body.name,
-                    location=body.location,
-                    profile=body.profile,
-                    deployer=deployer,
-                    zones=zones,
-                    postgres_password=secrets["postgres_password"],
-                ),
-                tags={MANAGED_TAG: MANAGED_TAG_VALUE, PLATFORM_TAG: "aks"},
-            )
+            try:
+                self._base.deploy(
+                    arm,
+                    body,
+                    template=aks_template(),
+                    parameters=aks_parameters(
+                        name=body.name,
+                        location=body.location,
+                        profile=body.profile,
+                        deployer=deployer,
+                        zones=zones,
+                        postgres_password=secrets["postgres_password"],
+                    ),
+                    tags={MANAGED_TAG: MANAGED_TAG_VALUE, PLATFORM_TAG: "aks"},
+                    created_group=created,
+                )
+            except ServiceError:
+                # Refused before anything was created: no cluster will need those keys.
+                self._secrets.forget(_pending_key(cluster))
+                raise
         except ArmError as error:
             raise arm_failure(error, "deploy this gateway") from error
         logger.info(
@@ -323,6 +272,11 @@ class AksDeployer:
             raise ServiceError(404, f"{name} has no install to run again")
         pending.pop("command_id", None)
         self._keep(cluster, pending)
+
+    def forget_install(self, cluster_id: str) -> None:
+        """Drops the keys kept for an install that will never run (its deployment failed)."""
+        if self._secrets is not None:
+            self._secrets.forget(_pending_key(cluster_id))
 
     def forget(self, cluster_id: str, url: str) -> None:
         if self._secrets is not None:

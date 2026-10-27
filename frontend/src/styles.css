@@ -346,6 +346,9 @@ td > b + .tag { margin: 0 0 0 8px; font-size: 11px; }
 .field { display: grid; align-content: start; gap: 4px; font-size: 12px; font-weight: 500; }
 .field small { color: var(--muted-foreground); font-weight: 400; }
 .check { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
+/* A checkbox's label with a hint under it. */
+.check-copy { display: grid; gap: 2px; }
+.check-copy small { color: var(--muted-foreground); font-size: 11px; }
 /* A checkbox beside a field lines up with that field's input, not its label. */
 .form-grid > .check:not(.span-2) { align-self: start; height: 32px; margin-top: 22px; }
 
@@ -609,6 +612,8 @@ td > b + .tag { margin: 0 0 0 8px; font-size: 11px; }
 .gateway-list .tag { margin: 0 4px 0 0; font-size: 11px; }
 .gateway-form { border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; }
 .gateway-form h3 { margin: 0; font-size: 13px; }
+.gateway-form .callout > div { flex: 1; }
+.gateway-form .callout ul { margin: 0; padding-left: 18px; }
 .gateway-form input[aria-invalid="true"] { border-color: var(--warning); }
 .gateway-form-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .gateway-form > p { margin: 0; font-size: 12px; }

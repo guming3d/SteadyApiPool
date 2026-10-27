@@ -334,6 +334,17 @@ class GatewayCreate(StrictModel):
     name: str = Field(max_length=32, pattern=GATEWAY_NAME_PATTERN)
     profile: GatewayProfile = "dev"
     platform: GatewayPlatform = "aca"
+    # When a resource fails: stop the deployment and delete what it created (cleanup.py).
+    cleanup_on_failure: bool = True
+
+
+class GatewayPreflight(StrictModel):
+    """What would keep a deployment there from succeeding, read before anything is created."""
+
+    location: str
+    problems: list[str]
+    # Common regions where nothing is in the way; only looked up when there are problems.
+    open_regions: list[str]
 
 
 class GatewayConnect(StrictModel):
@@ -363,6 +374,16 @@ class DeployStep(StrictModel):
     error: str | None = None
 
 
+class DeployCleanup(StrictModel):
+    """Deleting what a failed deployment created."""
+
+    state: Literal["running", "done", "failed"]
+    # What was deleted, and what Azure is still deleting (an environment takes its time).
+    deleted: list[str]
+    deleting: list[str]
+    error: str | None = None
+
+
 class GatewayDeployStatus(StrictModel):
     """How far deploying a gateway has got: its ARM deployment, and on AKS the install in the
     cluster and the HTTPS certificate after it."""
@@ -378,6 +399,9 @@ class GatewayDeployStatus(StrictModel):
     phase: Literal["azure", "cluster", "certificate", "done"] = "azure"
     # The end of the install's output, when it has finished or failed.
     log_tail: str | None = None
+    # Deployed with cleanup_on_failure; then cleanup follows a failure of the Azure resources.
+    auto_cleanup: bool = False
+    cleanup: DeployCleanup | None = None
 
 
 class AksBundleFile(StrictModel):

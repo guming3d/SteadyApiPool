@@ -178,6 +178,16 @@ export type GatewayCreate = {
   name: string
   profile: GatewayProfile
   platform: GatewayPlatform
+  /** When a resource fails: stop the deployment and delete what it created. */
+  cleanup_on_failure: boolean
+}
+
+/** What would keep a deployment there from succeeding, read before anything is created. */
+export type GatewayPreflight = {
+  location: string
+  problems: string[]
+  /** Common regions where nothing is in the way; only looked up when there are problems. */
+  open_regions: string[]
 }
 
 /** A LiteLLM proxy this app didn't deploy (e.g. on AKS). */
@@ -207,6 +217,18 @@ export type GatewayDeployStatus = {
   phase: "azure" | "cluster" | "certificate" | "done"
   /** The end of the install's output, once it has finished or failed. */
   log_tail: string | null
+  /** Deployed with cleanup_on_failure: a failure of its Azure resources is cleaned up. */
+  auto_cleanup: boolean
+  cleanup: DeployCleanup | null
+}
+
+/** Deleting what a failed deployment created. */
+export type DeployCleanup = {
+  state: "running" | "done" | "failed"
+  deleted: string[]
+  /** Azure is still deleting these (an environment takes its time). */
+  deleting: string[]
+  error: string | null
 }
 
 export type AksBundle = { name: string; namespace: string; files: { path: string; content: string }[] }

@@ -22,7 +22,7 @@ import { fill, useI18n } from "../i18n"
 import { targetFor } from "../product"
 import { isPublic, signIn as publicSignIn } from "../session"
 import type { SetupIdentity, TargetView } from "../types"
-import type { AksBundle, GatewayPlatform, GatewayProfile, GatewayView } from "./types"
+import type { AksBundle, DeployCleanup, GatewayCreate, GatewayDeployStatus, GatewayPlatform, GatewayProfile, GatewayView } from "./types"
 import { CopyButton } from "./call-guide"
 import { Button, Dialog, ErrorText, Field } from "../components/ui"
 
@@ -228,11 +228,37 @@ function FailedDeployment({ tenantId, subscriptionId, group, name, onCleanUp }: 
       <b>{name}</b>
       <span className="muted">{group} · {t.deployFailed}</span>
       {status.data.error && <span className="warn-text">{status.data.error}</span>}
+      {status.data.cleanup && <CleanupState cleanup={status.data.cleanup} />}
     </div>
     <div className="gateway-actions">
-      <Button variant="ghost" className="danger" onClick={onCleanUp}><Trash2 size={13} />{t.deployCleanup}</Button>
+      {canCleanUp(status.data) && <Button variant="ghost" className="danger" onClick={onCleanUp}><Trash2 size={13} />{t.deployCleanup}</Button>}
     </div>
   </li></ul>
+}
+
+/** By hand only when the app isn't cleaning up on its own, or couldn't. */
+function canCleanUp(status: GatewayDeployStatus): boolean {
+  return !status.cleanup || status.cleanup.state === "failed"
+}
+
+/** Deleting what a failed deployment created: how far it got. */
+function CleanupState({ cleanup }: { cleanup: DeployCleanup }) {
+  const { t } = useI18n("litellm")
+  if (cleanup.state === "running") {
+    return <span className="state"><LoaderCircle className="spin" size={14} />{t.cleanupRunning}</span>
+  }
+  if (cleanup.state === "failed") {
+    return <span className="warn-text">{fill(t.cleanupFailed, { error: cleanup.error ?? "" })}</span>
+  }
+  const left = cleanup.deleted.length + cleanup.deleting.length
+  return <span className="state" data-status="active">
+    <CheckCircle2 size={14} />
+    <span>
+      {left ? t.cleanupDone : t.cleanupNothing}
+      {cleanup.deleted.length > 0 && <small className="muted"> {fill(t.cleanupDeleted, { resources: cleanup.deleted.join(", ") })}</small>}
+      {cleanup.deleting.length > 0 && <small className="muted"> {fill(t.cleanupDeleting, { resources: cleanup.deleting.join(", ") })}</small>}
+    </span>
+  </span>
 }
 
 // -- choosing where the gateway runs ---------------------------------------------------------
@@ -318,17 +344,22 @@ function CreateGatewayForm({ tenantId, subscriptionId, platform, profile: sugges
   const [group, setGroup] = useState("rg-ai-gateway")
   const [location, setLocation] = useState("")
   const [profile, setProfile] = useState<GatewayProfile>(suggested)
+  const [cleanupOnFailure, setCleanupOnFailure] = useState(true)
   const [started, setStarted] = useState<{ group: string; name: string } | null>(null)
+  const draft: GatewayCreate = {
+    tenant_id: tenantId,
+    subscription_id: subscriptionId,
+    resource_group: group.trim(),
+    location,
+    name: name.trim(),
+    profile,
+    platform,
+    cleanup_on_failure: cleanupOnFailure,
+  }
+  // The region's capacity and quotas for what this deployment creates, before anything is.
+  const preflight = useQuery({ ...queries.preflight(draft), enabled: Boolean(location) && !started })
   const create = useMutation({
-    mutationFn: () => api.createGateway({
-      tenant_id: tenantId,
-      subscription_id: subscriptionId,
-      resource_group: group.trim(),
-      location,
-      name: name.trim(),
-      profile,
-      platform,
-    }),
+    mutationFn: () => api.createGateway(draft),
     onSuccess: (gateway) => {
       setStarted({ group: gateway.resource_group, name: gateway.name })
     },
@@ -348,7 +379,9 @@ function CreateGatewayForm({ tenantId, subscriptionId, platform, profile: sugges
   }
   if (options.isLoading) return <div className="state"><LoaderCircle className="spin" size={14} />{t.loading}</div>
   if (!options.data) return <ErrorText error={options.error} />
-  const valid = isGatewayName(name.trim()) && RESOURCE_GROUP.test(group.trim()) && Boolean(location)
+  const blocked = Boolean(preflight.data?.problems.length)
+  const valid = isGatewayName(name.trim()) && RESOURCE_GROUP.test(group.trim()) && Boolean(location) && !blocked
+  const openRegions = (preflight.data?.open_regions ?? []).filter((item) => locations.includes(item))
   const aks = platform === "aks"
   const estimate = (aks ? AKS_PROFILE_ESTIMATE : PROFILE_ESTIMATE)[profile]
   const profileHint = profile === "dev"
@@ -385,6 +418,23 @@ function CreateGatewayForm({ tenantId, subscriptionId, platform, profile: sugges
       high: formatMoney(estimate.high, "USD", locale, 0),
     })}</div>
     {options.data.unregistered_providers.length > 0 && <div className="state">{fill(t.createRegisterProvider, { providers: options.data.unregistered_providers.join(", ") })}</div>}
+    {location && (preflight.isLoading
+      ? <div className="state"><LoaderCircle className="spin" size={14} />{fill(t.preflightChecking, { location })}</div>
+      : preflight.error
+        ? <div className="state">{t.preflightUnknown}</div>
+        : blocked
+          ? <div className="callout warning"><CircleAlert size={15} /><div>
+            <b>{fill(t.preflightProblems, { location })}</b>
+            <ul>{preflight.data!.problems.map((problem) => <li key={problem}>{problem}</li>)}</ul>
+            {openRegions.length > 0 && <div className="picker-actions">
+              <span className="muted">{t.preflightRegions}</span>
+              {openRegions.slice(0, 5).map((region) => <Button key={region} variant="outline" onClick={() => setLocation(region)}>{region}</Button>)}
+            </div>}
+          </div></div>
+          : preflight.data && <div className="state" data-status="active"><CheckCircle2 size={14} />{fill(t.preflightOk, { location })}</div>)}
+    <label className="check"><input type="checkbox" checked={cleanupOnFailure} onChange={(event) => setCleanupOnFailure(event.target.checked)} />
+      <span className="check-copy">{t.createCleanup}<small>{t.createCleanupHint}</small></span>
+    </label>
     <div className="callout warning"><CircleAlert size={15} /><div><span>{aks ? t.aksBilling : t.createBilling}</span></div></div>
     <ErrorText error={create.error} />
     <div className="gateway-form-actions">
@@ -457,12 +507,14 @@ function DeployProgress({ tenantId, subscriptionId, group, name, onDone, onClean
     </details>}
     {state === "failed" && <div className="callout warning"><CircleAlert size={15} /><div>
       <b>{t.deployFailed}</b><span>{status.data?.error}</span>
-      <span className="muted">{t.deployCleanupHint}</span>
+      {status.data?.cleanup
+        ? <CleanupState cleanup={status.data.cleanup} />
+        : <span className="muted">{t.deployCleanupHint}</span>}
       <div className="picker-actions">
         {aks && phase === "cluster" && <Button disabled={retry.isPending} onClick={() => retry.mutate()}>
           {retry.isPending ? <LoaderCircle className="spin" size={13} /> : <RefreshCw size={13} />}{t.deployRetryInstall}
         </Button>}
-        <Button variant="ghost" className="danger" onClick={() => setCleaning(true)}><Trash2 size={13} />{t.deployCleanup}</Button>
+        {status.data && canCleanUp(status.data) && <Button variant="ghost" className="danger" onClick={() => setCleaning(true)}><Trash2 size={13} />{t.deployCleanup}</Button>}
       </div>
       <ErrorText error={retry.error} />
     </div></div>}

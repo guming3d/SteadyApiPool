@@ -9,7 +9,7 @@ import json
 import logging
 import re
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Collection, Iterator, Mapping
 from contextlib import suppress
 from threading import Lock
 from typing import Any, Protocol
@@ -177,7 +177,9 @@ class ArmClient:
         headers: Mapping[str, str] | None = None,
         params: Mapping[str, str] | None = None,
         allow_not_found: bool = False,
+        accept: Collection[int] = (),
     ) -> httpx.Response:
+        """``accept``: error statuses returned rather than raised, for a body worth reading."""
         query = {"api-version": api_version, **(params or {})}
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             response = self._http.request(
@@ -202,9 +204,13 @@ class ArmClient:
             break
         if response.status_code == 404 and allow_not_found:
             return response
-        if response.status_code >= 400:
+        if response.status_code >= 400 and response.status_code not in accept:
             raise _arm_error(response)
         return response
+
+    def get_url(self, url: str, *, accept: Collection[int] = ()) -> httpx.Response:
+        """GETs an absolute ARM URL, e.g. a long-running operation's Location."""
+        return self._absolute_get(url, accept=accept)
 
     def wait(self, response: httpx.Response, *, timeout_seconds: float = 120.0) -> None:
         """Polls an ARM long-running operation (202 + Azure-AsyncOperation/Location)."""
@@ -279,7 +285,7 @@ class ArmClient:
             # nextLink is absolute and already carries api-version and $skipToken.
             response = self._absolute_get(next_link)
 
-    def _absolute_get(self, url: str) -> httpx.Response:
+    def _absolute_get(self, url: str, *, accept: Collection[int] = ()) -> httpx.Response:
         # Never send the bearer token to a host other than the configured ARM endpoint.
         if not url.startswith(f"{self._origin}/"):
             raise ArmError(502, "UnexpectedNextLink", "ARM returned a nextLink for another host")
@@ -289,7 +295,7 @@ class ArmClient:
                 self._sleep(_retry_delay(response, attempt))
                 continue
             break
-        if response.status_code >= 400:
+        if response.status_code >= 400 and response.status_code not in accept:
             raise _arm_error(response)
         return response
 

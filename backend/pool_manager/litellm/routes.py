@@ -58,6 +58,7 @@ from .models import (
     GatewayDelete,
     GatewayDeleteCheck,
     GatewayDeployStatus,
+    GatewayPreflight,
     GatewayView,
     MemberBackendWrite,
     PoolEndpoint,
@@ -295,6 +296,12 @@ def create_options(
 @router.post("/target/gateways")
 def create_gateway(body: GatewayCreate, targets: Targets, principal: Actor) -> GatewayView:
     return targets.create(body, principal.name)
+
+
+@router.post("/target/gateways/preflight")
+def gateway_preflight(body: GatewayCreate, targets: Targets, _: Reader) -> GatewayPreflight:
+    """Read-only: what would keep a deployment there from succeeding."""
+    return targets.preflight(body)
 
 
 @router.get("/target/deploy-status")

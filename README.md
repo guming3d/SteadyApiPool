@@ -128,6 +128,8 @@ No gateway yet? Click **Deploy a gateway**. The app first asks **Where should th
 
 - **Deploy on Container Apps** opens a form with everything filled in: a unique name, a resource
   group, a region and the size (**Dev / trial** or **Production**), with a list-price estimate.
+  As you pick the region it checks that the region can take every resource of the gateway (see
+  [Before deploying, and when it fails anyway](#before-deploying-and-when-it-fails-anyway)).
   Click **Deploy**. The app deploys LiteLLM, PostgreSQL, a managed identity and Application
   Insights with your own Azure rights, and follows the deployment, which usually takes 5–15
   minutes (PostgreSQL is the slowest). You can close the app meanwhile; setup picks it up again.
@@ -456,6 +458,35 @@ compiled into `backend/pool_manager/litellm/templates/litellm-aca.json`). Everyt
 The gateway's secrets are generated once by the app when it deploys and are never rotated by it:
 the salt key encrypts the member keys LiteLLM stores, so it must not change. That is also why a
 gateway that already exists is never deployed over.
+
+#### Before deploying, and when it fails anyway
+
+A deployment creates several resources at once, and one that Azure refuses halfway used to leave
+the others behind, billed. Now:
+
+- **The region is checked first.** While you fill in the form, the app reads, without changing
+  anything, whether the region can take each resource the gateway needs: that Azure offers each
+  resource type there, PostgreSQL Flexible Server (the subscription's restrictions in the region,
+  the server version, the Burstable size of the profile and the vCore quota), room for one more
+  Container Apps environment and, on AKS, the node size, its zones and the vCPU quota. It lists
+  every problem at once, offers regions where everything fits, and **Deploy** stays off until the
+  region works.
+- **Azure validates the deployment before it starts.** Clicking **Deploy** asks ARM to validate
+  the deployment exactly as it will be sent (the providers' own checks of sizes, names and
+  policies). If it fails, nothing is created; an empty resource group the app made for it goes
+  again.
+- **A resource that fails anyway stops the deployment and its resources are deleted.** Azure can
+  still run out of capacity in the minutes a deployment takes. With **If a resource fails, stop
+  the deployment and delete what it created** ticked (the default), the app stops the deployment
+  as soon as a resource fails, then deletes the resources it created: only those tagged as this
+  gateway's, never the resource group. It keeps trying while Azure refuses a delete (a
+  dependency still there, a resource still being created) and shows what it deleted and what
+  Azure is still deleting. The deployment's record stays, with the error, and the same name can
+  be deployed again once Azure has finished. This happens while the app follows the deployment,
+  so if you closed it, it starts when you open the gateway step again. Untick the option to keep
+  the resources for a look; **Delete what was created** then removes them by hand. On AKS this
+  covers the Azure resources; an install in the cluster that fails keeps **Run the install
+  again**.
 
 **Deleting a gateway** (**Delete the gateway** in the gateway panel, or **Delete** in the gateway
 list) is limited to gateways this app deployed, and needs the name typed again. It deletes the

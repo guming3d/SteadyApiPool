@@ -171,11 +171,15 @@ class DemoCredential:
 class DemoAzure(FakeApim):
     """An APIM service and a LiteLLM gateway's Azure. A LiteLLM deployment started from the
     wizard finishes after a few status polls; on AKS the install in the cluster follows, and the
-    gateway answers with the key it was given."""
+    gateway answers with the key it was given. One whose name starts with "fail" has its
+    database fail instead, after creating a few resources, for the cleanup to delete. West US 3
+    has no Container Apps environment quota left, for the region check to refuse."""
 
     def __init__(self) -> None:
         super().__init__(service_id=APIM_ID)
         self.polls: dict[str, int] = {}
+        self.aca_locations = [*self.aca_locations, "West US 3"]
+        self.environments_free = {"westus3": 0}
 
     def _deployment(
         self, request: httpx.Request, caller: str, path: str, body: Any
@@ -191,6 +195,18 @@ class DemoAzure(FakeApim):
             if self.polls[key] >= DEPLOY_POLLS:
                 parts = path.split("/")
                 name = record["parameters"]["name"]
+                if name.startswith("fail"):
+                    self.fail_resource(
+                        name,
+                        group=parts[4],
+                        subscription=parts[2],
+                        created=(
+                            "Microsoft.ManagedIdentity/userAssignedIdentities",
+                            "Microsoft.OperationalInsights/workspaces",
+                            "Microsoft.App/managedEnvironments",
+                        ),
+                    )
+                    return super()._deployment(request, caller, path, body)
                 self.finish_deployment(name, group=parts[4], subscription=parts[2])
                 assert isinstance(self.litellm, DemoLiteLLM)
                 if "masterKey" in record["parameters"]:  # Container Apps; AKS: Run Command

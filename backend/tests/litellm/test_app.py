@@ -30,6 +30,7 @@ from pool_manager.discovery import DeploymentDiscovery
 from pool_manager.litellm.access import LiteLLMAccessChecker
 from pool_manager.litellm.api_test import LiteLLMTester
 from pool_manager.litellm.benchmark import BenchmarkRunner
+from pool_manager.litellm.cleanup import GatewayCleanup
 from pool_manager.litellm.cost import LiteLLMCost
 from pool_manager.litellm.gateway import GatewayConnection
 from pool_manager.litellm.metrics import LiteLLMMonitor
@@ -96,7 +97,13 @@ def _client(
         sleep=lambda _: None,
         state_file=state_file or Path(tempfile.mkdtemp()) / "state.json",
     )
-    gateways = LiteLLMTargets(chooser, gateway_transport=azure.litellm.transport(), secrets=secrets)
+    gateways = LiteLLMTargets(
+        chooser,
+        gateway_transport=azure.litellm.transport(),
+        secrets=secrets,
+        # Cleanups after failed deployments run inline, at once.
+        cleanup=GatewayCleanup(run=lambda job: job(), sleep=lambda _: None),
+    )
     overrides = {
         get_settings: settings,
         get_litellm_service: service,

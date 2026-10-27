@@ -30,6 +30,7 @@ from .errors import ServiceError
 from .litellm.access import LiteLLMAccessChecker
 from .litellm.api_test import LiteLLMTester
 from .litellm.benchmark import BenchmarkRunner
+from .litellm.cleanup import GatewayCleanup
 from .litellm.cost import LiteLLMCost
 from .litellm.gateway import GatewayConnection
 from .litellm.metrics import LiteLLMMonitor
@@ -132,9 +133,17 @@ def _litellm_cost() -> LiteLLMCost:
 
 
 @lru_cache
+def _cleanups() -> GatewayCleanup:
+    """Cleanups after failed deployments; like load tests, they outlive a gateway switch."""
+    return GatewayCleanup()
+
+
+@lru_cache
 def _litellm_targets() -> LiteLLMTargets:
     settings = get_settings()
-    return LiteLLMTargets(_targets(), secrets=_secrets() if settings.local else None)
+    return LiteLLMTargets(
+        _targets(), secrets=_secrets() if settings.local else None, cleanup=_cleanups()
+    )
 
 
 # -- the chosen gateway, whichever product it is ---------------------------------------------

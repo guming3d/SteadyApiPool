@@ -132,7 +132,11 @@ def test_deploying_on_aks_runs_the_template_and_selects_it(
     assert (view["platform"], view["url"], view["id"]) == ("aks", URL, CLUSTER)
     deployment = azure.arm_deployments[DEPLOYMENT.casefold()]
     assert deployment["template"] == aks_template()
-    assert deployment["tags"] == {"managed-by": "ai-gateway-pool", "ai-gateway-platform": "aks"}
+    assert deployment["tags"] == {
+        "managed-by": "ai-gateway-pool",
+        "ai-gateway-platform": "aks",
+        "ai-gateway-on-failure": "delete",
+    }
     parameters = deployment["parameters"]
     assert parameters["deployerPrincipalId"] == "user-oid"
     assert parameters["zones"] == []  # dev: one node, no zones
@@ -169,7 +173,7 @@ def test_a_production_cluster_uses_the_zones_of_its_node_size(
     [
         (lambda a: a.dns_taken.add("gw-aks"), 409, "is taken"),
         (lambda a: setattr(a, "vm_restricted", True), 409, "isn't available"),
-        (lambda a: setattr(a, "vcpus_free", 2), 409, "Not enough vCPU quota"),
+        (lambda a: setattr(a, "vcpus_free", 2), 409, "DDSv5 vCPUs has 2 free"),
         (lambda a: a.allow("app", f"/subscriptions/{SUBSCRIPTION}", "*/read"), 403, "Owner"),
         (
             lambda a: a.postgres_restricted.update({"swedencentral": "Restricted."}),
@@ -189,6 +193,22 @@ def test_what_aks_needs_is_checked_before_anything_is_created(
     assert text in response.json()["detail"]
     assert not azure.arm_deployments
     assert f"/subscriptions/{SUBSCRIPTION}/resourcegroups/rg-new" not in azure.resource_groups
+    assert not wizard.secrets.get(f"aks-install:{CLUSTER}")
+
+
+def test_a_cluster_whose_resources_fail_is_cleaned_up_and_its_keys_forgotten(
+    wizard: _Wizard, azure: FakeAzure
+) -> None:
+    assert wizard.create().status_code == 200
+    assert wizard.secrets.get(f"aks-install:{CLUSTER}")
+    (identity,) = azure.fail_resource("gw-aks")
+    wizard.status()
+
+    status = wizard.status()
+
+    assert (status["platform"], status["phase"], status["state"]) == ("aks", "azure", "failed")
+    assert status["cleanup"]["state"] == "done"
+    assert identity.casefold() not in azure.resources
     assert not wizard.secrets.get(f"aks-install:{CLUSTER}")
 
 
