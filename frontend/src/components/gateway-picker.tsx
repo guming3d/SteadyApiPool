@@ -76,6 +76,15 @@ export function GatewayPicker({ target, user }: { target: TargetView; user: Setu
 
   const needsSignIn = subscriptions.error instanceof ApiError && subscriptions.error.status === 401
   const external = target.gateway_kind === "external"
+  // An AKS gateway this app deployed is saved as an external one, but the list has its cluster:
+  // mark that row in use rather than showing the same gateway twice.
+  const clusterId = target.cluster_id?.toLowerCase()
+  const isCurrent = (gateway: GatewayView) => external
+    ? Boolean(clusterId) && gateway.id.toLowerCase() === clusterId
+    : gateway.name.toLowerCase() === target.gateway_name?.toLowerCase()
+      && gateway.resource_group.toLowerCase() === target.resource_group?.toLowerCase()
+  const listed = Boolean(clusterId) && target.subscription_id === subscriptionId
+    && (gateways.isLoading || Boolean(gateways.data?.some(isCurrent)))
   // The current gateway, when it isn't in the list: its deployment may have failed before the
   // Container App existed, and what it did create can be cleaned up from here.
   // A new AKS gateway the app is still installing: its progress drives the install on.
@@ -112,7 +121,7 @@ export function GatewayPicker({ target, user }: { target: TargetView; user: Setu
       </div></div>
       : <ErrorText error={tenants.error ?? subscriptions.error} />}
 
-    {external && mode === "list" && <ul className="gateway-list"><li>
+    {external && !listed && mode === "list" && <ul className="gateway-list"><li>
       <Plug size={15} />
       <div>
         <b>{target.gateway_name}</b>
@@ -130,8 +139,7 @@ export function GatewayPicker({ target, user }: { target: TargetView; user: Setu
         : <ErrorText error={gateways.error} />}
       {gateways.data && (gateways.data.length
         ? <ul className="gateway-list">{gateways.data.map((gateway) => {
-          const current = !external && gateway.name.toLowerCase() === target.gateway_name?.toLowerCase()
-            && gateway.resource_group.toLowerCase() === target.resource_group?.toLowerCase()
+          const current = isCurrent(gateway)
           return <li key={gateway.id}>
             <Server size={15} />
             <div>
