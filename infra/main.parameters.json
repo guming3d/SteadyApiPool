@@ -4,6 +4,12 @@
   "parameters": {
     "environmentName": { "value": "${AZURE_ENV_NAME}" },
     "location": { "value": "${AZURE_LOCATION}" },
+    "product": { "value": "${GATEWAY_PRODUCT}" },
+    "apimName": { "value": "${APIM_NAME}" },
+    "apimSkuName": { "value": "${APIM_SKU=BasicV2}" },
+    "apimPublisherEmail": { "value": "${APIM_PUBLISHER_EMAIL}" },
+    "apimResourceGroup": { "value": "${APIM_RESOURCE_GROUP}" },
+    "apimSubscriptionId": { "value": "${APIM_SUBSCRIPTION_ID=${AZURE_SUBSCRIPTION_ID}}" },
     "gatewayName": { "value": "${GATEWAY_NAME}" },
     "gatewayResourceGroup": { "value": "${GATEWAY_RESOURCE_GROUP=${AZURE_RESOURCE_GROUP}}" },
     "gatewaySubscriptionId": { "value": "${GATEWAY_SUBSCRIPTION_ID=${AZURE_SUBSCRIPTION_ID}}" },
