@@ -1,10 +1,12 @@
 """In-memory Azure (ARM and the APIs next to it) behind ``httpx.MockTransport``.
 
-What the app calls besides the gateway itself: the gateway's Container App and its secrets,
-ARM template deployments, tenants, subscriptions, resource groups and providers, effective
-permissions and role assignments, Foundry accounts and deployments, Azure Monitor metrics,
-Cost Management, the Retail Prices API and Log Analytics queries. It records every request so
-tests can assert on API versions and headers, and maps bearer tokens to callers.
+What the app calls besides the gateway itself: tenants, subscriptions, resource groups and
+providers, effective permissions and role assignments, Foundry accounts and deployments, Azure
+Monitor metrics, Cost Management, the Retail Prices API, Log Analytics queries, and for LiteLLM
+the gateway's Container App and its secrets, ARM template deployments and AKS. It records every
+request so tests can assert on API versions and headers, and maps bearer tokens to callers.
+
+tests/apim/fake_apim.py adds an APIM service (``gateway_resource``).
 """
 
 from __future__ import annotations
@@ -36,6 +38,15 @@ LOGS_HOST = "api.loganalytics.azure.com"
 _PG_COMPUTE = "Azure Database for PostgreSQL Flexible Server Burstable BS Series Compute"
 # The Retail Prices API's meters for one region, trimmed to what cost.py reads.
 RETAIL_PRICES = {
+    "API Management": [
+        {"meterName": "Basic v2 Unit", "unitOfMeasure": "1 Hour", "retailPrice": 0.20548},
+        {"meterName": "Basic v2 Secondary Unit", "unitOfMeasure": "1 Hour", "retailPrice": 0.20548},
+        {"meterName": "Basic v2 Calls", "unitOfMeasure": "10K", "retailPrice": 0},
+        {"meterName": "Basic v2 Calls", "unitOfMeasure": "10K", "retailPrice": 0.03},
+        {"meterName": "Developer Unit", "unitOfMeasure": "1 Hour", "retailPrice": 0.0658},
+        {"meterName": "Developer Workspace Pack", "unitOfMeasure": "1/Hour", "retailPrice": 0},
+        {"meterName": "Consumption Calls", "unitOfMeasure": "10K", "retailPrice": 0.035},
+    ],
     # An AKS gateway's nodes (Linux; the Windows and Spot meters must not be taken) and tier.
     "Virtual Machines": [
         {
@@ -100,6 +111,7 @@ OPENAI_USER = (
     "5e0bd9bd-7b93-4f28-af87-19fc36ad61bd"
 )
 PROVIDERS = (
+    "Microsoft.ApiManagement",
     "Microsoft.App",
     "Microsoft.OperationalInsights",
     "Microsoft.Insights",
@@ -174,8 +186,8 @@ class FakeAzure:
     )
     # Azure Monitor series by (lower-case resource ID, metric name); see add_metric.
     metric_data: dict[tuple[str, str], list[dict[str, Any]]] = field(default_factory=dict)
-    # Month-to-date cost by gateway tag value; callers Cost Management refuses, and an error
-    # (status, code) every cost query fails with.
+    # Month-to-date cost by gateway tag value (LiteLLM) or lower-case resource ID (APIM);
+    # callers Cost Management refuses, and an error (status, code) every cost query fails with.
     costs: dict[str, tuple[float, str]] = field(default_factory=dict)
     cost_forbidden: set[str] = field(default_factory=set)
     cost_error: tuple[int, str] | None = None
@@ -469,6 +481,8 @@ class FakeAzure:
             return self._cost(request, caller, path.removesuffix(_COST_QUERY))
         if "/Microsoft.CognitiveServices/" in path:
             return self._cognitive(request, caller, path)
+        if (answer := self.gateway_resource(request, caller, path, body)) is not None:
+            return answer
         if _DEPLOYMENTS in path:
             return self._deployment(request, caller, path, body)
         if _CLUSTERS in path or "/Microsoft.Compute/" in path or "/Microsoft.Network/" in path:
@@ -480,6 +494,12 @@ class FakeAzure:
         if path.casefold() in self.resources:
             return self._tagged(request, caller, path)
         return self._root(request, caller, path, body)
+
+    def gateway_resource(
+        self, request: httpx.Request, caller: str, path: str, body: Any
+    ) -> httpx.Response | None:
+        """A product's own resources, before everything else; None for anything else."""
+        return None
 
     def _root(self, request: httpx.Request, caller: str, path: str, body: Any) -> httpx.Response:
         """Tenants, subscriptions, resource groups, their resources and providers."""
@@ -922,7 +942,8 @@ class FakeAzure:
         return _error(400, f"unhandled {request.method} {path}")
 
     def _cost(self, request: httpx.Request, caller: str, scope: str) -> httpx.Response:
-        """Cost Management's query: one ActualCost total for the resources with one tag."""
+        """Cost Management's query: one ActualCost total for the resources with one tag
+        (LiteLLM), or with these resource IDs (APIM)."""
         if request.method != "POST":
             return _error(405, "MethodNotAllowed")
         if caller in self.cost_forbidden:
@@ -931,9 +952,14 @@ class FakeAzure:
             return _error(*self.cost_error)
         body = json.loads(request.content)
         assert body["type"] == "ActualCost" and body["timeframe"] == "MonthToDate", body
-        tags = body["dataset"]["filter"]["tags"]
-        assert tags["name"] == "ai-gateway", tags
-        found = [self.costs[value] for value in tags["values"] if value in self.costs]
+        filter_ = body["dataset"]["filter"]
+        if "tags" in filter_:
+            assert filter_["tags"]["name"] == "ai-gateway", filter_
+            keys = filter_["tags"]["values"]
+        else:
+            keys = filter_["dimensions"]["values"]
+            assert all(resource.startswith(scope.casefold()) for resource in keys)
+        found = [self.costs[value] for value in keys if value in self.costs]
         rows = [[sum(amount for amount, _ in found), found[0][1]]] if found else []
         columns = [{"name": "Cost", "type": "Number"}, {"name": "Currency", "type": "String"}]
         return httpx.Response(200, json={"properties": {"columns": columns, "rows": rows}})

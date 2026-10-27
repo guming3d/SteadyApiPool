@@ -14,8 +14,9 @@ from fastapi.testclient import TestClient
 from pool_manager.access import allows, user_token
 from pool_manager.apim.access import ApimAccessChecker
 from pool_manager.app import app
-from tests.apim.fake_apim import OPENAI_USER, SERVICE, TENANT, FakeApim
+from tests.apim.fake_apim import SERVICE, TENANT, FakeApim
 from tests.apim.test_app import WRITE, _client, _import, _seed_gpt6, _settings
+from tests.fake_azure import OPENAI_USER
 
 APIM = "Microsoft.ApiManagement/service"
 READ = [f"{APIM}/read", f"{APIM}/*/read"]

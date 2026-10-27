@@ -128,7 +128,7 @@ def test_lists_tenants_subscriptions_and_services(wizard: _Wizard, apim: FakeApi
 
 def test_create_options(wizard: _Wizard, apim: FakeApim) -> None:
     apim.add_resource_group("rg-ai")
-    apim.providers[SUBSCRIPTION] = "NotRegistered"
+    apim.providers[SUBSCRIPTION] = {"Microsoft.ApiManagement": "NotRegistered"}
 
     options = wizard.client.get(
         "/api/apim/target/create-options", params={"subscription_id": SUBSCRIPTION}
@@ -194,13 +194,13 @@ def test_select_without_a_tenant_reads_it_from_the_subscription(
 def test_create_registers_the_provider_and_creates_the_group(
     wizard: _Wizard, apim: FakeApim
 ) -> None:
-    apim.providers[SUBSCRIPTION] = "NotRegistered"
+    apim.providers[SUBSCRIPTION] = {"Microsoft.ApiManagement": "NotRegistered"}
 
     response = _create(wizard)
 
     assert response.status_code == 200, response.text
     assert response.json()["provisioning_state"] == "Activating"
-    assert apim.providers[SUBSCRIPTION] == "Registered"
+    assert apim.providers[SUBSCRIPTION]["Microsoft.ApiManagement"] == "Registered"
     group = apim.resource_groups[f"/subscriptions/{SUBSCRIPTION}/resourcegroups/rg-new"]
     assert group["tags"] == {MANAGED_TAG: MANAGED_TAG_VALUE}
     put = next(
