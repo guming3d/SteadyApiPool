@@ -11,31 +11,34 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from pool_manager.access import AccessChecker, SignInCredential
+from pool_manager.access import SignInCredential
 from pool_manager.app import (
     app,
     get_access,
     get_benchmarks,
-    get_cost,
     get_discovery,
-    get_monitor,
-    get_service,
+    get_litellm_cost,
+    get_litellm_monitor,
+    get_litellm_service,
+    get_litellm_targets,
+    get_litellm_tester,
     get_targets,
-    get_tester,
 )
 from pool_manager.arm import ArmClient
 from pool_manager.config import Settings, get_settings
-from pool_manager.cost import CostReader
 from pool_manager.discovery import DeploymentDiscovery
-from pool_manager.litellm.api_test import ApiTester
+from pool_manager.litellm.access import LiteLLMAccessChecker
+from pool_manager.litellm.api_test import LiteLLMTester
 from pool_manager.litellm.benchmark import BenchmarkRunner
+from pool_manager.litellm.cost import LiteLLMCost
 from pool_manager.litellm.gateway import GatewayConnection
-from pool_manager.litellm.service import PoolManagerService
-from pool_manager.metrics import PoolMonitor
+from pool_manager.litellm.metrics import LiteLLMMonitor
+from pool_manager.litellm.service import LiteLLMService
+from pool_manager.litellm.target import LiteLLMTargets
 from pool_manager.secret_store import SecretStore
 from pool_manager.target import TargetChooser
 from tests.fake_azure import FakeAzure, FakeCredential
-from tests.fake_litellm import URL
+from tests.litellm.fake_litellm import URL
 
 WRITE = {"X-Pool-Manager": "1"}
 
@@ -77,34 +80,34 @@ def _client(
         transport=azure.litellm.transport(),
         sleep=lambda _: None,
     )
-    service = PoolManagerService(settings, arm, gateway)
+    service = LiteLLMService(settings, arm, gateway)
     discovery = DeploymentDiscovery(settings, arm, service)
-    access = AccessChecker(
+    access = LiteLLMAccessChecker(
         settings, arm, service, lambda: [view.account_id for view in discovery.list()], sign_in
     )
-    cost = CostReader(settings, service, transport=azure.transport())
-    monitor = PoolMonitor(settings, arm, service, transport=azure.transport())
-    tester = ApiTester(settings, service, transport=azure.litellm.transport())
+    cost = LiteLLMCost(settings, service, transport=azure.transport())
+    monitor = LiteLLMMonitor(settings, arm, service, transport=azure.transport())
+    tester = LiteLLMTester(settings, service, transport=azure.litellm.transport())
     # Sign-in routes reach the target chooser too; never the developer's real state file.
     chooser = TargetChooser(
         settings,
         sign_in or credential or FakeCredential(),
         transport=azure.transport(),
-        gateway_transport=azure.litellm.transport(),
         sleep=lambda _: None,
         state_file=state_file or Path(tempfile.mkdtemp()) / "state.json",
-        secrets=secrets,
     )
+    gateways = LiteLLMTargets(chooser, gateway_transport=azure.litellm.transport(), secrets=secrets)
     overrides = {
         get_settings: settings,
-        get_service: service,
+        get_litellm_service: service,
         get_discovery: discovery,
         get_access: access,
-        get_cost: cost,
-        get_monitor: monitor,
-        get_tester: tester,
+        get_litellm_cost: cost,
+        get_litellm_monitor: monitor,
+        get_litellm_tester: tester,
         get_benchmarks: benchmarks or BenchmarkRunner(azure.litellm.transport()),
         get_targets: chooser,
+        get_litellm_targets: gateways,
     }
     for factory, value in overrides.items():
         app.dependency_overrides[factory] = _constant(value)
@@ -158,7 +161,7 @@ def pool_body(members: list[str], etag: str | None = None, **extra: Any) -> dict
 
 def create_pool(client: TestClient, azure: FakeAzure, pool_id: str = "gpt6") -> list[str]:
     members = import_members(client, seed(azure))
-    response = client.put(f"/api/pools/{pool_id}", json=pool_body(members), headers=WRITE)
+    response = client.put(f"/api/litellm/pools/{pool_id}", json=pool_body(members), headers=WRITE)
     assert response.status_code == 200, response.text
     return members
 
@@ -173,41 +176,43 @@ def test_deployments_to_a_pool_clients_can_call(client: TestClient, azure: FakeA
     assert all(d["backend_id"] is None for d in deployments)
 
     members = import_members(client, accounts)
-    check = client.post("/api/pools/model-check", json={"members": members}).json()
+    check = client.post("/api/litellm/pools/model-check", json={"members": members}).json()
     assert check["ok"] and check["model_names"] == ["gpt-6"]
-    preview = client.post("/api/pools/gpt6/preview", json=pool_body(members)).json()
+    preview = client.post("/api/litellm/pools/gpt6/preview", json=pool_body(members)).json()
     assert preview["current"] is None and "model: azure/gpt6" in preview["proposed"]
 
-    pool = client.put("/api/pools/gpt6", json=pool_body(members), headers=WRITE).json()
+    pool = client.put("/api/litellm/pools/gpt6", json=pool_body(members), headers=WRITE).json()
     assert [m["backend_id"] for m in pool["members"]] == members
     assert len(azure.litellm.pool("gpt6")) == 2
     assert {d["backend_id"] for d in client.get("/api/deployments").json()} == set(members)
 
-    endpoint = client.post("/api/pools/gpt6/aliases", json={"name": "gpt-4o"}, headers=WRITE).json()
+    endpoint = client.post(
+        "/api/litellm/pools/gpt6/aliases", json={"name": "gpt-4o"}, headers=WRITE
+    ).json()
     assert endpoint == {
         "pool_id": "gpt6",
         "base_url": f"{URL}/v1",
         "model_names": ["gpt6", "gpt-4o"],
         "aliases": [{"name": "gpt-4o", "pool_id": "gpt6", "managed": True}],
     }
-    key = client.post("/api/pools/gpt6/keys", headers=WRITE).json()
+    key = client.post("/api/litellm/pools/gpt6/keys", headers=WRITE).json()
     assert key["view"]["alias"] == "pool-test-gpt6"
-    keys = client.get("/api/pools/gpt6/keys").json()
+    keys = client.get("/api/litellm/pools/gpt6/keys").json()
     assert [k["id"] for k in keys] == [key["view"]["id"]]
     assert "key" not in keys[0]
 
     result = client.post(
-        "/api/pools/gpt6/test",
+        "/api/litellm/pools/gpt6/test",
         json={"key": key["key"], "body": {"model": "gpt-4o", "messages": []}},
         headers=WRITE,
     ).json()
     assert result["status"] == 200
     assert result["headers"]["x-litellm-model-id"] == f"gpt6--{members[0]}"
 
-    config = client.get("/api/pools/gpt6/config").json()["yaml"]
+    config = client.get("/api/litellm/pools/gpt6/config").json()["yaml"]
     assert "model_group_alias:" in config and "gpt-4o: gpt6" in config
 
-    plan = client.get("/api/pools/gpt6/removal").json()
+    plan = client.get("/api/litellm/pools/gpt6/removal").json()
     confirm = {
         "pools": plan["pools"],
         "delete_aliases": [a["name"] for a in plan["delete_aliases"]],
@@ -215,7 +220,7 @@ def test_deployments_to_a_pool_clients_can_call(client: TestClient, azure: FakeA
         "delete_keys": [k["alias"] for k in plan["delete_keys"]],
         "etag": pool["etag"],
     }
-    removed = client.post("/api/pools/gpt6/remove", json=confirm, headers=WRITE)
+    removed = client.post("/api/litellm/pools/gpt6/remove", json=confirm, headers=WRITE)
     assert removed.status_code == 200, removed.text
     assert azure.litellm.rows == [] and azure.litellm.keys == {}
 
@@ -223,7 +228,7 @@ def test_deployments_to_a_pool_clients_can_call(client: TestClient, azure: FakeA
 def test_pool_routes_need_a_gateway(azure: FakeAzure) -> None:
     client = _client(azure, _settings(subscription_id="", resource_group="", gateway_name=""))
     try:
-        response = client.get("/api/pools")
+        response = client.get("/api/litellm/pools")
     finally:
         app.dependency_overrides.clear()
 
@@ -234,14 +239,14 @@ def test_pool_routes_need_a_gateway(azure: FakeAzure) -> None:
 def test_gateway_errors_become_json(client: TestClient, azure: FakeAzure) -> None:
     azure.litellm.master_key = "rotated"
 
-    response = client.get("/api/pools")
+    response = client.get("/api/litellm/pools")
 
     assert response.status_code == 502
     assert "master key" in response.json()["detail"]
 
 
 def test_capabilities(client: TestClient) -> None:
-    caps = client.get("/api/capabilities").json()
+    caps = client.get("/api/litellm/capabilities").json()
 
     assert caps["gateway_name"] == "gw"
     assert caps["gateway_kind"] == "aca"
@@ -252,7 +257,7 @@ def test_capabilities(client: TestClient) -> None:
 
 def test_cleanup_needs_the_gateway_name(client: TestClient, azure: FakeAzure) -> None:
     create_pool(client, azure)
-    plan = client.get("/api/cleanup").json()
+    plan = client.get("/api/litellm/cleanup").json()
     confirm = {
         "pools": plan["pools"],
         "delete_aliases": [],
@@ -260,8 +265,12 @@ def test_cleanup_needs_the_gateway_name(client: TestClient, azure: FakeAzure) ->
         "delete_keys": [],
     }
 
-    wrong = client.post("/api/cleanup", json={**confirm, "confirm_name": "nope"}, headers=WRITE)
-    right = client.post("/api/cleanup", json={**confirm, "confirm_name": "gw"}, headers=WRITE)
+    wrong = client.post(
+        "/api/litellm/cleanup", json={**confirm, "confirm_name": "nope"}, headers=WRITE
+    )
+    right = client.post(
+        "/api/litellm/cleanup", json={**confirm, "confirm_name": "gw"}, headers=WRITE
+    )
 
     assert wrong.status_code == 400
     assert right.status_code == 200
@@ -272,28 +281,28 @@ def test_cleanup_needs_the_gateway_name(client: TestClient, azure: FakeAzure) ->
 
 
 def test_writes_require_the_csrf_header(client: TestClient) -> None:
-    response = client.put("/api/backends/pool-a", json={"url": "https://a"})
+    response = client.put("/api/litellm/backends/pool-a", json={"url": "https://a"})
     assert response.status_code == 403
 
 
 def test_easy_auth_owners_and_readers(azure: FakeAzure) -> None:
     client = _client(azure, _settings(auth_mode="easy_auth", owners="Owner@Contoso.com"))
     try:
-        assert client.get("/api/backends").status_code == 401
+        assert client.get("/api/litellm/backends").status_code == 401
         reader = {"X-MS-CLIENT-PRINCIPAL-NAME": "reader@contoso.com"}
         owner = {"X-MS-CLIENT-PRINCIPAL-NAME": "owner@contoso.com"}
         assert client.get("/api/me", headers=reader).json()["can_write"] is False
-        assert client.get("/api/backends", headers=reader).status_code == 200
+        assert client.get("/api/litellm/backends", headers=reader).status_code == 200
         body = {
             "url": "https://aoai-east.openai.azure.com/openai/deployments/gpt6",
             "auth": {"type": "managed_identity"},
         }
-        refused = client.put("/api/backends/pool-a", json=body, headers={**reader, **WRITE})
+        refused = client.put("/api/litellm/backends/pool-a", json=body, headers={**reader, **WRITE})
         assert refused.status_code == 403
         # Keys come from the master key, so only owners may list them, even without a write.
-        assert client.get("/api/pools/x/keys", headers=reader).status_code == 403
-        assert client.get("/api/pools/x/keys", headers=owner).status_code != 403
-        allowed = client.put("/api/backends/pool-a", json=body, headers={**owner, **WRITE})
+        assert client.get("/api/litellm/pools/x/keys", headers=reader).status_code == 403
+        assert client.get("/api/litellm/pools/x/keys", headers=owner).status_code != 403
+        allowed = client.put("/api/litellm/backends/pool-a", json=body, headers={**owner, **WRITE})
         assert allowed.status_code == 200
     finally:
         app.dependency_overrides.clear()
@@ -305,9 +314,11 @@ def test_disabled_auth_is_refused_on_app_service(monkeypatch: pytest.MonkeyPatch
         _settings().validate_runtime()
 
 
-def test_the_public_app_is_not_available_yet() -> None:
-    with pytest.raises(RuntimeError, match="not available"):
-        Settings(_env_file=None, auth_mode="entra", entra_client_id="x").validate_runtime()  # type: ignore[call-arg]
+def test_the_public_app_takes_no_litellm_gateway() -> None:
+    # Each user chooses their own APIM service there; nothing is configured for everyone.
+    settings = Settings(_env_file=None, auth_mode="entra", entra_client_id="x", gateway_name="gw")  # type: ignore[call-arg]
+    with pytest.raises(RuntimeError, match="POOL_MANAGER_GATEWAY_NAME"):
+        settings.validate_runtime()
 
 
 def test_a_deployed_external_gateway_needs_its_master_key() -> None:

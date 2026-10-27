@@ -23,9 +23,12 @@ def _no_real_azure(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         deps._arm,
         deps.get_local_credential,
         deps._secrets,
+        deps._targets,
+        deps._apim_service,
         deps._gateway,
-        deps._service,
+        deps._litellm_service,
         deps._discovery,
+        deps._access,
         deps._verifier,
         deps._sessions,
     )

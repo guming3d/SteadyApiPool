@@ -1,9 +1,10 @@
 """An in-memory LiteLLM proxy (admin API and chat completions) behind ``httpx.MockTransport``.
 
-It behaves like LiteLLM v1.106 where the app relies on it (checked against a real proxy, see
-tests/litellm_stack): ``/model/info`` leaves secrets out, ``PATCH /model/{id}/update`` merges,
-``/config/update`` replaces each router setting it is given, ``/key/list`` pages, keys are
-scoped by ``models`` and only returned once. It records every request.
+It behaves like LiteLLM v1.106 where the app relies on it (checked against a real proxy,
+see tests/litellm/litellm_stack): ``/model/info`` leaves secrets out,
+``PATCH /model/{id}/update`` merges, ``/config/update`` replaces each router setting it is
+given, ``/key/list`` pages, keys are scoped by ``models`` and only returned once. It records
+every request.
 """
 
 from __future__ import annotations

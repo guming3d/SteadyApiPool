@@ -1,9 +1,9 @@
 """Finds Azure OpenAI / Foundry deployments and imports them as pool members.
 
-Members are per-deployment URLs (``.../openai/deployments/<name>``), which become LiteLLM rows
-``azure/<name>`` on the account's endpoint, so deployments of the same model with different
-names (``gpt-5.6-luna`` and ``gpt-5.6-luna-2``) can share one pool. They authenticate as the
-gateway's managed identity: most accounts disable key auth, and reading keys would need
+Members are per-deployment URLs (``.../openai/deployments/<name>``) (APIM ``Single`` backends, or
+LiteLLM rows ``azure/<name>`` on the account's endpoint), so deployments of the same model with
+different names (``gpt-5.6-luna`` and ``gpt-5.6-luna-2``) can share one pool. They authenticate
+as the gateway's managed identity: most accounts disable key auth, and reading keys would need
 ``listKeys`` permission.
 """
 
@@ -15,14 +15,13 @@ import re
 import time
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from threading import Lock
-from typing import Any
+from typing import Any, Protocol
 
 from .arm import ArmClient, ArmError, segment
 from .config import Settings
 from .errors import ServiceError
-from .litellm.models import MemberAuth, MemberBackendWrite
-from .litellm.service import PoolManagerService
 from .models import DeploymentImport, DeploymentImportResult, DeploymentView
 
 logger = logging.getLogger(__name__)
@@ -34,6 +33,27 @@ _MODEL_FORMATS = frozenset({"openai"})
 _OPENAI_ENDPOINT_KEY = "OpenAI Language Model Instance API"
 _CACHE_SECONDS = 300.0  # Scanning many accounts takes ~20s; the UI offers Refresh.
 _DEPLOYMENT_SCAN_WORKERS = 16
+
+
+@dataclass(frozen=True)
+class KnownMember:
+    """A member, as discovery matches deployments against it."""
+
+    id: str
+    url: str
+    # Counts as imported: every APIM backend; a LiteLLM member once a saved pool uses it (until
+    # then it is a pending import, which importing the same deployment again reuses).
+    imported: bool
+
+
+class MemberStore(Protocol):
+    """The product's pool service, as far as importing deployments needs it."""
+
+    def known_members(self) -> list[KnownMember]: ...
+
+    def add_deployment_member(self, member_id: str, title: str, url: str, actor: str) -> str:
+        """Adds a member for a deployment URL, called as the gateway's managed identity."""
+        ...
 
 
 def suggested_backend_id(prefix: str, account: str, deployment: str) -> str:
@@ -61,7 +81,8 @@ def _ref_key(account_id: str, deployment: str) -> tuple[str, str]:
 
 
 class DeploymentDiscovery:
-    def __init__(self, settings: Settings, arm: ArmClient, pools: PoolManagerService) -> None:
+    def __init__(self, settings: Settings, arm: ArmClient, pools: MemberStore | None) -> None:
+        # None until a gateway is chosen: deployments can be listed, not imported.
         self._settings = settings
         self._arm = arm
         self._pools = pools
@@ -165,6 +186,9 @@ class DeploymentDiscovery:
             ),
         )
 
+    def _known(self) -> list[KnownMember]:
+        return self._pools.known_members() if self._pools is not None else []
+
     def list(self, *, refresh: bool = False) -> list[DeploymentView]:
         with self._lock:
             cached = self._cache
@@ -173,11 +197,7 @@ class DeploymentDiscovery:
                 self._cache = cached
         # Members change independently of deployments, so match them on every call; only
         # members of saved pools count, others are pending imports.
-        by_url = {
-            _url_key(backend.url): backend.id
-            for backend in self._pools.list_backends()
-            if backend.pools
-        }
+        by_url = {_url_key(member.url): member.id for member in self._known() if member.imported}
         return [
             view.model_copy(update={"backend_id": by_url.get(_url_key(view.backend_url))})
             for view in cached[1]
@@ -201,7 +221,11 @@ class DeploymentDiscovery:
                 )
             views.append(view)
 
-        taken = {backend.id.casefold() for backend in self._pools.list_backends()}
+        if self._pools is None:
+            raise ServiceError(409, "Choose a gateway before importing deployments")
+        pools = self._pools
+        known = pools.known_members()
+        taken = {member.id.casefold() for member in known}
         backend_ids: list[str] = []
         created: list[str] = []
         for view in views:
@@ -211,9 +235,9 @@ class DeploymentDiscovery:
             # Imported before but not in a pool yet: the same member again.
             pending = next(
                 (
-                    backend
-                    for backend in self._pools.list_backends()
-                    if not backend.pools and _url_key(backend.url) == _url_key(view.backend_url)
+                    member
+                    for member in known
+                    if not member.imported and _url_key(member.url) == _url_key(view.backend_url)
                 ),
                 None,
             )
@@ -226,16 +250,13 @@ class DeploymentDiscovery:
                 digest = hashlib.sha256(view.backend_url.encode()).hexdigest()[:8]
                 backend_id = f"{backend_id[:71].rstrip('-')}-{digest}"
             taken.add(backend_id.casefold())
-            backend = self._pools.put_backend(
+            member_id = pools.add_deployment_member(
                 backend_id,
-                MemberBackendWrite(
-                    title=f"{view.deployment} · {view.account_name} ({view.location})",
-                    url=view.backend_url,  # type: ignore[arg-type]
-                    auth=MemberAuth(type="managed_identity"),
-                ),
+                f"{view.deployment} · {view.account_name} ({view.location})",
+                view.backend_url,
                 actor,
             )
-            backend_ids.append(backend.id)
-            created.append(backend.id)
+            backend_ids.append(member_id)
+            created.append(member_id)
         logger.info("%s imported %d deployment(s) as members", actor, len(created))
         return DeploymentImportResult(backend_ids=backend_ids, created=created)

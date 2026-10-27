@@ -1,6 +1,7 @@
-"""The service layer against a real LiteLLM proxy (tests/litellm_stack): opt-in, needs Docker.
+"""The service layer against a real LiteLLM proxy (tests/litellm/litellm_stack): opt-in,
+needs Docker.
 
-    docker compose -f tests/litellm_stack/docker-compose.yml up -d --wait
+    docker compose -f tests/litellm/litellm_stack/docker-compose.yml up -d --wait
     .venv/Scripts/python -m pytest -q -m litellm
 
 Members are API-key members on two fake Azure OpenAI regions (the stack has no managed
@@ -20,7 +21,7 @@ import pytest
 
 from pool_manager.arm import ArmClient
 from pool_manager.config import Settings
-from pool_manager.litellm.api_test import ApiTester
+from pool_manager.litellm.api_test import LiteLLMTester
 from pool_manager.litellm.gateway import GatewayConnection
 from pool_manager.litellm.models import (
     ApiTestRequest,
@@ -30,7 +31,7 @@ from pool_manager.litellm.models import (
     PoolWrite,
     RemovalConfirm,
 )
-from pool_manager.litellm.service import PoolManagerService
+from pool_manager.litellm.service import LiteLLMService
 from pool_manager.models import PoolMemberWrite
 from tests.fake_azure import FakeAzure, FakeCredential
 
@@ -51,7 +52,7 @@ def _calls(name: str) -> int:
 
 
 @pytest.fixture
-def service() -> Iterator[tuple[PoolManagerService, ApiTester]]:
+def service() -> Iterator[tuple[LiteLLMService, LiteLLMTester]]:
     try:
         httpx.get(f"{GATEWAY}/health/readiness", timeout=3).raise_for_status()
     except httpx.HTTPError:
@@ -65,8 +66,8 @@ def service() -> Iterator[tuple[PoolManagerService, ApiTester]]:
         gateway_master_key=MASTER_KEY,
     )
     arm = ArmClient(settings, FakeCredential(), FakeAzure().transport(), sleep=lambda _: None)
-    service = PoolManagerService(settings, arm, GatewayConnection(settings, arm))
-    tester = ApiTester(settings, service)
+    service = LiteLLMService(settings, arm, GatewayConnection(settings, arm))
+    tester = LiteLLMTester(settings, service)
     _clean(service)
     for name in REGIONS:
         _region(name, 200)
@@ -74,7 +75,7 @@ def service() -> Iterator[tuple[PoolManagerService, ApiTester]]:
     _clean(service)
 
 
-def _clean(service: PoolManagerService) -> None:
+def _clean(service: LiteLLMService) -> None:
     for pool in service.list_pools():
         if pool.id.startswith("it-"):
             plan = service.pool_removal_plan(pool.id)
@@ -90,7 +91,7 @@ def _confirm(plan: Any) -> dict[str, Any]:
     }
 
 
-def _members(service: PoolManagerService) -> list[str]:
+def _members(service: LiteLLMService) -> list[str]:
     ids = []
     for name in REGIONS:
         member = f"it-region-{name}"
@@ -108,7 +109,7 @@ def _members(service: PoolManagerService) -> list[str]:
     return ids
 
 
-def _call(tester: ApiTester, key: str, model: str = POOL) -> dict[str, Any]:
+def _call(tester: LiteLLMTester, key: str, model: str = POOL) -> dict[str, Any]:
     result = tester.call(
         POOL,
         ApiTestRequest(  # type: ignore[arg-type]
@@ -119,7 +120,7 @@ def _call(tester: ApiTester, key: str, model: str = POOL) -> dict[str, Any]:
     return result.model_dump()
 
 
-def test_a_failover_pool_on_a_real_gateway(service: tuple[PoolManagerService, ApiTester]) -> None:
+def test_a_failover_pool_on_a_real_gateway(service: tuple[LiteLLMService, LiteLLMTester]) -> None:
     pools, tester = service
     a, b = _members(pools)
     pool = pools.put_pool(
@@ -187,7 +188,7 @@ def test_a_failover_pool_on_a_real_gateway(service: tuple[PoolManagerService, Ap
 
 
 def test_saving_a_pool_again_changes_rows_in_place(
-    service: tuple[PoolManagerService, ApiTester],
+    service: tuple[LiteLLMService, LiteLLMTester],
 ) -> None:
     pools, _ = service
     a, b = _members(pools)

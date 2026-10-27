@@ -11,11 +11,12 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from pool_manager.access import AccessChecker, allows, user_token
+from pool_manager.access import allows, user_token
 from pool_manager.app import app
+from pool_manager.litellm.access import LiteLLMAccessChecker
 from tests.fake_azure import GATEWAY_APP, GATEWAY_PRINCIPAL, OPENAI_USER, TENANT, FakeAzure
-from tests.fake_litellm import MASTER_KEY, URL
-from tests.test_app import WRITE, _client, _settings, import_members, seed
+from tests.litellm.fake_litellm import MASTER_KEY, URL
+from tests.litellm.test_app import WRITE, _client, _settings, import_members, seed
 
 READ = ["Microsoft.App/containerApps/read", "*/read"]
 SECRETS = ["Microsoft.App/containerApps/listSecrets/action"]
@@ -63,7 +64,7 @@ def _members(client: TestClient, azure: FakeAzure) -> tuple[str, str]:
     body = {
         "members": [{"backend_id": m, "priority": 0, "weight": 1} for m in members],
     }
-    assert client.put("/api/pools/gpt6", json=body, headers=WRITE).status_code == 200
+    assert client.put("/api/litellm/pools/gpt6", json=body, headers=WRITE).status_code == 200
     return east, west
 
 
@@ -103,13 +104,13 @@ def test_progress_follows_the_report(
 ) -> None:
     _members(client, azure)
     seen: dict[str, Any] = {}
-    original = AccessChecker._gateway_identity
+    original = LiteLLMAccessChecker.gateway_identity
 
-    def spy(self: AccessChecker) -> Any:
+    def spy(self: LiteLLMAccessChecker, permissions: Any) -> Any:
         seen["identity"] = self.progress("local-developer").model_dump()
-        return original(self)
+        return original(self, permissions)
 
-    monkeypatch.setattr(AccessChecker, "_gateway_identity", spy)
+    monkeypatch.setattr(LiteLLMAccessChecker, "gateway_identity", spy)
     assert client.get("/api/setup").status_code == 200
 
     steps = seen["identity"]["steps"]
@@ -471,7 +472,7 @@ def test_deployed_user_with_azure_roles_can_write(deployed: TestClient, azure: F
         "url": "https://a.openai.azure.com/openai/deployments/x",
         "auth": {"type": "managed_identity"},
     }
-    response = deployed.put("/api/backends/pool-a", json=body, headers={**headers, **WRITE})
+    response = deployed.put("/api/litellm/backends/pool-a", json=body, headers={**headers, **WRITE})
     assert response.status_code == 200, response.text
 
     checks = _checks(deployed, **headers)
@@ -505,7 +506,9 @@ def test_deployed_reader_stays_read_only(deployed: TestClient, azure: FakeAzure)
     assert deployed.get("/api/me", headers=headers).json()["can_write"] is False
     body = {"url": "https://a.openai.azure.com/openai/deployments/x"}
     assert (
-        deployed.put("/api/backends/pool-a", json=body, headers={**headers, **WRITE}).status_code
+        deployed.put(
+            "/api/litellm/backends/pool-a", json=body, headers={**headers, **WRITE}
+        ).status_code
         == 403
     )
     check = _checks(deployed, **headers)["gateway_access"]

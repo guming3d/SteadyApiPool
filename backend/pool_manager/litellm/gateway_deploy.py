@@ -21,7 +21,7 @@ from typing import Any
 
 from ..arm import ArmClient, ArmError, segment
 from ..config import Settings
-from ..errors import ServiceError
+from ..errors import ServiceError, arm_failure
 from .gateway import GATEWAY_TAG, MANAGED_TAG, MANAGED_TAG_VALUE
 from .gateway_template import aca_parameters, aca_template
 from .models import DeployStep, GatewayCreate, GatewayDeployStatus
@@ -61,16 +61,6 @@ _REGISTER_POLL_SECONDS = 5.0
 
 def deployment_name(gateway: str) -> str:
     return f"ai-gateway-{gateway}"
-
-
-def translate(error: ArmError, action: str) -> ServiceError:
-    if error.status == 401:
-        return ServiceError(401, f"Sign in again to {action}: {error.message}")
-    if error.status == 403:
-        return ServiceError(403, f"Your Azure account cannot {action}: {error.message}")
-    if error.status in {400, 404, 409}:
-        return ServiceError(error.status, error.message)
-    return ServiceError(502, f"Azure returned {error.status} {error.code}: {error.message}")
 
 
 def group_path(subscription_id: str, resource_group: str) -> str:
@@ -230,7 +220,7 @@ class GatewayDeployer:
                 tags={MANAGED_TAG: MANAGED_TAG_VALUE},
             )
         except ArmError as error:
-            raise translate(error, "deploy this gateway") from error
+            raise arm_failure(error, "deploy this gateway") from error
         logger.info(
             "%s started deploying gateway %s (%s) in %s",
             actor,
@@ -325,7 +315,7 @@ class GatewayDeployer:
                 arm.list_arm(f"{path}/operations", api_version=DEPLOYMENTS_API_VERSION)
             )
         except ArmError as error:
-            raise translate(error, "read the gateway's deployment") from error
+            raise arm_failure(error, "read the gateway's deployment") from error
         properties = deployment.get("properties") or {}
         state = str(properties.get("provisioningState") or "").casefold()
         # ARM lists an operation per attempt and per child resource; show each resource once,

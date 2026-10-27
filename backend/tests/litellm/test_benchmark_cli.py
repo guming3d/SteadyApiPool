@@ -11,9 +11,9 @@ from types import ModuleType
 
 import pytest
 
-from tests.fake_litellm import URL, FakeLiteLLM
+from tests.litellm.fake_litellm import URL, FakeLiteLLM
 
-SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "benchmark.py"
+SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "benchmark.py"
 
 
 def _load() -> ModuleType:

@@ -60,12 +60,12 @@ from pool_manager.discovery import DeploymentDiscovery  # noqa: E402
 from pool_manager.litellm.api_test import ApiTester  # noqa: E402
 from pool_manager.litellm.benchmark import BenchmarkRunner  # noqa: E402
 from pool_manager.litellm.gateway import GatewayConnection  # noqa: E402
-from pool_manager.litellm.service import PoolManagerService  # noqa: E402
+from pool_manager.litellm.service import LiteLLMService  # noqa: E402
 from pool_manager.metrics import PoolMonitor  # noqa: E402
 from pool_manager.secret_store import SecretStore  # noqa: E402
 from pool_manager.target import TargetChooser  # noqa: E402
 from tests.fake_azure import OPENAI_USER, SUBSCRIPTION, TENANT, FakeAzure  # noqa: E402
-from tests.fake_litellm import FakeLiteLLM  # noqa: E402
+from tests.litellm.fake_litellm import FakeLiteLLM  # noqa: E402
 
 GROUP = "rg-ai-gateway"
 GATEWAY_NAME = "ai-gateway-contoso"
@@ -312,8 +312,8 @@ def _pool_in_use(azure: FakeAzure, accounts: list[str]) -> None:
         for index, backend_id in enumerate(imported.json()["backend_ids"])
     ]
     body = {"title": "gpt-5.6-luna", "members": members}
-    client.put(f"/api/pools/{POOL}", json=body, headers=WRITE).raise_for_status()
-    client.post(f"/api/pools/{POOL}/aliases", json={"name": "gpt-5.6-luna"}, headers=WRITE)
+    client.put(f"/api/litellm/pools/{POOL}", json=body, headers=WRITE).raise_for_status()
+    client.post(f"/api/litellm/pools/{POOL}/aliases", json={"name": "gpt-5.6-luna"}, headers=WRITE)
 
     end = datetime.now(UTC).replace(second=0, microsecond=0)
     minutes = range(61)
@@ -427,7 +427,7 @@ def _wire(
         transport=azure.litellm.transport(),
         sleep=lambda _: None,
     )
-    service = PoolManagerService(settings, arm, gateway)
+    service = LiteLLMService(settings, arm, gateway)
     discovery = DeploymentDiscovery(settings, arm, service)
     access = AccessChecker(
         settings,

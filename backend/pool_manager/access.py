@@ -2,19 +2,22 @@
 
 Three identities matter:
 
-- The *operator* reads the gateway through ARM (its Container App and master key) and calls
-  Foundry discovery: the user's ``az login`` locally, the app's managed identity in the Easy
-  Auth deployment.
-- The *user* acts for fixes (granting the gateway's identity a role on Foundry) with their own
-  Azure rights. Deployed, that is the ARM token Easy Auth obtained for them; the app identity
-  never gets permission to change role assignments.
-- The gateway's own *managed identity* (user-assigned, AZURE_CLIENT_ID in LiteLLM) calls the
-  Foundry members and needs a data-plane role on each.
+- The *operator* reads and changes the gateway: the user's ``az login`` locally, the app's
+  managed identity in the Easy Auth deployment, and in the public app (APIM only) the user
+  again, through the token exchanged for them (entra.py).
+- The *user* acts for fixes (granting the gateway's identity a role on Foundry, enabling APIM's
+  identity) with their own Azure rights. Deployed, that is the ARM token Easy Auth obtained for
+  them; the app identity never gets permission to change role assignments.
+- The gateway's own *managed identity* (APIM's system-assigned one, or LiteLLM's user-assigned
+  one in AZURE_CLIENT_ID) calls the Foundry members and needs a data-plane role on each.
 
 Effective permissions come from ``Microsoft.Authorization/permissions`` (what the caller may do
 at a scope), so a check never needs more than read access. Fixes are limited to one role
 (Cognitive Services OpenAI User), granted to the gateway's identity on accounts this app knows
 about.
+
+``AccessChecker`` runs the report; ``apim/access.py`` and ``litellm/access.py`` check their
+gateway (its target, access, health and identity).
 """
 
 from __future__ import annotations
@@ -34,10 +37,6 @@ from typing import Any, Literal, Protocol
 from .arm import ArmClient, ArmError, jwt_claims, segment
 from .config import Settings
 from .errors import ServiceError
-from .litellm.client import LiteLLMError
-from .litellm.gateway import GatewayUnavailable
-from .litellm.gateway_deploy import GatewayDeployer
-from .litellm.service import PoolManagerService
 from .models import (
     AdminRequest,
     DeviceCodePrompt,
@@ -58,13 +57,6 @@ logger = logging.getLogger(__name__)
 
 AUTHORIZATION_API_VERSION = "2022-04-01"
 
-# Reading the gateway's Container App and its master key is all the app needs in Azure to
-# manage pools: everything else goes through LiteLLM's admin API. Mirrors
-# infra/modules/gateway-rbac.bicep.
-GATEWAY_ACTIONS = (
-    "Microsoft.App/containerApps/read",
-    "Microsoft.App/containerApps/listSecrets/action",
-)
 # Mirrors infra/modules/discovery-rbac.bicep.
 DISCOVERY_ACTIONS = (
     "Microsoft.CognitiveServices/accounts/read",
@@ -78,9 +70,6 @@ INFERENCE_DATA_ACTION = (
 )
 OPENAI_USER_ROLE = "Cognitive Services OpenAI User"
 OPENAI_USER_ROLE_ID = "5e0bd9bd-7b93-4f28-af87-19fc36ad61bd"
-GATEWAY_ROLE = "AI Gateway Pool Manager"
-GATEWAY_FALLBACK_ROLE = "Container Apps Contributor"
-DISCOVERY_ROLE = "AI Gateway Pool Deployment Reader"
 DISCOVERY_FALLBACK_ROLE = "Reader"
 ARM_AUDIENCES = frozenset({"https://management.azure.com", "https://management.core.windows.net"})
 
@@ -89,11 +78,9 @@ _CACHE_SECONDS = 300.0
 # catches up (it can miss a new assignment for a while after it is created).
 _GRANT_GRACE_SECONDS = 900.0
 _WORKERS = 8
-_NOT_READY: frozenset[SetupStatus] = frozenset({"action", "blocked", "pending"})
-# The gateway's Container App (or its deployment) after Azure could not finish it.
-_FAILED = "Failed"
-# Its first deployment failed before the Container App existed: there is nothing to check yet.
-_DEPLOY_FAILED = "DeployFailed"
+NOT_READY: frozenset[SetupStatus] = frozenset({"action", "blocked", "pending"})
+# The gateway (or its deployment) after Azure could not finish creating or updating it.
+FAILED = "Failed"
 
 Permissions = list[Mapping[str, Any]]
 
@@ -114,6 +101,12 @@ class SignInCredential(Protocol):
     """credentials.LocalCredential; tests may provide only ``sign_in``."""
 
     def sign_in(self, tenant_id: str | None, scope: str) -> None: ...
+
+
+class MemberAccounts(Protocol):
+    """The product's pool service, as far as setup needs it."""
+
+    def foundry_accounts(self) -> list[str]: ...
 
 
 def user_token(headers: Mapping[str, str]) -> UserToken | None:
@@ -160,7 +153,7 @@ def missing(permissions: Permissions, actions: Iterable[str]) -> list[str]:
     return [action for action in actions if not allows(permissions, action)]
 
 
-def _identity(claims: Mapping[str, Any]) -> SetupIdentity:
+def identity_of(claims: Mapping[str, Any]) -> SetupIdentity:
     name = claims.get("upn") or claims.get("preferred_username") or claims.get("unique_name")
     return SetupIdentity(
         name=str(name) if name else None,
@@ -169,7 +162,7 @@ def _identity(claims: Mapping[str, Any]) -> SetupIdentity:
     )
 
 
-def _portal(scope: str, blade: str = "overview") -> str:
+def portal(scope: str, blade: str = "overview") -> str:
     return f"https://portal.azure.com/#resource{scope}/{blade}"
 
 
@@ -225,20 +218,34 @@ class _Tracker:
 
 
 class AccessChecker:
+    """The setup report and its fixes. Each product says how to check its gateway by
+    overriding the ``gateway_*`` hooks; without a gateway chosen this base class reports that
+    one needs choosing."""
+
+    # This app's custom role on the gateway (infra/modules), and the built-in role an
+    # administrator can assign instead.
+    gateway_role = ""
+    gateway_fallback_role = ""
+    # This app's custom role for discovery (infra/modules/discovery-rbac.bicep).
+    discovery_role = ""
+    # Who calls the Foundry members, for the role request.
+    identity_label = "gateway managed identity"
+    # The gateway has its own health to check (LiteLLM: its admin API and database).
+    checks_health = False
+
     def __init__(
         self,
         settings: Settings,
         arm: ArmClient,
-        service: PoolManagerService,
+        service: MemberAccounts | None,
         discovered_accounts: Callable[[], Iterable[str]],
         credential: SignInCredential | None = None,
     ) -> None:
         self._settings = settings
         self._arm = arm
-        self._service = service
+        self._members = service
         self._discovered_accounts = discovered_accounts
         self._credential = credential
-        self._deployer = GatewayDeployer(settings)
         self._lock = Lock()
         self._writers: dict[str, tuple[float, bool]] = {}
         self._roles: dict[str, Permissions] = {}
@@ -278,7 +285,7 @@ class AccessChecker:
             return None
         return self._arm.with_token(token.token, token.expires_on)
 
-    def _permissions(self, arm: ArmClient, scope: str) -> Permissions:
+    def permissions(self, arm: ArmClient, scope: str) -> Permissions:
         return list(
             arm.list_arm(
                 f"{scope}/providers/Microsoft.Authorization/permissions",
@@ -286,11 +293,48 @@ class AccessChecker:
             )
         )
 
+    # -- what each product checks about its gateway ---------------------------------------
+
+    def gateway_target(self) -> SetupCheck:
+        """Which gateway the app manages, and whether it has finished deploying."""
+        fix: SetupFix | None = "select_gateway" if self._settings.can_choose_target else None
+        return SetupCheck(id="gateway_target", kind="gateway_target", status="action", fix=fix)
+
+    def gateway_access(
+        self, arm: ArmClient | None, identity: SetupIdentity | None, owner: bool
+    ) -> tuple[SetupCheck, Permissions | None]:
+        """Whether the user may work with the gateway; their permissions on it, if read."""
+        raise NotImplementedError
+
+    def app_gateway(self) -> tuple[SetupCheck, SetupIdentity | None]:
+        """Deployed: whether the app's own identity may work with the gateway."""
+        raise NotImplementedError
+
+    def gateway_health(self) -> SetupCheck:
+        """Whether the gateway itself answers; only called when ``checks_health``."""
+        raise NotImplementedError
+
+    def gateway_identity(
+        self, user_permissions: Permissions | None
+    ) -> tuple[SetupCheck, str | None]:
+        """The managed identity the gateway calls Foundry as, and its principal ID."""
+        raise NotImplementedError
+
+    def gateway_principal(self) -> str | None:
+        """The principal ID of the gateway's managed identity, if it has one."""
+        raise NotImplementedError
+
+    def user_may_write(self, arm: ArmClient) -> bool:
+        """Whether the user's own Azure roles let them manage the gateway's pools."""
+        return False
+
+    def forget_gateway(self) -> None:
+        """Drops what the product caches about the gateway, for "Check again"."""
+
     # -- write access for the deployed app ----------------------------------------------
 
     def user_can_write(self, token: UserToken) -> bool:
-        """Whether the user's own roles let them read the gateway and its master key, which is
-        what managing its pools takes."""
+        """Whether the user's own Azure roles let them manage the gateway's pools."""
         # Keyed by the token itself: its claims are not verified here, only ARM verifies them.
         key = hashlib.sha256(token.token.encode()).hexdigest()
         with self._lock:
@@ -299,11 +343,9 @@ class AccessChecker:
             return cached[1]
         arm = self.user_arm(token)
         allowed = False
-        # An external gateway has no Azure resource to hold roles on: owners only.
-        if arm is not None and not self._settings.external:
+        if arm is not None and self._settings.has_target:
             try:
-                permissions = self._permissions(arm, self._arm.resource_id)
-                allowed = not missing(permissions, GATEWAY_ACTIONS)
+                allowed = self.user_may_write(arm)
             except ArmError as error:
                 logger.info("Cannot read the user's gateway permissions: %s", error.message)
         with self._lock:
@@ -315,7 +357,7 @@ class AccessChecker:
             self._writers.clear()
             self._roles.clear()
             self._role_names.clear()
-        self._service.gateway.forget()
+        self.forget_gateway()
         # "Check again" also retries sign-in tools that were missing a minute ago.
         forget_misses = getattr(self._credential, "forget_misses", None)
         if callable(forget_misses):
@@ -345,9 +387,10 @@ class AccessChecker:
     def _report(
         self, token: UserToken | None, *, principal: str | None, owner: bool, tracker: _Tracker
     ) -> SetupReport:
+        name = self._settings.target_name or None
         if self._settings.guest:
             # Nothing to sign in to or fix: the gateway is the one the deployment shows guests.
-            tracker.step("gateway_target", subject=self._settings.gateway_name or None)
+            tracker.step("gateway_target", subject=name)
             target = self._target()
             return self._finish("guest", None, [target], target.status == "ok")
         checks: list[SetupCheck] = []
@@ -365,16 +408,16 @@ class AccessChecker:
             if token_check.status != "ok":
                 user = None
 
-        tracker.step("gateway_target", subject=self._settings.gateway_name or None)
+        tracker.step("gateway_target", subject=name)
         target = self._target()
         checks.append(target)
         # A failed update usually leaves the gateway running, so let the checks below decide
         # whether the app can work with it; a failed deployment fails those too.
-        if target.status in _NOT_READY and target.detail != _FAILED:
+        if target.status in NOT_READY and target.detail != FAILED:
             return self._finish(self._mode, identity, checks, False)
 
         tracker.step("gateway_access")
-        access_check = self._user_gateway(user, identity, owner)
+        access_check, user_permissions = self.gateway_access(user, identity, owner)
         checks.append(access_check)
         discovery_total = len(self._settings.discovery_subscription_list)
         discovery_kind: SetupKind = "discovery"
@@ -383,13 +426,13 @@ class AccessChecker:
             can_operate = access_check.status != "blocked"
         else:
             tracker.step("app_gateway")
-            app_check, discovery_identity = self._app_gateway()
+            app_check, discovery_identity = self.app_gateway()
             checks.append(app_check)
             can_operate = app_check.status != "blocked"
             discovery_kind = "app_discovery"
-        if can_operate:
-            tracker.step("gateway_health", subject=self._settings.gateway_name or None)
-            health = self._health()
+        if can_operate and self.checks_health:
+            tracker.step("gateway_health", subject=name)
+            health = self.gateway_health()
             checks.append(health)
             can_operate = health.status == "ok"
         tracker.step("discovery", total=discovery_total)
@@ -398,19 +441,29 @@ class AccessChecker:
         )
 
         tracker.step("gateway_identity")
-        identity_check, principal_id = self._gateway_identity()
+        identity_check, principal_id = self.gateway_identity(user_permissions)
         checks.append(identity_check)
         if can_operate:
             tracker.step("members")
-            try:
-                accounts = self._service.foundry_accounts()
-            except ServiceError as error:
-                logger.warning("Cannot list pool members: %s", error.message)
-                accounts = []
+            accounts = self._member_accounts()
             if accounts:
                 tracker.step("foundry_access", total=len(accounts))
             checks.extend(self._foundry(accounts, principal_id, user, tick=tracker.tick))
         return self._finish(self._mode, identity, checks, can_operate)
+
+    def _target(self) -> SetupCheck:
+        if not self._settings.has_target:
+            return AccessChecker.gateway_target(self)
+        return self.gateway_target()
+
+    def _member_accounts(self) -> list[str]:
+        if self._members is None:
+            return []
+        try:
+            return self._members.foundry_accounts()
+        except ServiceError as error:
+            logger.warning("Cannot list pool members: %s", error.message)
+            return []
 
     def _finish(
         self, mode: Any, identity: SetupIdentity | None, checks: list[SetupCheck], can_operate: bool
@@ -420,7 +473,7 @@ class AccessChecker:
             product=self._settings.product,
             user=identity,
             checks=checks,
-            ready=not any(check.status in _NOT_READY for check in checks),
+            ready=not any(check.status in NOT_READY for check in checks),
             can_operate=can_operate,
             local_sign_in=self._local_sign_in_view() if self.local else None,
         )
@@ -438,114 +491,6 @@ class AccessChecker:
             tools=installed_tools(),  # type: ignore[arg-type]
         )
 
-    def _target(self) -> SetupCheck:
-        """Which gateway the app manages, and whether it has finished deploying."""
-        settings = self._settings
-        fix: SetupFix | None = "select_gateway" if settings.can_choose_target else None
-        kind: SetupKind = "gateway_target"
-        if not settings.has_target:
-            return SetupCheck(id=kind, kind=kind, status="action", fix=fix)
-        subject = settings.gateway_name
-        if settings.gateway_provisioning:
-            # A new AKS gateway the app is still installing: the gateway step's progress
-            # (its deploy status) drives the install on.
-            return SetupCheck(
-                id=kind,
-                kind=kind,
-                subject=subject,
-                status="pending",
-                detail="DeployingAks",
-                started_at=settings.gateway_started_at or None,
-            )
-        if settings.external:
-            # Nothing in Azure to look at; the health check reaches the gateway itself.
-            return SetupCheck(id=kind, kind=kind, subject=subject, status="ok")
-        try:
-            found = self._arm.get_json("", api_version=settings.container_apps_api_version)
-            state = (
-                str((found[0].get("properties") or {}).get("provisioningState") or "")
-                if found
-                else ""
-            )
-            deployment = (
-                self._deployer.status(
-                    self._arm, settings.subscription_id, settings.resource_group, subject
-                )
-                if found is None or state.casefold() in {"inprogress", "failed"}
-                else None
-            )
-        except (ArmError, ServiceError) as error:
-            # Missing read access is reported by the gateway access check that follows.
-            return SetupCheck(
-                id=kind, kind=kind, subject=subject, status="unknown", detail=error.message
-            )
-        if deployment is not None and deployment.state == "running":
-            return SetupCheck(
-                id=kind,
-                kind=kind,
-                subject=subject,
-                status="pending",
-                detail="Deploying",
-                started_at=deployment.started_at,
-            )
-        if deployment is not None and deployment.state == "failed":
-            return SetupCheck(
-                id=kind,
-                kind=kind,
-                subject=subject,
-                status="action",
-                detail=_FAILED if found else _DEPLOY_FAILED,
-                missing=[deployment.error] if deployment.error else [],
-                fix=fix,
-            )
-        if found is None:
-            return SetupCheck(
-                id=kind, kind=kind, subject=subject, status="blocked", detail="not_found", fix=fix
-            )
-        if state.casefold() == "inprogress":
-            started = (found[0].get("systemData") or {}).get("createdAt")
-            return SetupCheck(
-                id=kind,
-                kind=kind,
-                subject=subject,
-                status="pending",
-                detail=state,
-                started_at=str(started) if started else None,
-            )
-        if state.casefold() == "failed":
-            return SetupCheck(
-                id=kind, kind=kind, subject=subject, status="action", detail=_FAILED, fix=fix
-            )
-        return SetupCheck(id=kind, kind=kind, subject=subject, status="ok")
-
-    def _health(self) -> SetupCheck:
-        """The gateway itself: reachable, its database connected, the master key accepted."""
-        kind: SetupKind = "gateway_health"
-        subject = self._settings.gateway_name
-
-        def check(status: SetupStatus, **values: Any) -> SetupCheck:
-            return SetupCheck(id=kind, kind=kind, subject=subject, status=status, **values)
-
-        fix: SetupFix | None = (
-            "connect_gateway"
-            if self._settings.external and self._settings.can_choose_target
-            else None
-        )
-        try:
-            client = self._service.gateway.client()
-            health = client.readiness()
-            client.models()  # Needs the master key; readiness does not.
-        except GatewayUnavailable as error:
-            return check("blocked", detail=error.message, fix=fix if error.status == 409 else None)
-        except LiteLLMError as error:
-            if error.status in {401, 403}:
-                return check("blocked", detail="master_key_refused", fix=fix)
-            return check("blocked", detail=error.message)
-        database = str(health.get("db") or "")
-        if database and database.casefold() != "connected":
-            return check("blocked", detail=f"database {database}")
-        return check("ok", detail=str(health.get("litellm_version") or "") or None)
-
     def _local_sign_in(self) -> tuple[SetupCheck, SetupIdentity | None]:
         """The operator's own sign-in: locally the developer's, in the public app the user's
         (signing in again in the browser fixes it, or consenting to Azure access)."""
@@ -561,7 +506,7 @@ class AccessChecker:
                 id="sign_in", kind="sign_in", status="action", detail=detail, fix=fix
             )
             return check, None
-        identity = _identity(claims)
+        identity = identity_of(claims)
         tenant = self._arm.subscription_tenant()
         if tenant and identity.tenant_id and tenant.casefold() != identity.tenant_id.casefold():
             detail = (
@@ -590,7 +535,7 @@ class AccessChecker:
             if not self._settings.delegated_access:
                 # Only an administrator can turn this on; see README "Delegated Azure access".
                 request = AdminRequest(
-                    assignee=self._settings.gateway_name,
+                    assignee=self._settings.target_name,
                     assignee_id=None,
                     role=None,
                     scope=None,
@@ -606,7 +551,7 @@ class AccessChecker:
                 ), None
             return check("action", "consent", "Easy Auth provided no Azure token"), None
         claims = jwt_claims(token.token)
-        identity = _identity(claims)
+        identity = identity_of(claims)
         audience = str(claims.get("aud") or "").rstrip("/")
         if audience and audience not in ARM_AUDIENCES:
             return check("action", "consent", f"token is for {audience}, not Azure"), identity
@@ -614,75 +559,17 @@ class AccessChecker:
             return check("action", "refresh_token"), identity
         return check("ok"), identity
 
-    def _gateway_request(
+    def gateway_request(
         self, identity: SetupIdentity | None, principal_type: str, *, command: str | None = None
     ) -> AdminRequest:
-        role = self._custom_role(GATEWAY_ROLE, self._resource_group_scope) or GATEWAY_FALLBACK_ROLE
-        return self._role_request(
+        """The role on the gateway to ask an administrator for."""
+        role = (
+            self._custom_role(self.gateway_role, self._resource_group_scope)
+            or self.gateway_fallback_role
+        )
+        return self.role_request(
             identity, principal_type, role, self._arm.resource_id, command=command
         )
-
-    def _user_gateway(
-        self, arm: ArmClient | None, identity: SetupIdentity | None, owner: bool
-    ) -> SetupCheck:
-        kind: SetupKind = "gateway_access"
-        granted: Literal["owners", "azure_rbac"] | None
-        if self._settings.external:
-            # The master key is the access; the health check tries it.
-            granted = "owners" if owner and not self._settings.operator_is_user else None
-            return SetupCheck(id=kind, kind=kind, status="ok", granted_by=granted)
-        if arm is None:
-            if owner:
-                return SetupCheck(id=kind, kind=kind, status="ok", granted_by="owners")
-            return SetupCheck(id=kind, kind=kind, status="unknown")
-        try:
-            permissions = self._permissions(arm, self._arm.resource_id)
-        except ArmError as error:
-            status: SetupStatus = "blocked" if self._settings.operator_is_user else "unknown"
-            return SetupCheck(id=kind, kind=kind, status=status, detail=error.message)
-        gaps = missing(permissions, GATEWAY_ACTIONS)
-        if self._settings.operator_is_user:
-            # Without the master key nothing can be managed.
-            return SetupCheck(
-                id=kind,
-                kind=kind,
-                status="blocked" if gaps else "ok",
-                missing=gaps,
-                request=self._gateway_request(identity, "User") if gaps else None,
-            )
-        # Deployed, the app identity does the work; the user only needs leave to change things.
-        granted = "owners" if owner else "azure_rbac" if not gaps else None
-        return SetupCheck(
-            id=kind,
-            kind=kind,
-            status="ok" if granted else "action",
-            missing=[] if granted else gaps,
-            request=None if granted else self._gateway_request(identity, "User"),
-            granted_by=granted,
-        )
-
-    def _app_gateway(self) -> tuple[SetupCheck, SetupIdentity | None]:
-        kind: SetupKind = "app_gateway"
-        try:
-            identity = _identity(self._arm.token_claims())
-            if self._settings.external:
-                return SetupCheck(id=kind, kind=kind, status="ok"), identity
-            permissions = self._permissions(self._arm, self._arm.resource_id)
-        except ArmError as error:
-            return SetupCheck(id=kind, kind=kind, status="blocked", detail=error.message), None
-        gaps = missing(permissions, GATEWAY_ACTIONS)
-        request = (
-            self._gateway_request(identity, "ServicePrincipal", command="azd provision")
-            if gaps
-            else None
-        )
-        return SetupCheck(
-            id=kind,
-            kind=kind,
-            status="blocked" if gaps else "ok",
-            missing=gaps,
-            request=request,
-        ), identity
 
     def _discovery(
         self,
@@ -698,7 +585,7 @@ class AccessChecker:
             scope = f"/subscriptions/{segment(subscription)}"
             gaps: list[str] = []
             try:
-                gaps = missing(self._permissions(arm, scope), DISCOVERY_ACTIONS)
+                gaps = missing(self.permissions(arm, scope), DISCOVERY_ACTIONS)
             except ArmError as error:
                 logger.info("Cannot read permissions on %s: %s", subscription, error.message)
                 gaps = list(DISCOVERY_ACTIONS)
@@ -716,8 +603,8 @@ class AccessChecker:
                     pass
             request = None
             if gaps:
-                role = self._custom_role(DISCOVERY_ROLE, scope) or DISCOVERY_FALLBACK_ROLE
-                request = self._role_request(
+                role = self._custom_role(self.discovery_role, scope) or DISCOVERY_FALLBACK_ROLE
+                request = self.role_request(
                     identity,
                     principal_type,
                     role,
@@ -740,55 +627,10 @@ class AccessChecker:
                 tick()
 
         subscriptions = self._settings.discovery_subscription_list
+        if not subscriptions:
+            return []
         with ThreadPoolExecutor(max_workers=min(_WORKERS, len(subscriptions))) as executor:
             return list(executor.map(counted, subscriptions))
-
-    def _principal(self) -> str | None:
-        try:
-            return self._service.gateway.info().principal_id
-        except GatewayUnavailable as error:
-            logger.info("Cannot read the gateway's identity: %s", error.message)
-            return None
-
-    def _gateway_identity(self) -> tuple[SetupCheck, str | None]:
-        kind: SetupKind = "gateway_identity"
-        try:
-            principal = self._service.gateway.info().principal_id
-        except GatewayUnavailable as error:
-            return SetupCheck(id=kind, kind=kind, status="unknown", detail=error.message), None
-        if principal:
-            return SetupCheck(id=kind, kind=kind, status="ok", subject=principal), principal
-        settings = self._settings
-        if settings.external:
-            # Without it Foundry access can't be checked; the gateway may still work.
-            return SetupCheck(
-                id=kind,
-                kind=kind,
-                status="action",
-                detail="external_unknown",
-                fix="connect_gateway" if settings.can_choose_target else None,
-            ), None
-        scope = self._arm.resource_id
-        group, name = settings.resource_group, settings.gateway_name
-        return SetupCheck(
-            id=kind,
-            kind=kind,
-            status="action",
-            request=AdminRequest(
-                assignee=name,
-                assignee_id=None,
-                role=None,
-                scope=scope,
-                command=(
-                    f"az identity create -g {group} -n id-{name}\n"
-                    f"az containerapp identity assign -g {group} -n {name} "
-                    f"--user-assigned id-{name}\n"
-                    f"az containerapp update -g {group} -n {name} "
-                    "--set-env-vars AZURE_CLIENT_ID=<the identity's client ID>"
-                ),
-                portal_url=_portal(scope, "identity"),
-            ),
-        ), None
 
     def _foundry(
         self,
@@ -841,7 +683,7 @@ class AccessChecker:
         can_grant = False
         if user is not None:
             try:
-                can_grant = allows(self._permissions(user, account), ROLE_ASSIGNMENT_WRITE)
+                can_grant = allows(self.permissions(user, account), ROLE_ASSIGNMENT_WRITE)
             except ArmError as error:
                 logger.info("Cannot read permissions on %s: %s", account, error.message)
         return check(
@@ -883,6 +725,8 @@ class AccessChecker:
 
     def _custom_role(self, prefix: str, scope: str) -> str | None:
         """The name of this app's custom role (created by azd provision), if it exists."""
+        if not prefix:
+            return None
         key = f"{prefix}|{scope}".casefold()
         with self._lock:
             if key in self._role_names:
@@ -904,7 +748,7 @@ class AccessChecker:
             self._role_names[key] = name
         return name
 
-    def _role_request(
+    def role_request(
         self,
         identity: SetupIdentity | None,
         principal_type: str,
@@ -927,22 +771,27 @@ class AccessChecker:
             role=role,
             scope=scope,
             command=f"{command}\n# or: {role_command}" if command else role_command,
-            portal_url=_portal(scope, "users"),
+            portal_url=portal(scope, "users"),
         )
 
     def _foundry_request(self, account: str, principal: str) -> AdminRequest:
         return AdminRequest(
-            assignee=f"{self._settings.gateway_name} (gateway managed identity)",
+            assignee=f"{self._settings.target_name} ({self.identity_label})",
             assignee_id=principal,
             role=OPENAI_USER_ROLE,
             scope=account,
             command=f"az role assignment create --assignee-object-id {principal} "
             f'--assignee-principal-type ServicePrincipal --role "{OPENAI_USER_ROLE}" '
             f'--scope "{account}"',
-            portal_url=_portal(account, "users"),
+            portal_url=portal(account, "users"),
         )
 
     # -- fixes --------------------------------------------------------------------------
+
+    def _principal(self) -> str | None:
+        if not self._settings.has_target:
+            return None
+        return self.gateway_principal()
 
     def foundry_checks(self, token: UserToken | None, account_ids: list[str]) -> list[SetupCheck]:
         """Read-only: whether the gateway's identity can call these accounts, e.g. before
@@ -953,7 +802,7 @@ class AccessChecker:
         self, token: UserToken | None, account_ids: list[str], actor: str
     ) -> list[SetupCheck]:
         user = self.require_user(token)
-        known = {account.casefold() for account in self._service.foundry_accounts()}
+        known = {account.casefold() for account in self._member_accounts()}
         known.update(account.casefold() for account in self._discovered_accounts())
         unknown = [account for account in account_ids if account.casefold() not in known]
         if unknown:

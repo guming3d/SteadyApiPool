@@ -8,11 +8,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from pool_manager.app import app
-from pool_manager.metrics import expected_shares, requests_query, spans_query
+from pool_manager.litellm.metrics import requests_query, spans_query
+from pool_manager.metrics import expected_shares
 from pool_manager.models import PoolMemberView
 from tests.fake_azure import APP_INSIGHTS, FakeAzure
-from tests.fake_litellm import MASTER_KEY, URL
-from tests.test_app import WRITE, _client, _settings, create_pool
+from tests.litellm.fake_litellm import MASTER_KEY, URL
+from tests.litellm.test_app import WRITE, _client, _settings, create_pool
 
 T1, T2 = "2026-10-24T06:00:00Z", "2026-10-24T06:01:00Z"
 ACCOUNTS = "/subscriptions/sub/resourceGroups/rg-ai/providers/Microsoft.CognitiveServices/accounts"
@@ -28,7 +29,7 @@ def azure() -> FakeAzure:
 def client(azure: FakeAzure) -> Iterator[TestClient]:
     client = _client(azure, _settings())
     create_pool(client, azure)
-    client.post("/api/pools/gpt6/aliases", json={"name": "gpt-4o"}, headers=WRITE)
+    client.post("/api/litellm/pools/gpt6/aliases", json={"name": "gpt-4o"}, headers=WRITE)
     yield client
     app.dependency_overrides.clear()
 
@@ -78,9 +79,9 @@ def _spans(azure: FakeAzure) -> None:
 def test_gateway_metrics_come_from_the_spans(client: TestClient, azure: FakeAzure) -> None:
     _spans(azure)
 
-    body = client.get("/api/pools/gpt6/metrics").json()
+    body = client.get("/api/litellm/pools/gpt6/metrics").json()
 
-    assert body["model_names"] == ["gpt6", "gpt-4o"]
+    assert body["names"] == ["gpt6", "gpt-4o"]
     gateway = body["gateway"]
     assert (gateway["requests"], gateway["success"], gateway["throttled"]) == (12, 10, 2)
     assert gateway["failovers"] == 1
@@ -118,7 +119,7 @@ def test_member_metrics_come_from_each_deployment(client: TestClient, azure: Fak
     # Azure reports a 0 ms average for an idle deployment; that is no latency, not a fast one.
     azure.add_metric(WEST, "AzureOpenAITTLTInMS", [(T1, 0)], ModelDeploymentName="gpt6")
 
-    members = client.get("/api/pools/gpt6/metrics").json()["members"]
+    members = client.get("/api/litellm/pools/gpt6/metrics").json()["members"]
 
     east, west = members
     assert east["deployment_id"] == f"{EAST}/deployments/gpt6"
@@ -139,7 +140,7 @@ def test_member_metrics_come_from_each_deployment(client: TestClient, azure: Fak
 def test_no_access_to_the_spans_is_a_note(client: TestClient, azure: FakeAzure) -> None:
     azure.logs_forbidden.add("app")
 
-    body = client.get("/api/pools/gpt6/metrics", params={"refresh": "true"}).json()
+    body = client.get("/api/litellm/pools/gpt6/metrics", params={"refresh": "true"}).json()
 
     assert body["gateway"] is None
     assert body["gateway_error"] == "forbidden"
@@ -149,20 +150,20 @@ def test_no_access_to_the_spans_is_a_note(client: TestClient, azure: FakeAzure) 
 def test_missing_metrics_permission_is_reported(client: TestClient, azure: FakeAzure) -> None:
     azure.allow("app", "/subscriptions/sub", "Microsoft.App/*", "Microsoft.CognitiveServices/*")
 
-    body = client.get("/api/pools/gpt6/metrics", params={"refresh": "true"}).json()
+    body = client.get("/api/litellm/pools/gpt6/metrics", params={"refresh": "true"}).json()
 
     assert all("metrics/read" in member["error"] for member in body["members"])
 
 
 def test_results_are_cached_per_pool_and_range(client: TestClient, azure: FakeAzure) -> None:
-    client.get("/api/pools/gpt6/metrics")
+    client.get("/api/litellm/pools/gpt6/metrics")
     first = len(azure.log_queries)
-    client.get("/api/pools/gpt6/metrics")
+    client.get("/api/litellm/pools/gpt6/metrics")
     assert len(azure.log_queries) == first
-    client.get("/api/pools/gpt6/metrics", params={"range": "24h"})
-    client.get("/api/pools/gpt6/metrics", params={"refresh": "true"})
+    client.get("/api/litellm/pools/gpt6/metrics", params={"range": "24h"})
+    client.get("/api/litellm/pools/gpt6/metrics", params={"refresh": "true"})
     assert len(azure.log_queries) == first * 3
-    assert client.get("/api/pools/gpt6/metrics", params={"range": "1y"}).status_code == 422
+    assert client.get("/api/litellm/pools/gpt6/metrics", params={"range": "1y"}).status_code == 422
 
 
 def test_a_gateway_without_app_insights(azure: FakeAzure) -> None:
@@ -170,7 +171,7 @@ def test_a_gateway_without_app_insights(azure: FakeAzure) -> None:
     client = _client(azure, settings)
     try:
         create_pool(client, azure)
-        body = client.get("/api/pools/gpt6/metrics").json()
+        body = client.get("/api/litellm/pools/gpt6/metrics").json()
     finally:
         app.dependency_overrides.clear()
 

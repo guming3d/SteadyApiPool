@@ -24,8 +24,8 @@ from pool_manager.litellm.benchmark import (
 )
 from pool_manager.litellm.models import BenchmarkSpec
 from tests.fake_azure import FakeAzure
-from tests.fake_litellm import URL, FakeLiteLLM
-from tests.test_app import WRITE, _client, _settings, create_pool
+from tests.litellm.fake_litellm import URL, FakeLiteLLM
+from tests.litellm.test_app import WRITE, _client, _settings, create_pool
 
 CHAT = f"{URL}/v1/chat/completions"
 
@@ -314,7 +314,7 @@ def client(azure: FakeAzure) -> Iterator[TestClient]:
 
 
 def _test_key(client: TestClient) -> str:
-    return str(client.post("/api/pools/gpt6/keys", headers=WRITE).json()["key"])
+    return str(client.post("/api/litellm/pools/gpt6/keys", headers=WRITE).json()["key"])
 
 
 def test_a_load_test_from_the_web_tab(client: TestClient, azure: FakeAzure) -> None:
@@ -323,12 +323,12 @@ def test_a_load_test_from_the_web_tab(client: TestClient, azure: FakeAzure) -> N
     spec = {"users": 2, "max_requests": 10, "duration_seconds": 30}
 
     started = client.post(
-        "/api/pools/gpt6/benchmarks", json={"spec": spec, "key": key}, headers=WRITE
+        "/api/litellm/pools/gpt6/benchmarks", json={"spec": spec, "key": key}, headers=WRITE
     )
 
     assert started.status_code == 200, started.text
     assert key not in started.text
-    run = _wait(client, f"/api/pools/gpt6/benchmarks/{started.json()['id']}")
+    run = _wait(client, f"/api/litellm/pools/gpt6/benchmarks/{started.json()['id']}")
     assert run["state"] == "done" and run["model"] == "gpt6"
     assert run["summary"]["requests"] == 10 and run["summary"]["successes"] == 10
     assert run["summary"]["members"][0]["member"] == f"gpt6--{members[0]}"
@@ -340,7 +340,7 @@ def test_the_model_must_be_one_of_the_pools_names(client: TestClient, azure: Fak
     create_pool(client, azure)
     body = {"spec": {"model": "gpt-other"}, "key": "sk-x"}
 
-    response = client.post("/api/pools/gpt6/benchmarks", json=body, headers=WRITE)
+    response = client.post("/api/litellm/pools/gpt6/benchmarks", json=body, headers=WRITE)
 
     assert response.status_code == 400
     assert "model must be one of the pool's names" in response.json()["detail"]
@@ -352,11 +352,13 @@ def test_one_load_test_at_a_time_and_stop(azure: FakeAzure) -> None:
     try:
         create_pool(client, azure)
         body = {"spec": {"users": 2, "duration_seconds": 60}, "key": _test_key(client)}
-        first = client.post("/api/pools/gpt6/benchmarks", json=body, headers=WRITE).json()
-        second = client.post("/api/pools/gpt6/benchmarks", json=body, headers=WRITE)
-        stopped = client.post(f"/api/pools/gpt6/benchmarks/{first['id']}/stop", headers=WRITE)
+        first = client.post("/api/litellm/pools/gpt6/benchmarks", json=body, headers=WRITE).json()
+        second = client.post("/api/litellm/pools/gpt6/benchmarks", json=body, headers=WRITE)
+        stopped = client.post(
+            f"/api/litellm/pools/gpt6/benchmarks/{first['id']}/stop", headers=WRITE
+        )
         gate.open = True
-        run = _wait(client, f"/api/pools/gpt6/benchmarks/{first['id']}")
+        run = _wait(client, f"/api/litellm/pools/gpt6/benchmarks/{first['id']}")
     finally:
         gate.open = True
         app.dependency_overrides.clear()
@@ -371,10 +373,10 @@ def test_one_load_test_at_a_time_and_stop(azure: FakeAzure) -> None:
 def test_runs_are_per_pool(client: TestClient, azure: FakeAzure) -> None:
     create_pool(client, azure)
     body = {"spec": {"max_requests": 1}, "key": _test_key(client)}
-    run = client.post("/api/pools/gpt6/benchmarks", json=body, headers=WRITE).json()
+    run = client.post("/api/litellm/pools/gpt6/benchmarks", json=body, headers=WRITE).json()
 
-    assert client.get(f"/api/pools/other/benchmarks/{run['id']}").status_code == 404
-    assert client.get("/api/pools/gpt6/benchmarks/nope").status_code == 404
+    assert client.get(f"/api/litellm/pools/other/benchmarks/{run['id']}").status_code == 404
+    assert client.get("/api/litellm/pools/gpt6/benchmarks/nope").status_code == 404
 
 
 def test_only_owners_start_load_tests(azure: FakeAzure) -> None:
@@ -383,7 +385,7 @@ def test_only_owners_start_load_tests(azure: FakeAzure) -> None:
         reader = {"X-MS-CLIENT-PRINCIPAL-NAME": "reader@contoso.com"}
         owner = {"X-MS-CLIENT-PRINCIPAL-NAME": "owner@contoso.com"}
         body = {"spec": {}, "key": "sk-x"}
-        path = "/api/pools/gpt6/benchmarks"
+        path = "/api/litellm/pools/gpt6/benchmarks"
         as_reader = client.post(path, json=body, headers={**reader, **WRITE})
         without_csrf = client.post(path, json=body, headers=owner)
         reader_poll = client.get(f"{path}/x", headers=reader)

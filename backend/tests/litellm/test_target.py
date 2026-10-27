@@ -15,8 +15,8 @@ from pool_manager.config import Settings, read_saved_target
 from pool_manager.litellm.gateway_template import LITELLM_IMAGE, aca_template
 from pool_manager.secret_store import SecretStore
 from tests.fake_azure import SUBSCRIPTION, TENANT, FakeAzure
-from tests.fake_litellm import MASTER_KEY, URL
-from tests.test_app import WRITE, _client, _settings
+from tests.litellm.fake_litellm import MASTER_KEY, URL
+from tests.litellm.test_app import WRITE, _client, _settings
 
 NO_TARGET = {"subscription_id": "", "resource_group": "", "gateway_name": ""}
 DEPLOYMENT = (
@@ -57,7 +57,7 @@ def _create(wizard: _Wizard, **overrides: Any) -> Any:
         "name": "gw-new",
         **overrides,
     }
-    return wizard.client.post("/api/target/gateways", json=body, headers=WRITE)
+    return wizard.client.post("/api/litellm/target/gateways", json=body, headers=WRITE)
 
 
 def _select(name: str = "gw-dev", group: str = "rg-ai-gw") -> dict[str, Any]:
@@ -99,7 +99,7 @@ def test_lists_litellm_gateways(wizard: _Wizard, azure: FakeAzure) -> None:
     assert wizard.client.get("/api/target/tenants").json()[0]["tenant_id"] == TENANT
 
     gateways = wizard.client.get(
-        "/api/target/gateways", params={"subscription_id": SUBSCRIPTION}
+        "/api/litellm/target/gateways", params={"subscription_id": SUBSCRIPTION}
     ).json()
 
     assert [(g["name"], g["managed"], g["profile"]) for g in gateways] == [
@@ -114,7 +114,7 @@ def test_listing_shows_who_cant_read_the_key(wizard: _Wizard, azure: FakeAzure) 
     azure.allow("app", f"/subscriptions/{SUBSCRIPTION}", "*/read")
 
     gateways = wizard.client.get(
-        "/api/target/gateways", params={"subscription_id": SUBSCRIPTION}
+        "/api/litellm/target/gateways", params={"subscription_id": SUBSCRIPTION}
     ).json()
 
     assert gateways[0]["can_manage"] is False
@@ -126,7 +126,7 @@ def test_create_options(wizard: _Wizard, azure: FakeAzure) -> None:
     azure.providers[SUBSCRIPTION] = {"Microsoft.DBforPostgreSQL": "NotRegistered"}
 
     options = wizard.client.get(
-        "/api/target/create-options", params={"subscription_id": SUBSCRIPTION}
+        "/api/litellm/target/create-options", params={"subscription_id": SUBSCRIPTION}
     ).json()
 
     assert options["resource_groups"] == [{"name": "rg-one", "location": "eastus2"}]
@@ -135,7 +135,7 @@ def test_create_options(wizard: _Wizard, azure: FakeAzure) -> None:
 
 
 def test_select_saves_the_gateway(wizard: _Wizard) -> None:
-    response = wizard.client.put("/api/target", json=_select(), headers=WRITE)
+    response = wizard.client.put("/api/litellm/target", json=_select(), headers=WRITE)
 
     assert response.status_code == 200, response.text
     assert response.json()["gateway_kind"] == "aca"
@@ -157,9 +157,9 @@ def test_select_refuses_what_isnt_a_gateway(wizard: _Wizard, azure: FakeAzure) -
         "web", group="rg-x", subscription=SUBSCRIPTION, managed=False, image="nginx:1"
     )
 
-    assert wizard.client.put("/api/target", json=_select()).status_code == 403  # CSRF
-    missing = wizard.client.put("/api/target", json=_select("nope"), headers=WRITE)
-    web = wizard.client.put("/api/target", json=_select("web", "rg-x"), headers=WRITE)
+    assert wizard.client.put("/api/litellm/target", json=_select()).status_code == 403  # CSRF
+    missing = wizard.client.put("/api/litellm/target", json=_select("nope"), headers=WRITE)
+    web = wizard.client.put("/api/litellm/target", json=_select("web", "rg-x"), headers=WRITE)
 
     assert missing.status_code == 404
     assert web.status_code == 409
@@ -207,17 +207,20 @@ def test_a_dev_gateway_has_no_redis(wizard: _Wizard, azure: FakeAzure) -> None:
 
 def test_deploy_status_follows_the_deployment(wizard: _Wizard, azure: FakeAzure) -> None:
     params = {"subscription_id": SUBSCRIPTION, "resource_group": "rg-new", "name": "gw-new"}
-    assert wizard.client.get("/api/target/deploy-status", params=params).json()["state"] == "none"
+    assert (
+        wizard.client.get("/api/litellm/target/deploy-status", params=params).json()["state"]
+        == "none"
+    )
     _create(wizard)
 
-    running = wizard.client.get("/api/target/deploy-status", params=params).json()
+    running = wizard.client.get("/api/litellm/target/deploy-status", params=params).json()
     assert running["state"] == "running"
     assert [(step["name"], step["state"]) for step in running["steps"]] == [
         ("psql-gw-new", "Running"),
         ("id-gw-new", "Succeeded"),
     ]
     azure.finish_deployment("gw-new")
-    done = wizard.client.get("/api/target/deploy-status", params=params).json()
+    done = wizard.client.get("/api/litellm/target/deploy-status", params=params).json()
     assert done["state"] == "succeeded"
 
 
@@ -226,7 +229,7 @@ def test_a_failed_deployment_says_why(wizard: _Wizard, azure: FakeAzure) -> None
     _create(wizard)
 
     status = wizard.client.get(
-        "/api/target/deploy-status",
+        "/api/litellm/target/deploy-status",
         params={"subscription_id": SUBSCRIPTION, "resource_group": "rg-new", "name": "gw-new"},
     ).json()
 
@@ -271,9 +274,11 @@ def test_a_failed_deployment_can_be_cleaned_up(wizard: _Wizard, azure: FakeAzure
     }
     body = _select("gw-new", "rg-new")
 
-    check = wizard.client.post("/api/target/gateways/delete-check", json=body, headers=WRITE)
+    check = wizard.client.post(
+        "/api/litellm/target/gateways/delete-check", json=body, headers=WRITE
+    )
     deleted = wizard.client.post(
-        "/api/target/gateways/delete",
+        "/api/litellm/target/gateways/delete",
         json={**body, "confirm_name": "gw-new"},
         headers=WRITE,
     )
@@ -350,7 +355,7 @@ def test_a_deployed_gateway_reads_back(azure: FakeAzure, tmp_path: Path) -> None
     client = _client(azure, _settings(**NO_TARGET).with_saved_target(saved))
     try:
         target = client.get("/api/target").json()
-        caps = client.get("/api/capabilities").json()
+        caps = client.get("/api/litellm/capabilities").json()
     finally:
         app.dependency_overrides.clear()
 
@@ -371,7 +376,7 @@ def _connect(wizard: _Wizard, **overrides: Any) -> Any:
         "principal_id": "00000000-0000-0000-0000-0000000000bb",
         **overrides,
     }
-    return wizard.client.post("/api/target/connect", json=body, headers=WRITE)
+    return wizard.client.post("/api/litellm/target/connect", json=body, headers=WRITE)
 
 
 def test_connecting_checks_the_key_and_keeps_it_out_of_the_state_file(
@@ -418,9 +423,9 @@ def test_a_connected_gateway_works_with_its_stored_key(azure: FakeAzure, tmp_pat
     assert saved is not None
     client = _client(azure, _settings(**NO_TARGET).with_saved_target(saved), secrets=wizard.secrets)
     try:
-        assert client.get("/api/pools").json() == []
-        caps = client.get("/api/capabilities").json()
-        assert client.post("/api/target/disconnect", headers=WRITE).status_code == 204
+        assert client.get("/api/litellm/pools").json() == []
+        caps = client.get("/api/litellm/capabilities").json()
+        assert client.post("/api/litellm/target/disconnect", headers=WRITE).status_code == 204
     finally:
         app.dependency_overrides.clear()
 
@@ -431,7 +436,7 @@ def test_a_connected_gateway_works_with_its_stored_key(azure: FakeAzure, tmp_pat
 
 def test_the_aks_bundle(wizard: _Wizard) -> None:
     bundle = wizard.client.get(
-        "/api/target/aks-bundle",
+        "/api/litellm/target/aks-bundle",
         params={
             "subscription_id": SUBSCRIPTION,
             "resource_group": "rg-aks",
@@ -458,7 +463,7 @@ def test_gateway_from_the_environment_is_fixed(azure: FakeAzure, tmp_path: Path)
     wizard = _Wizard(azure, _settings(), tmp_path)
     try:
         assert wizard.client.get("/api/target").json()["source"] == "environment"
-        response = wizard.client.put("/api/target", json=_select(), headers=WRITE)
+        response = wizard.client.put("/api/litellm/target", json=_select(), headers=WRITE)
     finally:
         app.dependency_overrides.clear()
     assert response.status_code == 409
@@ -469,7 +474,7 @@ def test_deployed_app_cannot_choose(azure: FakeAzure, tmp_path: Path) -> None:
     wizard = _Wizard(azure, _settings(auth_mode="easy_auth", owners="dev@contoso.com"), tmp_path)
     headers = {**WRITE, "X-MS-CLIENT-PRINCIPAL-NAME": "dev@contoso.com"}
     try:
-        response = wizard.client.put("/api/target", json=_select(), headers=headers)
+        response = wizard.client.put("/api/litellm/target", json=_select(), headers=headers)
     finally:
         app.dependency_overrides.clear()
     assert response.status_code == 400
@@ -478,6 +483,7 @@ def test_deployed_app_cannot_choose(azure: FakeAzure, tmp_path: Path) -> None:
 def test_settings_use_the_saved_gateway(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     state = tmp_path / "state.json"
     config.save_target(
+        "litellm",
         {"subscription_id": "s", "resource_group": "g", "gateway_name": "gw", "tenant_id": "t"},
         state,
     )
@@ -498,15 +504,6 @@ def test_settings_use_the_saved_gateway(monkeypatch: pytest.MonkeyPatch, tmp_pat
         "t",
         True,
     )
-
-
-def test_an_apim_era_state_file_is_ignored(tmp_path: Path) -> None:
-    state = tmp_path / "state.json"
-    state.write_text(
-        json.dumps({"target": {"subscription_id": "s", "resource_group": "g", "apim_name": "a"}}),
-        encoding="utf-8",
-    )
-    assert read_saved_target(state) is None
 
 
 @pytest.mark.parametrize(
@@ -532,7 +529,7 @@ def _delete_body(name: str = "gw-dev", **overrides: Any) -> dict[str, Any]:
 
 def test_delete_check_lists_what_would_be_deleted(wizard: _Wizard) -> None:
     check = wizard.client.post(
-        "/api/target/gateways/delete-check", json=_select(), headers=WRITE
+        "/api/litellm/target/gateways/delete-check", json=_select(), headers=WRITE
     ).json()
 
     assert check["current"] is False
@@ -551,7 +548,7 @@ def test_only_gateways_this_app_deployed_can_be_deleted(wizard: _Wizard, azure: 
     azure.add_gateway("by-hand", group="rg-x", subscription=SUBSCRIPTION, managed=False)
 
     response = wizard.client.post(
-        "/api/target/gateways/delete",
+        "/api/litellm/target/gateways/delete",
         json=_delete_body("by-hand", resource_group="rg-x"),
         headers=WRITE,
     )
@@ -562,7 +559,7 @@ def test_only_gateways_this_app_deployed_can_be_deleted(wizard: _Wizard, azure: 
 
 def test_delete_needs_the_name_typed_again(wizard: _Wizard, azure: FakeAzure) -> None:
     response = wizard.client.post(
-        "/api/target/gateways/delete", json=_delete_body(confirm_name="gw"), headers=WRITE
+        "/api/litellm/target/gateways/delete", json=_delete_body(confirm_name="gw"), headers=WRITE
     )
 
     assert response.status_code == 400
@@ -576,7 +573,9 @@ def test_delete_removes_the_gateways_resources_but_not_the_group(
     unrelated = f"/subscriptions/{SUBSCRIPTION}/resourceGroups/rg-ai-gw/providers/X/y/other"
     azure.resources[unrelated.casefold()] = {"id": unrelated, "name": "other", "type": "X/y"}
 
-    response = wizard.client.post("/api/target/gateways/delete", json=_delete_body(), headers=WRITE)
+    response = wizard.client.post(
+        "/api/litellm/target/gateways/delete", json=_delete_body(), headers=WRITE
+    )
 
     assert response.status_code == 204, response.text
     assert not any("gw-dev" in key for key in azure.container_apps)
@@ -591,7 +590,9 @@ def test_delete_removes_the_gateways_resources_but_not_the_group(
 def test_delete_doesnt_wait_for_the_environment(wizard: _Wizard, azure: FakeAzure) -> None:
     azure.slow_deletes = {"microsoft.app/managedenvironments"}
 
-    first = wizard.client.post("/api/target/gateways/delete", json=_delete_body(), headers=WRITE)
+    first = wizard.client.post(
+        "/api/litellm/target/gateways/delete", json=_delete_body(), headers=WRITE
+    )
 
     assert first.status_code == 204, first.text
     # The environment is left to Azure; the rest is gone without waiting for it.
@@ -604,7 +605,9 @@ def test_delete_doesnt_wait_for_the_environment(wizard: _Wizard, azure: FakeAzur
         "provisioningState": "ScheduledForDelete"
     }
     before = len([r for r in azure.requests if r.method == "DELETE" and "cae-gw-dev" in r.url.path])
-    again = wizard.client.post("/api/target/gateways/delete", json=_delete_body(), headers=WRITE)
+    again = wizard.client.post(
+        "/api/litellm/target/gateways/delete", json=_delete_body(), headers=WRITE
+    )
     after = len([r for r in azure.requests if r.method == "DELETE" and "cae-gw-dev" in r.url.path])
     assert again.status_code == 204, again.text
     assert after == before
@@ -620,10 +623,10 @@ def test_deleting_the_current_gateway_forgets_it(azure: FakeAzure, tmp_path: Pat
     wizard.state_file.write_text("{}", encoding="utf-8")
     try:
         check = wizard.client.post(
-            "/api/target/gateways/delete-check", json=_select(), headers=WRITE
+            "/api/litellm/target/gateways/delete-check", json=_select(), headers=WRITE
         ).json()
         response = wizard.client.post(
-            "/api/target/gateways/delete", json=_delete_body(), headers=WRITE
+            "/api/litellm/target/gateways/delete", json=_delete_body(), headers=WRITE
         )
     finally:
         app.dependency_overrides.clear()

@@ -34,7 +34,7 @@ import httpx
 from ..access import AUTHORIZATION_API_VERSION, missing
 from ..arm import ArmClient, ArmError, segment
 from ..config import Settings
-from ..errors import ServiceError
+from ..errors import ServiceError, arm_failure
 from ..secret_store import SecretStore
 from .gateway import MANAGED_TAG, MANAGED_TAG_VALUE
 from .gateway_deploy import (
@@ -43,7 +43,6 @@ from .gateway_deploy import (
     GatewayDeployer,
     deployment_path,
     group_path,
-    translate,
 )
 from .gateway_template import (
     AKS_COMMAND,
@@ -147,7 +146,7 @@ class AksDeployer:
                 )
             )
         except ArmError as error:
-            raise translate(error, "check this AKS deployment") from error
+            raise arm_failure(error, "check this AKS deployment") from error
         if missing(permissions, [ROLE_ASSIGNMENT_WRITE]):
             raise ServiceError(
                 403,
@@ -240,7 +239,7 @@ class AksDeployer:
                 tags={MANAGED_TAG: MANAGED_TAG_VALUE, PLATFORM_TAG: "aks"},
             )
         except ArmError as error:
-            raise translate(error, "deploy this gateway") from error
+            raise arm_failure(error, "deploy this gateway") from error
         logger.info(
             "%s started deploying gateway %s on AKS (%s) in %s",
             actor,
@@ -295,7 +294,7 @@ class AksDeployer:
                 return status.model_copy(update={"state": "running", "phase": "cluster"}), None
             result = self._result(arm, cluster, str(command))
         except ArmError as error:
-            raise translate(error, "follow the gateway's install") from error
+            raise arm_failure(error, "follow the gateway's install") from error
         if result is None:
             return status.model_copy(update={"state": "running", "phase": "cluster"}), None
         state, exit_code, logs = result

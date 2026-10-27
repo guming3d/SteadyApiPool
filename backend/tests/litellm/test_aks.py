@@ -27,7 +27,7 @@ from pool_manager.litellm.gateway_template import (
 )
 from pool_manager.secret_store import SecretStore
 from tests.fake_azure import SUBSCRIPTION, TENANT, FakeAzure
-from tests.test_app import WRITE, _client, _settings
+from tests.litellm.test_app import WRITE, _client, _settings
 
 NO_TARGET = {"subscription_id": "", "resource_group": "", "gateway_name": ""}
 DEPLOYMENT = (
@@ -94,11 +94,11 @@ class _Wizard:
             "platform": "aks",
             **overrides,
         }
-        return self.client.post("/api/target/gateways", json=body, headers=WRITE)
+        return self.client.post("/api/litellm/target/gateways", json=body, headers=WRITE)
 
     def status(self) -> dict[str, Any]:
         params = {"subscription_id": SUBSCRIPTION, "resource_group": "rg-new", "name": "gw-aks"}
-        response = self.client.get("/api/target/deploy-status", params=params)
+        response = self.client.get("/api/litellm/target/deploy-status", params=params)
         assert response.status_code == 200, response.text
         return dict(response.json())
 
@@ -260,7 +260,7 @@ def test_a_failed_install_can_run_again_with_the_same_keys(
         "gateway_name": "gw-aks",
     }
     assert (
-        wizard.client.post("/api/target/gateways/retry-install", json=body, headers=WRITE)
+        wizard.client.post("/api/litellm/target/gateways/retry-install", json=body, headers=WRITE)
     ).status_code == 204
     wizard.status()
     first, again = azure.run_commands
@@ -282,10 +282,12 @@ def test_aks_gateways_are_listed_and_chosen_with_their_key(
         "gateway_name": "gw-aks",
     }
 
-    listed = wizard.client.get("/api/target/gateways", params={"subscription_id": SUBSCRIPTION})
-    no_key = wizard.client.put("/api/target", json=body, headers=WRITE)
+    listed = wizard.client.get(
+        "/api/litellm/target/gateways", params={"subscription_id": SUBSCRIPTION}
+    )
+    no_key = wizard.client.put("/api/litellm/target", json=body, headers=WRITE)
     wizard.secrets.put(URL, "sk-aks-key")
-    chosen = wizard.client.put("/api/target", json=body, headers=WRITE)
+    chosen = wizard.client.put("/api/litellm/target", json=body, headers=WRITE)
 
     [view] = [item for item in listed.json() if item["platform"] == "aks"]
     assert (view["name"], view["url"], view["managed"]) == ("gw-aks", URL, True)
@@ -311,9 +313,13 @@ def test_deleting_an_aks_gateway_removes_its_resources_and_keys(
         "gateway_name": "gw-aks",
     }
 
-    check = wizard.client.post("/api/target/gateways/delete-check", json=body, headers=WRITE)
+    check = wizard.client.post(
+        "/api/litellm/target/gateways/delete-check", json=body, headers=WRITE
+    )
     deleted = wizard.client.post(
-        "/api/target/gateways/delete", json={**body, "confirm_name": "gw-aks"}, headers=WRITE
+        "/api/litellm/target/gateways/delete",
+        json={**body, "confirm_name": "gw-aks"},
+        headers=WRITE,
     )
 
     assert check.status_code == 200, check.text
@@ -354,7 +360,7 @@ def test_deleting_the_current_aks_gateway_forgets_it(azure: FakeAzure, tmp_path:
         "confirm_name": "gw-aks",
     }
     try:
-        deleted = client.post("/api/target/gateways/delete", json=body, headers=WRITE)
+        deleted = client.post("/api/litellm/target/gateways/delete", json=body, headers=WRITE)
     finally:
         app.dependency_overrides.clear()
 

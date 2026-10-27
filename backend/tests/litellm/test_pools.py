@@ -13,7 +13,7 @@ from pool_manager.arm import ArmClient
 from pool_manager.config import Settings
 from pool_manager.discovery import DeploymentDiscovery
 from pool_manager.errors import ServiceError
-from pool_manager.litellm.api_test import ApiTester
+from pool_manager.litellm.api_test import LiteLLMTester
 from pool_manager.litellm.gateway import GatewayConnection
 from pool_manager.litellm.models import (
     AliasWrite,
@@ -26,10 +26,10 @@ from pool_manager.litellm.models import (
     RemovalConfirm,
 )
 from pool_manager.litellm.resources import MANAGED_MARKER
-from pool_manager.litellm.service import PoolManagerService
+from pool_manager.litellm.service import LiteLLMService
 from pool_manager.models import DeploymentImport, DeploymentRef, PoolMemberWrite
 from tests.fake_azure import GATEWAY_APP, FakeAzure, FakeCredential
-from tests.fake_litellm import MASTER_KEY, URL, FakeLiteLLM
+from tests.litellm.fake_litellm import MASTER_KEY, URL, FakeLiteLLM
 
 
 def _settings(**overrides: Any) -> Settings:
@@ -47,9 +47,9 @@ def _settings(**overrides: Any) -> Settings:
 class Wired:
     apim: FakeAzure
     lite: FakeLiteLLM
-    service: PoolManagerService
+    service: LiteLLMService
     discovery: DeploymentDiscovery
-    tester: ApiTester
+    tester: LiteLLMTester
 
 
 def _wire(settings: Settings | None = None, apim: FakeAzure | None = None) -> Wired:
@@ -58,9 +58,9 @@ def _wire(settings: Settings | None = None, apim: FakeAzure | None = None) -> Wi
     lite = FakeLiteLLM()
     arm = ArmClient(settings, FakeCredential(), apim.transport(), sleep=lambda _: None)
     gateway = GatewayConnection(settings, arm, transport=lite.transport(), sleep=lambda _: None)
-    service = PoolManagerService(settings, arm, gateway)
+    service = LiteLLMService(settings, arm, gateway)
     discovery = DeploymentDiscovery(settings, arm, service)
-    tester = ApiTester(settings, service, transport=lite.transport())
+    tester = LiteLLMTester(settings, service, transport=lite.transport())
     return Wired(apim, lite, service, discovery, tester)
 
 
@@ -594,7 +594,7 @@ def test_an_unreachable_gateway_is_a_bad_gateway() -> None:
     apim = FakeAzure()
     arm = ArmClient(settings, FakeCredential(), apim.transport(), sleep=lambda _: None)
     gateway = GatewayConnection(settings, arm, transport=httpx.MockTransport(refuse))
-    service = PoolManagerService(settings, arm, gateway)
+    service = LiteLLMService(settings, arm, gateway)
 
     with pytest.raises(ServiceError) as raised:
         service.list_pools()

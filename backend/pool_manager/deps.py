@@ -1,8 +1,9 @@
 """Dependencies, replaced in tests through ``app.dependency_overrides``.
 
 Locally and in the Easy Auth deployment there is one set of components for the process (the
-``lru_cache`` factories). In the public app each request resolves to the caller's own session
-(sessions.py), built for them and the gateway their browser chose.
+``lru_cache`` factories): the shared ones, and each product's, built when its routes are first
+used. In the public app (APIM only) each request resolves to the caller's own session
+(sessions.py), built for them and the service their browser chose.
 """
 
 from __future__ import annotations
@@ -14,18 +15,26 @@ from typing import Annotated
 from fastapi import Depends, Request
 
 from .access import AccessChecker
+from .apim.access import ApimAccessChecker
+from .apim.api_test import ApimTester
+from .apim.cost import ApimCost
+from .apim.metrics import ApimMonitor
+from .apim.service import ApimService
+from .apim.target import ApimTargets
 from .arm import ArmClient
 from .config import Settings, get_settings
-from .cost import CostReader
 from .credentials import LocalCredential
-from .discovery import DeploymentDiscovery
+from .discovery import DeploymentDiscovery, MemberStore
 from .entra import EntraUser, OboExchanger, TokenVerifier
 from .errors import ServiceError
-from .litellm.api_test import ApiTester
+from .litellm.access import LiteLLMAccessChecker
+from .litellm.api_test import LiteLLMTester
 from .litellm.benchmark import BenchmarkRunner
+from .litellm.cost import LiteLLMCost
 from .litellm.gateway import GatewayConnection
-from .litellm.service import PoolManagerService
-from .metrics import PoolMonitor
+from .litellm.metrics import LiteLLMMonitor
+from .litellm.service import LiteLLMService
+from .litellm.target import LiteLLMTargets
 from .secret_store import SecretStore
 from .sessions import TARGET_HEADER, Sessions, UserSession, parse_target
 from .target import TargetChooser
@@ -39,7 +48,7 @@ def get_local_credential() -> LocalCredential | None:
     return LocalCredential() if get_settings().auth_mode == "disabled" else None
 
 
-# -- one set for the process (local, Easy Auth) ----------------------------------------------
+# -- shared, one set for the process (local, Easy Auth) ---------------------------------------
 
 
 @lru_cache
@@ -49,8 +58,44 @@ def _arm() -> ArmClient:
 
 @lru_cache
 def _secrets() -> SecretStore:
-    """External gateways' master keys, kept locally (OS-encrypted)."""
+    """External LiteLLM gateways' master keys, kept locally (OS-encrypted)."""
     return SecretStore()
+
+
+@lru_cache
+def _targets() -> TargetChooser:
+    return TargetChooser(get_settings(), get_local_credential(), on_change=reset_target)
+
+
+# -- APIM ------------------------------------------------------------------------------------
+
+
+@lru_cache
+def _apim_service() -> ApimService:
+    return ApimService(get_settings(), _arm())
+
+
+@lru_cache
+def _apim_monitor() -> ApimMonitor:
+    return ApimMonitor(get_settings(), _arm(), _apim_service())
+
+
+@lru_cache
+def _apim_tester() -> ApimTester:
+    return ApimTester(get_settings(), _apim_service())
+
+
+@lru_cache
+def _apim_cost() -> ApimCost:
+    return ApimCost(get_settings(), _apim_service())
+
+
+@lru_cache
+def _apim_targets() -> ApimTargets:
+    return ApimTargets(_targets())
+
+
+# -- LiteLLM ---------------------------------------------------------------------------------
 
 
 @lru_cache
@@ -61,23 +106,18 @@ def _gateway() -> GatewayConnection:
 
 
 @lru_cache
-def _service() -> PoolManagerService:
-    return PoolManagerService(get_settings(), _arm(), _gateway())
+def _litellm_service() -> LiteLLMService:
+    return LiteLLMService(get_settings(), _arm(), _gateway())
 
 
 @lru_cache
-def _discovery() -> DeploymentDiscovery:
-    return DeploymentDiscovery(get_settings(), _arm(), _service())
+def _litellm_monitor() -> LiteLLMMonitor:
+    return LiteLLMMonitor(get_settings(), _arm(), _litellm_service())
 
 
 @lru_cache
-def _monitor() -> PoolMonitor:
-    return PoolMonitor(get_settings(), _arm(), _service())
-
-
-@lru_cache
-def _tester() -> ApiTester:
-    return ApiTester(get_settings(), _service())
+def _litellm_tester() -> LiteLLMTester:
+    return LiteLLMTester(get_settings(), _litellm_service())
 
 
 @lru_cache
@@ -87,12 +127,37 @@ def _benchmarks() -> BenchmarkRunner:
 
 
 @lru_cache
-def _cost() -> CostReader:
-    return CostReader(get_settings(), _service())
+def _litellm_cost() -> LiteLLMCost:
+    return LiteLLMCost(get_settings(), _litellm_service())
+
+
+@lru_cache
+def _litellm_targets() -> LiteLLMTargets:
+    settings = get_settings()
+    return LiteLLMTargets(_targets(), secrets=_secrets() if settings.local else None)
+
+
+# -- the chosen gateway, whichever product it is ---------------------------------------------
+
+
+def _members() -> MemberStore | None:
+    settings = get_settings()
+    product = settings.product if settings.has_target else None
+    if product == "apim":
+        return _apim_service()
+    if product == "litellm":
+        return _litellm_service()
+    return None
+
+
+@lru_cache
+def _discovery() -> DeploymentDiscovery:
+    return DeploymentDiscovery(get_settings(), _arm(), _members())
 
 
 @lru_cache
 def _access() -> AccessChecker:
+    settings = get_settings()
     discovery = _discovery()
 
     def discovered_accounts() -> list[str]:
@@ -102,35 +167,37 @@ def _access() -> AccessChecker:
             logger.warning("Cannot list discovered deployments: %s", error.message)
             return []
 
-    return AccessChecker(
-        get_settings(), _arm(), _service(), discovered_accounts, get_local_credential()
-    )
-
-
-@lru_cache
-def _targets() -> TargetChooser:
-    settings = get_settings()
-    return TargetChooser(
-        settings,
-        get_local_credential(),
-        secrets=_secrets() if settings.local else None,
-        on_change=reset_target,
-    )
+    credential = get_local_credential()
+    product = settings.product if settings.has_target else None
+    if product == "apim":
+        return ApimAccessChecker(settings, _arm(), _apim_service(), discovered_accounts, credential)
+    if product == "litellm":
+        return LiteLLMAccessChecker(
+            settings, _arm(), _litellm_service(), discovered_accounts, credential
+        )
+    # No gateway yet: the report asks for one.
+    return AccessChecker(settings, _arm(), None, discovered_accounts, credential)
 
 
 def reset_target() -> None:
     """Rebuilds everything bound to one gateway once the setup wizard chose another.
 
-    The local credential stays, so a browser sign-in survives the switch.
+    The local credential and the secret store stay, so a browser sign-in survives the switch.
     """
     factories = (
         _targets,
-        _monitor,
-        _tester,
-        _cost,
         _access,
         _discovery,
-        _service,
+        _apim_targets,
+        _apim_monitor,
+        _apim_tester,
+        _apim_cost,
+        _apim_service,
+        _litellm_targets,
+        _litellm_monitor,
+        _litellm_tester,
+        _litellm_cost,
+        _litellm_service,
         _gateway,
         _arm,
     )
@@ -230,32 +297,15 @@ def get_request_settings(settings: SettingsDep, session: Session) -> Settings:
     return session.settings if session else settings
 
 
+# Shared.
+
+
 def get_arm(session: Session) -> ArmClient:
     return session.arm if session else _arm()
 
 
-def get_service(session: Session) -> PoolManagerService:
-    return session.service if session else _service()
-
-
 def get_discovery(session: Session) -> DeploymentDiscovery:
     return session.discovery if session else _discovery()
-
-
-def get_monitor(session: Session) -> PoolMonitor:
-    return session.monitor if session else _monitor()
-
-
-def get_tester(session: Session) -> ApiTester:
-    return session.tester if session else _tester()
-
-
-def get_benchmarks(session: Session) -> BenchmarkRunner:
-    return session.benchmarks if session else _benchmarks()
-
-
-def get_cost(session: Session) -> CostReader:
-    return session.cost if session else _cost()
 
 
 def get_access(session: Session) -> AccessChecker:
@@ -264,3 +314,53 @@ def get_access(session: Session) -> AccessChecker:
 
 def get_targets(session: Session) -> TargetChooser:
     return session.targets if session else _targets()
+
+
+# APIM.
+
+
+def get_apim_service(session: Session) -> ApimService:
+    return session.service if session else _apim_service()
+
+
+def get_apim_monitor(session: Session) -> ApimMonitor:
+    return session.monitor if session else _apim_monitor()
+
+
+def get_apim_tester(session: Session) -> ApimTester:
+    return session.tester if session else _apim_tester()
+
+
+def get_apim_cost(session: Session) -> ApimCost:
+    return session.cost if session else _apim_cost()
+
+
+def get_apim_targets(session: Session) -> ApimTargets:
+    return session.apim_targets if session else _apim_targets()
+
+
+# LiteLLM (never in the public app, which manages APIM services only).
+
+
+def get_litellm_service() -> LiteLLMService:
+    return _litellm_service()
+
+
+def get_litellm_monitor() -> LiteLLMMonitor:
+    return _litellm_monitor()
+
+
+def get_litellm_tester() -> LiteLLMTester:
+    return _litellm_tester()
+
+
+def get_litellm_cost() -> LiteLLMCost:
+    return _litellm_cost()
+
+
+def get_benchmarks() -> BenchmarkRunner:
+    return _benchmarks()
+
+
+def get_litellm_targets() -> LiteLLMTargets:
+    return _litellm_targets()

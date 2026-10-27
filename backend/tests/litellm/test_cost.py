@@ -10,12 +10,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from pool_manager.app import app
-from pool_manager.cost import list_price, region_name
+from pool_manager.cost import region_name
+from pool_manager.litellm.cost import list_price
 from pool_manager.litellm.gateway import container_app_info
 from tests.fake_azure import GATEWAY_APP, RETAIL_PRICES, FakeAzure
-from tests.fake_litellm import MASTER_KEY, URL
-from tests.test_app import _client, _settings
-from tests.test_setup import _jwt
+from tests.litellm.fake_litellm import MASTER_KEY, URL
+from tests.litellm.test_app import _client, _settings
+from tests.litellm.test_setup import _jwt
 
 SINCE = datetime.now(UTC).date().replace(day=1).isoformat()
 QUERY = "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.CostManagement/query"
@@ -52,7 +53,7 @@ def _prices() -> dict[str, list[dict[str, object]]]:
 def test_cost_has_spend_and_an_estimate(client: TestClient, azure: FakeAzure) -> None:
     azure.costs["gw"] = (12.345, "USD")
 
-    cost = client.get("/api/cost").json()
+    cost = client.get("/api/litellm/cost").json()
 
     assert (cost["profile"], cost["location"]) == ("dev", "East US 2")
     assert cost["month_to_date"] == {"amount": 12.35, "currency": "USD", "since": SINCE}
@@ -87,16 +88,16 @@ def test_a_production_gateway_adds_redis() -> None:
 
 
 def test_cost_is_cached_until_refreshed(client: TestClient, azure: FakeAzure) -> None:
-    client.get("/api/cost")
+    client.get("/api/litellm/cost")
     first = len(_cost_requests(azure))
-    client.get("/api/cost")
+    client.get("/api/litellm/cost")
     assert len(_cost_requests(azure)) == first
-    client.get("/api/cost", params={"refresh": "true"})
+    client.get("/api/litellm/cost", params={"refresh": "true"})
     assert len(_cost_requests(azure)) == first * 2
 
 
 def test_no_charges_yet(client: TestClient) -> None:
-    cost = client.get("/api/cost").json()
+    cost = client.get("/api/litellm/cost").json()
     assert cost["month_to_date"] == {"amount": 0.0, "currency": None, "since": SINCE}
 
 
@@ -111,7 +112,7 @@ def test_missing_spend_is_a_note_not_an_error(
     client: TestClient, azure: FakeAzure, error: tuple[int, str], note: str
 ) -> None:
     azure.cost_error = error
-    cost = client.get("/api/cost").json()
+    cost = client.get("/api/litellm/cost").json()
     assert (cost["month_to_date"], cost["month_to_date_note"]) == (None, note)
     assert cost["list_price"] is not None
 
@@ -119,7 +120,7 @@ def test_missing_spend_is_a_note_not_an_error(
 def test_unreachable_prices_leave_the_spend(client: TestClient, azure: FakeAzure) -> None:
     azure.prices_down = True
     azure.costs["gw"] = (3.0, "USD")
-    cost = client.get("/api/cost").json()
+    cost = client.get("/api/litellm/cost").json()
     assert cost["list_price"] is None
     assert cost["month_to_date"]["amount"] == 3.0
 
@@ -129,7 +130,7 @@ def test_an_external_gateways_bill_is_not_ours_to_read(azure: FakeAzure) -> None
         azure, _settings(resource_group="", gateway_url=URL, gateway_master_key=MASTER_KEY)
     )
     try:
-        cost = client.get("/api/cost").json()
+        cost = client.get("/api/litellm/cost").json()
     finally:
         app.dependency_overrides.clear()
     assert (cost["list_price"], cost["month_to_date_note"]) == (None, "external")
@@ -152,7 +153,7 @@ def test_an_aks_gateway_is_priced_from_its_cluster(azure: FakeAzure) -> None:
         ),
     )
     try:
-        cost = client.get("/api/cost").json()
+        cost = client.get("/api/litellm/cost").json()
     finally:
         app.dependency_overrides.clear()
 
@@ -178,7 +179,7 @@ def test_deployed_spend_is_read_with_the_users_own_token(azure: FakeAzure) -> No
     try:
         signed_in = {"X-MS-CLIENT-PRINCIPAL-NAME": "dev@contoso.com"}
         # Without Easy Auth's Azure token there is nobody to read the spend as.
-        without = client.get("/api/cost", headers=signed_in).json()
+        without = client.get("/api/litellm/cost", headers=signed_in).json()
         assert without["month_to_date_note"] == "no_token"
 
         token = _jwt()
@@ -187,7 +188,7 @@ def test_deployed_spend_is_read_with_the_users_own_token(azure: FakeAzure) -> No
         # The app identity could read it; the user can't, so the user's answer counts.
         azure.cost_forbidden.add("user")
         headers = {**signed_in, "X-MS-TOKEN-AAD-ACCESS-TOKEN": token}
-        cost = client.get("/api/cost?refresh=true", headers=headers).json()
+        cost = client.get("/api/litellm/cost?refresh=true", headers=headers).json()
         assert cost["month_to_date_note"] == "forbidden"
         query = next(r for r in reversed(azure.requests) if "CostManagement" in r.url.path)
         assert query.headers["Authorization"] == f"Bearer {token}"

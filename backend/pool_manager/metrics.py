@@ -1,17 +1,12 @@
 """The pool dashboard: the gateway's own view of a pool, and its Foundry members' metrics.
 
-The gateway's view comes from LiteLLM's OpenTelemetry spans, which the gateway's collector sends
-to Application Insights: one span per attempt on a member (``chat <model>``), with the member's
-host and deployment, the outcome and the tokens. Spans of one client request share a trace
-(``operation_Id``), so the requests clients saw, and those a failover saved, are counted from
-them. LiteLLM's own spend logs are not used: they drop rows.
+``PoolMonitor`` collects both for a pool and a time range. The gateway's view is the product's
+(``apim/metrics.py``: APIM's platform metrics of the APIs bound to the pool;
+``litellm/metrics.py``: LiteLLM's OpenTelemetry spans in Application Insights). Each member that
+is an Azure OpenAI / Foundry deployment adds that deployment's metrics
+(``ModelDeploymentName``); those count every caller of the deployment, not only this gateway.
 
-Each member that is an Azure OpenAI / Foundry deployment adds that deployment's metrics
-(``ModelDeploymentName``). Those count every caller of the deployment, not only this gateway.
-
-Everything here is read-only: Log Analytics read on the Application Insights component, and
-``Microsoft.Insights/metrics/read`` on the member accounts. Results are cached for a minute per
-pool and range.
+Everything here is read-only. Results are cached for a minute per pool and range.
 """
 
 from __future__ import annotations
@@ -21,39 +16,26 @@ import time
 from collections import defaultdict
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from threading import Lock
-from typing import Any
-from urllib.parse import urlsplit
-
-import httpx
+from typing import Any, Protocol
 
 from .arm import ArmClient, ArmError
 from .config import Settings
-from .errors import ServiceError
-from .litellm.resources import member_target
-from .litellm.service import PoolManagerService
 from .models import (
     GatewayMetrics,
-    LatencyPoint,
     MemberMetrics,
     MetricsRange,
+    ModelCheck,
     PoolMemberView,
     PoolMetrics,
-    TrafficPoint,
 )
 
 logger = logging.getLogger(__name__)
 
 METRICS_API_VERSION = "2023-10-01"
 METRICS_READ = "Microsoft.Insights/metrics/read"
-LOGS_URL = "https://api.loganalytics.azure.com/v1"
-LOGS_SCOPE = "https://api.loganalytics.io/.default"
-_LOGS_TIMEOUT = httpx.Timeout(60.0, connect=10.0)
-# Span names LiteLLM gives model calls.
-_MODEL_SPANS = ("chat ", "responses ", "embeddings ", "text_completion ", "completion ")
 # Window and grain per range; about 60-170 points each, inside Azure Monitor's limits.
 RANGES: dict[MetricsRange, tuple[timedelta, str]] = {
     "1h": (timedelta(hours=1), "PT1M"),
@@ -74,11 +56,57 @@ class Series:
     points: list[tuple[str, float | None]]
 
 
-def _quote(value: str) -> str:
+@dataclass(frozen=True)
+class Window:
+    """The time range a dashboard covers, and the grain of its charts (e.g. ``PT5M``)."""
+
+    start: datetime
+    end: datetime
+    interval: str
+
+    @property
+    def start_text(self) -> str:
+        return f"{self.start:%Y-%m-%dT%H:%M:%SZ}"
+
+    @property
+    def end_text(self) -> str:
+        return f"{self.end:%Y-%m-%dT%H:%M:%SZ}"
+
+    @property
+    def timespan(self) -> str:
+        """As Azure Monitor takes it: ``start/end``."""
+        return f"{self.start_text}/{self.end_text}"
+
+
+@dataclass
+class GatewayReading:
+    """What the gateway itself reports about a pool."""
+
+    metrics: GatewayMetrics | None
+    # Why ``metrics`` is missing, shown on the tab (a code the UI knows, or Azure's message).
+    error: str | None = None
+    # LiteLLM: the gateway's attempts on each member (by member ID, case-folded):
+    # ``attempts``, ``failures`` and ``throttled``.
+    attempts: dict[str, dict[str, int]] = field(default_factory=dict)
+
+
+class MonitoredPool(Protocol):
+    @property
+    def id(self) -> str: ...
+
+    @property
+    def members(self) -> list[PoolMemberView]: ...
+
+
+class ModelChecks(Protocol):
+    def check_models(self, backend_ids: list[str]) -> ModelCheck: ...
+
+
+def quote(value: str) -> str:
     return value.replace("'", "''")
 
 
-def _query(
+def query(
     arm: ArmClient,
     resource_id: str,
     metrics: Iterable[str],
@@ -119,7 +147,7 @@ def _query(
     return result
 
 
-def _code_kind(code: str) -> str:
+def code_kind(code: str) -> str:
     """success, throttled, client_errors or server_errors for an HTTP status (or category)."""
     lowered = code.casefold()
     if not code.isdigit():
@@ -155,116 +183,40 @@ def expected_shares(members: list[PoolMemberView]) -> list[float]:
     ]
 
 
-def _kql_string(value: str) -> str:
-    return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
-
-
-def spans_query(names: list[str], start: str, end: str) -> str:
-    """The pool's attempts: LiteLLM's model-call spans for its model names."""
-    listed = ", ".join(_kql_string(name.casefold()) for name in names)
-    prefixes = " or ".join(f"name startswith {_kql_string(p)}" for p in _MODEL_SPANS)
-    return f"""union isfuzzy=true dependencies, requests
-| where timestamp between (datetime({start}) .. datetime({end}))
-| where {prefixes}
-| extend model = tolower(tostring(customDimensions["gen_ai.request.model"]))
-| where model in ({listed})
-| extend host = tolower(tostring(customDimensions["server.address"])),
-    target = tostring(customDimensions["litellm.provider.model"]),
-    code = tostring(customDimensions["litellm.provider.error.code"]),
-    tokens = toint(customDimensions["gen_ai.usage.total_tokens"])
-| extend failed = success == false or isnotempty(tostring(customDimensions["error.type"]))"""
-
-
-def requests_query(names: list[str], start: str, end: str, interval: str) -> str:
-    """Client requests per time bin, from the attempts of each trace. ``time`` is a KQL keyword,
-    so the column is quoted."""
-    # arg_max names its outputs after the columns it takes: the last attempt's code arrives as
-    # last_code because it is called that before.
-    return f"""{spans_query(names, start, end)}
-| extend last_code = code
-| summarize attempts = count(), ok = countif(not(failed)),
-    arg_max(timestamp, last_code), started = min(timestamp),
-    ended = max(timestamp + duration * 1ms), backend = avgif(duration, not(failed))
-    by operation_Id
-| extend outcome = case(ok > 0, "success", last_code == "429", "throttled",
-    last_code startswith "4", "client_errors", "server_errors")
-| summarize success = countif(outcome == "success"), throttled = countif(outcome == "throttled"),
-    client_errors = countif(outcome == "client_errors"),
-    server_errors = countif(outcome == "server_errors"),
-    failovers = countif(ok > 0 and attempts > ok),
-    duration_ms = avg((ended - started) / 1ms), backend_ms = avg(backend)
-    by ['time'] = bin(started, {interval})
-| order by ['time'] asc"""
-
-
-def members_query(names: list[str], start: str, end: str) -> str:
-    """The gateway's attempts on each member (host and deployment)."""
-    return f"""{spans_query(names, start, end)}
-| summarize attempts = count(), failures = countif(failed), throttled = countif(code == "429")
-    by host, target"""
-
-
-# Bin sizes per range for KQL (the same grain as the Azure Monitor charts).
-_KQL_BINS = {"PT1M": "1m", "PT5M": "5m", "PT15M": "15m", "PT1H": "1h"}
-
-
-def _innermost(error: object) -> str | None:
-    """Log Analytics nests the useful part ("Query could not be parsed at ...") under
-    ``innererror``; the top message is only "The request had some invalid properties"."""
-    message = None
-    while isinstance(error, dict):
-        message = str(error.get("message") or "") or message
-        error = error.get("innererror")
-    return message
-
-
-def _rows(body: dict[str, Any]) -> list[dict[str, Any]]:
-    tables = body.get("tables") or []
-    if not tables:
-        return []
-    columns = [str(column.get("name")) for column in tables[0].get("columns") or []]
-    return [dict(zip(columns, row, strict=False)) for row in tables[0].get("rows") or []]
-
-
-def _number(value: object) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        return None
-    return float(value)
-
-
-def _stamp(value: object) -> str:
-    """KQL's ISO timestamps, in the same form as Azure Monitor's (no fraction)."""
-    text = str(value or "")
-    return text.split(".")[0].rstrip("Z") + "Z" if text else text
-
-
-def _error_text(error: ArmError, what: str) -> str:
+def error_text(error: ArmError, what: str) -> str:
     if error.status in {401, 403}:
         return f"Cannot read metrics of {what}: {METRICS_READ} is needed (Monitoring Reader has it)"
     return f"Cannot read metrics of {what}: {error.message}"
 
 
-def _weighted(values: list[tuple[float, float]]) -> float | None:
+def weighted(values: list[tuple[float, float]]) -> float | None:
     """Average of (value, weight) pairs; None without weight."""
     weight = sum(w for _, w in values)
     return sum(v * w for v, w in values) / weight if weight else None
 
 
 class PoolMonitor:
-    def __init__(
-        self,
-        settings: Settings,
-        arm: ArmClient,
-        service: PoolManagerService,
-        *,
-        transport: httpx.BaseTransport | None = None,
-    ) -> None:
+    """Each product says which pool and names to report on (``pool``) and what its gateway
+    saw (``gateway``); the Foundry half is the same for both."""
+
+    def __init__(self, settings: Settings, arm: ArmClient, service: ModelChecks) -> None:
         self._settings = settings
         self._arm = arm
-        self._service = service
-        self._http = httpx.Client(timeout=_LOGS_TIMEOUT, transport=transport)
+        self._models = service
         self._lock = Lock()
         self._cache: dict[tuple[str, str], tuple[float, PoolMetrics]] = {}
+
+    # -- what each product reports ----------------------------------------------------
+
+    def pool(self, pool_id: str) -> tuple[MonitoredPool, list[str]]:
+        """The pool, and the names its clients reach it by (APIs or model names)."""
+        raise NotImplementedError
+
+    def gateway(self, pool: MonitoredPool, names: list[str], window: Window) -> GatewayReading:
+        """What the gateway saw of the pool's traffic; runs beside the Foundry reads."""
+        raise NotImplementedError
+
+    # -- the dashboard ----------------------------------------------------------------
 
     def get(self, pool_id: str, range_: MetricsRange, *, refresh: bool = False) -> PoolMetrics:
         key = (pool_id.casefold(), range_)
@@ -278,30 +230,21 @@ class PoolMonitor:
         return metrics
 
     def _collect(self, pool_id: str, range_: MetricsRange) -> PoolMetrics:
-        endpoint = self._service.endpoint(pool_id)
-        pool = self._service.get_pool(endpoint.pool_id)
-        names = endpoint.model_names
+        pool, names = self.pool(pool_id)
         span, interval = RANGES[range_]
         end = datetime.now(UTC).replace(second=0, microsecond=0)
-        start = end - span
-        window = f"{start:%Y-%m-%dT%H:%M:%SZ}/{end:%Y-%m-%dT%H:%M:%SZ}"
+        window = Window(end - span, end, interval)
         models = (
-            self._service.check_models([member.backend_id for member in pool.members])
+            self._models.check_models([member.backend_id for member in pool.members])
             if pool.members
             else None
         )
         deployments = (
             {member.backend_id: member.deployment_id for member in models.members} if models else {}
         )
-        app_insights = self._app_insights()
-        bounds = (f"{start:%Y-%m-%dT%H:%M:%SZ}", f"{end:%Y-%m-%dT%H:%M:%SZ}")
 
         with ThreadPoolExecutor(max_workers=_WORKERS) as executor:
-            gateway_future = (
-                executor.submit(self._gateway, app_insights, names, *bounds, interval)
-                if app_insights
-                else None
-            )
+            gateway_future = executor.submit(self.gateway, pool, names, window)
             accounts = sorted(
                 {
                     deployment.rpartition("/deployments/")[0]
@@ -316,21 +259,7 @@ class PoolMonitor:
                     strict=True,
                 )
             )
-            gateway: GatewayMetrics | None = None
-            attempts: dict[tuple[str, str], dict[str, int]] = {}
-            gateway_error: str | None = None if app_insights else "no_app_insights"
-            if gateway_future is not None:
-                try:
-                    gateway, attempts = gateway_future.result()
-                except ArmError as error:
-                    # "forbidden" is shown with the role it needs; anything else as Azure said.
-                    gateway_error = (
-                        "forbidden"
-                        if error.status in {401, 403}
-                        else f"Cannot read the gateway's spans: {error.message}"
-                    )
-                    logger.info("Gateway metrics for pool %s: %s", pool_id, error.message)
-        members_by_id = {view.id.casefold(): view for view in self._service.list_backends()}
+            reading = gateway_future.result()
 
         members: list[MemberMetrics] = []
         for member, share in zip(pool.members, expected_shares(pool.members), strict=True):
@@ -349,7 +278,7 @@ class PoolMonitor:
                 if not values.get("requests"):
                     # Azure reports a 0 ms average for an idle deployment; no requests, no latency.
                     values = {**values, "latency_ms": None}
-            seen = self._attempts(members_by_id.get(member.backend_id.casefold()), attempts)
+            seen = reading.attempts.get(member.backend_id.casefold()) if reading.metrics else None
             members.append(
                 MemberMetrics(
                     backend_id=member.backend_id,
@@ -363,135 +292,27 @@ class PoolMonitor:
                     utilization_pct=values.get("utilization_pct"),
                     expected_share=share,
                     error=problem,
-                    gateway_attempts=seen.get("attempts") if gateway else None,
-                    gateway_failures=seen.get("failures") if gateway else None,
-                    gateway_throttled=seen.get("throttled") if gateway else None,
+                    gateway_attempts=seen.get("attempts") if seen else None,
+                    gateway_failures=seen.get("failures") if seen else None,
+                    gateway_throttled=seen.get("throttled") if seen else None,
                 )
             )
         return PoolMetrics(
             pool_id=pool.id,
             range=range_,
             interval=interval,
-            start=f"{start:%Y-%m-%dT%H:%M:%SZ}",
-            end=f"{end:%Y-%m-%dT%H:%M:%SZ}",
-            model_names=names,
-            gateway=gateway,
-            gateway_error=gateway_error,
+            start=window.start_text,
+            end=window.end_text,
+            names=names,
+            gateway=reading.metrics,
+            gateway_error=reading.error,
             members=members,
-        )
-
-    # -- the gateway's spans -----------------------------------------------------------
-
-    def _app_insights(self) -> str | None:
-        try:
-            return self._service.capabilities().app_insights_id
-        except ServiceError as error:
-            logger.info("Cannot read the gateway's Application Insights: %s", error.message)
-            return None
-
-    def _logs(self, resource_id: str, query: str, start: str, end: str) -> list[dict[str, Any]]:
-        """A KQL query on the component's logs (Log Analytics' resource-centric query API)."""
-        token = self._arm.token_for(LOGS_SCOPE)
-        try:
-            response = self._http.post(
-                f"{LOGS_URL}{resource_id}/query",
-                json={"query": query, "timespan": f"{start}/{end}"},
-                headers={"Authorization": f"Bearer {token}"},
-            )
-        except httpx.HTTPError as error:
-            raise ArmError(502, "LogsUnreachable", str(error)) from error
-        if response.status_code >= 400:
-            message = response.text[:500]
-            with suppress(ValueError):
-                message = _innermost(response.json().get("error")) or message
-            raise ArmError(response.status_code, "LogsQueryFailed", message)
-        body: dict[str, Any] = response.json()
-        return _rows(body)
-
-    def _gateway(
-        self, app_insights: str, names: list[str], start: str, end: str, interval: str
-    ) -> tuple[GatewayMetrics, dict[tuple[str, str], dict[str, int]]]:
-        bins = self._logs(
-            app_insights,
-            requests_query(names, start, end, _KQL_BINS.get(interval, "5m")),
-            start,
-            end,
-        )
-        per_member = self._logs(app_insights, members_query(names, start, end), start, end)
-        traffic = [
-            TrafficPoint(
-                time=_stamp(row.get("time")),
-                success=int(_number(row.get("success")) or 0),
-                throttled=int(_number(row.get("throttled")) or 0),
-                client_errors=int(_number(row.get("client_errors")) or 0),
-                server_errors=int(_number(row.get("server_errors")) or 0),
-            )
-            for row in bins
-        ]
-        totals = {
-            kind: sum(getattr(point, kind) for point in traffic)
-            for kind in ("success", "throttled", "client_errors", "server_errors")
-        }
-        requests = sum(totals.values())
-        counts = [float(sum(getattr(point, kind) for kind in totals)) for point in traffic]
-
-        def overall(column: str) -> float | None:
-            return _weighted(
-                [
-                    (value, weight)
-                    for row, weight in zip(bins, counts, strict=True)
-                    if (value := _number(row.get(column))) is not None and weight
-                ]
-            )
-
-        gateway = GatewayMetrics(
-            requests=requests,
-            success=totals["success"],
-            throttled=totals["throttled"],
-            client_errors=totals["client_errors"],
-            server_errors=totals["server_errors"],
-            failovers=int(sum(_number(row.get("failovers")) or 0 for row in bins)),
-            availability=(requests - totals["server_errors"]) / requests if requests else None,
-            duration_ms=overall("duration_ms"),
-            backend_duration_ms=overall("backend_ms"),
-            traffic=traffic,
-            latency=[
-                LatencyPoint(
-                    time=_stamp(row.get("time")),
-                    overall_ms=_number(row.get("duration_ms")),
-                    backend_ms=_number(row.get("backend_ms")),
-                )
-                for row in bins
-            ],
-        )
-        attempts = {
-            (str(row.get("host") or ""), str(row.get("target") or "").casefold()): {
-                "attempts": int(_number(row.get("attempts")) or 0),
-                "failures": int(_number(row.get("failures")) or 0),
-                "throttled": int(_number(row.get("throttled")) or 0),
-            }
-            for row in per_member
-        }
-        return gateway, attempts
-
-    @staticmethod
-    def _attempts(member: Any, attempts: dict[tuple[str, str], dict[str, int]]) -> dict[str, int]:
-        """The gateway's attempts on a member, matched by host and provider/model."""
-        if member is None:
-            return {"attempts": 0, "failures": 0, "throttled": 0}
-        try:
-            provider, _, model = member_target(member.url, member.model)
-        except ValueError:
-            return {"attempts": 0, "failures": 0, "throttled": 0}
-        host = (urlsplit(member.url).hostname or "").casefold()
-        return attempts.get(
-            (host, f"{provider}/{model}".casefold()), {"attempts": 0, "failures": 0, "throttled": 0}
         )
 
     # -- Foundry -------------------------------------------------------------------------
 
     def _account(
-        self, account_id: str, window: str
+        self, account_id: str, window: Window
     ) -> tuple[str | None, dict[str, dict[str, Any]], str | None]:
         """(region, metrics by lower-case deployment name, error) for one account."""
         name = account_id.rpartition("/")[2]
@@ -511,13 +332,15 @@ class PoolMonitor:
             filter_ = "ModelDeploymentName eq '*'"
             if split_status:
                 filter_ += " and StatusCode eq '*'"
-            return _query(self._arm, account_id, [metric], aggregation, window, "FULL", filter_)
+            return query(
+                self._arm, account_id, [metric], aggregation, window.timespan, "FULL", filter_
+            )
 
         try:
             for series in by_deployment("AzureOpenAIRequests", "Total", split_status=True):
                 deployment = series.dimensions.get("modeldeploymentname", "").casefold()
                 count = round(sum(value or 0 for _, value in series.points))
-                kind = _code_kind(series.dimensions.get("statuscode", ""))
+                kind = code_kind(series.dimensions.get("statuscode", ""))
                 entry = values[deployment]
                 entry["requests"] = entry.get("requests", 0) + count
                 entry.setdefault("throttled", 0)
@@ -525,7 +348,7 @@ class PoolMonitor:
                 if kind in {"throttled", "server_errors"}:
                     entry[kind] += count
         except ArmError as error:
-            return region, {}, _error_text(error, name)
+            return region, {}, error_text(error, name)
 
         # Optional: not every account or deployment type reports these.
         optional = (
@@ -533,7 +356,7 @@ class PoolMonitor:
             ("AzureOpenAITTLTInMS", "Average", "latency_ms"),
             ("AzureOpenAIProvisionedManagedUtilizationV2", "Maximum", "utilization_pct"),
         )
-        for metric, aggregation, field in optional:
+        for metric, aggregation, field_name in optional:
             try:
                 for series in by_deployment(metric, aggregation):
                     deployment = series.dimensions.get("modeldeploymentname", "").casefold()
@@ -541,11 +364,11 @@ class PoolMonitor:
                     if not present:
                         continue
                     if aggregation == "Total":
-                        values[deployment][field] = round(sum(present))
+                        values[deployment][field_name] = round(sum(present))
                     elif aggregation == "Maximum":
-                        values[deployment][field] = max(present)
+                        values[deployment][field_name] = max(present)
                     else:
-                        values[deployment][field] = sum(present) / len(present)
+                        values[deployment][field_name] = sum(present) / len(present)
             except ArmError as error:
                 logger.info("No %s for %s: %s", metric, account_id, error.message)
         return region, dict(values), None

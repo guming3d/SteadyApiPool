@@ -16,7 +16,7 @@ from urllib.parse import unquote
 
 import httpx
 
-from tests.fake_litellm import FakeLiteLLM
+from tests.litellm.fake_litellm import FakeLiteLLM
 
 TENANT = "00000000-0000-0000-0000-00000000aaaa"
 # A second subscription, for choosing and deploying gateways in the setup wizard.

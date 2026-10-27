@@ -15,6 +15,7 @@ from typing import Any
 
 from ..arm import ArmClient
 from ..config import Settings
+from ..discovery import KnownMember
 from ..errors import ServiceError
 from ..model_check import FoundryModelCheck
 from ..models import ModelCheck, is_valid_resource_id
@@ -27,6 +28,7 @@ from .models import (
     CleanupConfirm,
     ConfigPreview,
     ConfigView,
+    MemberAuth,
     MemberBackendWrite,
     PoolEndpoint,
     PoolView,
@@ -79,7 +81,7 @@ def alias_target(value: object) -> str | None:
     return None
 
 
-class PoolManagerService:
+class LiteLLMService:
     def __init__(self, settings: Settings, arm: ArmClient, gateway: GatewayConnection) -> None:
         self._settings = settings
         self._arm = arm
@@ -206,6 +208,22 @@ class PoolManagerService:
         if member is None:
             raise ServiceError(404, f"Member {backend_id} was not found")
         return member.view(self._protected)
+
+    def known_members(self) -> list[KnownMember]:
+        """Members to match deployments against; one no saved pool uses is a pending
+        import."""
+        return [
+            KnownMember(id=view.id, url=view.url, imported=bool(view.pools))
+            for view in self.list_backends()
+        ]
+
+    def add_deployment_member(self, member_id: str, title: str, url: str, actor: str) -> str:
+        write = MemberBackendWrite(
+            title=title,
+            url=url,  # type: ignore[arg-type]
+            auth=MemberAuth(type="managed_identity"),
+        )
+        return self.put_backend(member_id, write, actor).id
 
     def put_backend(self, backend_id: str, write: MemberBackendWrite, actor: str) -> BackendView:
         """Adds a member for pools to use, or changes one: every row of it is rewritten."""

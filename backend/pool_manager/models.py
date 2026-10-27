@@ -490,8 +490,8 @@ class LatencyPoint(StrictModel):
 
 
 class GatewayMetrics(StrictModel):
-    """What clients of the pool saw, from the gateway's OpenTelemetry spans in Application
-    Insights: one span per attempt, grouped into requests by their trace."""
+    """What clients of the pool saw, from the gateway: APIM's metrics of the APIs bound to the
+    pool, or LiteLLM's spans (one per attempt, grouped into requests by their trace)."""
 
     requests: int
     success: int
@@ -499,21 +499,23 @@ class GatewayMetrics(StrictModel):
     throttled: int
     client_errors: int
     server_errors: int
-    # Requests that succeeded only because LiteLLM retried on another member.
-    failovers: int
+    # LiteLLM: requests that succeeded only because it retried on another member. APIM's
+    # metrics can't tell, so None there.
+    failovers: int | None = None
     # Share of requests not answered with a 5xx; None without traffic.
     availability: float | None
-    # Average time from the first attempt's start to the last one's end.
+    # Average time the gateway took to answer (LiteLLM: from the first attempt's start to the
+    # last one's end).
     duration_ms: float | None
-    # Average of the attempts that succeeded: the members' own time.
+    # Average time the members took (LiteLLM: of the attempts that succeeded).
     backend_duration_ms: float | None
     traffic: list[TrafficPoint]
     latency: list[LatencyPoint]
 
 
 class MemberMetrics(StrictModel):
-    """A member: the gateway's attempts on it (spans), and its Foundry deployment's own metrics,
-    which count every caller of the deployment, not only this gateway."""
+    """A member: its Foundry deployment's own metrics, which count every caller of the
+    deployment, not only this gateway; and on LiteLLM the gateway's attempts on it (spans)."""
 
     backend_id: str
     # None when the member isn't a Foundry deployment, so it has no deployment metrics.
@@ -530,7 +532,7 @@ class MemberMetrics(StrictModel):
     # The share the pool's priority and weight give this member, 0 for standby members.
     expected_share: float
     error: str | None
-    # From the gateway's spans; None without Application Insights.
+    # LiteLLM, from the gateway's spans; None on APIM and without Application Insights.
     gateway_attempts: int | None = None
     gateway_failures: int | None = None
     gateway_throttled: int | None = None
@@ -542,9 +544,11 @@ class PoolMetrics(StrictModel):
     interval: str
     start: str
     end: str
-    # The names the pool is called by (its ID and aliases).
-    model_names: list[str]
+    # What clients reach the pool by: the APIs bound to it (APIM; none means no gateway
+    # numbers), or its model names, the pool ID and its aliases (LiteLLM).
+    names: list[str]
     gateway: GatewayMetrics | None
-    # Why gateway metrics are missing: "no_app_insights", or Azure's message.
+    # Why gateway metrics are missing: "no_app_insights" or "forbidden" (LiteLLM), or Azure's
+    # message.
     gateway_error: str | None
     members: list[MemberMetrics]

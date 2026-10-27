@@ -24,7 +24,7 @@ from ..errors import ServiceError
 from ..models import ApiTestResult
 from .client import LiteLLMError
 from .models import ApiTestRequest, PoolEndpoint, VirtualKeySecret, VirtualKeyView
-from .service import PoolManagerService, test_key_alias, translate_error
+from .service import LiteLLMService, test_key_alias, translate_error
 
 logger = logging.getLogger(__name__)
 
@@ -41,11 +41,11 @@ def _float(value: object) -> float | None:
     return float(value) if isinstance(value, int | float) and not isinstance(value, bool) else None
 
 
-class ApiTester:
+class LiteLLMTester:
     def __init__(
         self,
         settings: Settings,
-        service: PoolManagerService,
+        service: LiteLLMService,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         self._settings = settings

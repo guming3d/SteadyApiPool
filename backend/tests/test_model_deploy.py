@@ -10,8 +10,8 @@ from fastapi.testclient import TestClient
 
 from pool_manager.app import app
 from tests.fake_azure import FakeAzure
-from tests.test_app import WRITE, _client, _settings
-from tests.test_setup import _jwt
+from tests.litellm.test_app import WRITE, _client, _settings
+from tests.litellm.test_setup import _jwt
 
 
 @pytest.fixture

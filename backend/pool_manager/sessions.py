@@ -1,16 +1,15 @@
 """Per-user sessions for the public app: the isolation between users signed in at once.
 
-The public app is not available with the LiteLLM gateway yet (config.py refuses
-``auth_mode=entra``); this module is kept, type-checked, for when it returns.
+The public app manages APIM services only (config.py refuses a LiteLLM gateway there).
 
 Each signed-in user gets their own set of the components the local app uses (ARM client,
-service, discovery, metrics, setup checks, ...), built for the gateway their browser chose
+service, discovery, metrics, setup checks, ...), built for the APIM service their browser chose
 and calling Azure with that user's own token. Every cache those components keep (deployments,
-metrics, permissions, cost) therefore belongs to one user and one gateway; nothing one user
+metrics, permissions, cost) therefore belongs to one user and one service; nothing one user
 loaded can answer another user's request, even in the same tenant, where their roles may differ.
 
 The guest view is one more session, shared by every visitor who browses without signing in: it
-shows the one gateway the deployment configured (``guest_*`` settings), read with the app's own
+shows the one service the deployment configured (``guest_*`` settings), read with the app's own
 managed identity, which holds Reader roles only, and every route that changes or reveals
 anything refuses guests (auth.py). Its caches are shared on purpose: all guests see the same.
 
@@ -34,19 +33,18 @@ from urllib.parse import unquote
 
 import httpx
 
-from .access import AccessChecker
+from .apim.access import ApimAccessChecker
+from .apim.api_test import ApimTester
+from .apim.cost import ApimCost
+from .apim.metrics import ApimMonitor
+from .apim.models import APIM_NAME_PATTERN
+from .apim.service import ApimService
+from .apim.target import ApimTargets
 from .arm import ArmClient, TokenCredential
 from .config import Settings
-from .cost import CostReader
 from .discovery import DeploymentDiscovery
 from .entra import EntraUser, Exchange, UserCredential
 from .errors import ServiceError
-from .litellm.api_test import ApiTester
-from .litellm.benchmark import BenchmarkRunner
-from .litellm.gateway import GatewayConnection
-from .litellm.models import GATEWAY_NAME_PATTERN
-from .litellm.service import PoolManagerService
-from .metrics import PoolMonitor
 from .target import TargetChooser
 
 logger = logging.getLogger(__name__)
@@ -54,9 +52,9 @@ logger = logging.getLogger(__name__)
 TARGET_HEADER = "X-Pool-Manager-Target"
 # Subscription IDs are GUIDs; ARM itself rejects anything else, so this only keeps the header sane.
 _SUBSCRIPTION = re.compile(r"[0-9A-Za-z-]{1,64}")
-RESOURCE_GROUP_PATTERN = re.compile(r"[-\w.()]{0,89}[-\w()]")
-_GATEWAY_NAME = re.compile(GATEWAY_NAME_PATTERN)
-# One user rarely needs more than a few gateways open at once.
+_RESOURCE_GROUP = re.compile(r"[-\w.()]{0,89}[-\w()]")
+_APIM_NAME = re.compile(APIM_NAME_PATTERN)
+# One user rarely needs more than a few services open at once.
 _SESSIONS_PER_USER = 8
 GUEST_KEY = "guest"
 
@@ -64,16 +62,16 @@ Target = tuple[str, str, str]
 
 
 def parse_target(value: str | None) -> Target | None:
-    """``<subscription>/<resource group>/<gateway name>``, each part URL-encoded, from the
-    header the browser sends with the gateway it chose; ``None`` when none is chosen yet."""
+    """``<subscription>/<resource group>/<APIM name>``, each part URL-encoded, from the header
+    the browser sends with the service it chose; ``None`` when none is chosen yet."""
     if not value:
         return None
     parts = [unquote(part) for part in value.split("/")]
     if (
         len(parts) != 3
         or not _SUBSCRIPTION.fullmatch(parts[0])
-        or not RESOURCE_GROUP_PATTERN.fullmatch(parts[1])
-        or not _GATEWAY_NAME.fullmatch(parts[2])
+        or not _RESOURCE_GROUP.fullmatch(parts[1])
+        or not _APIM_NAME.fullmatch(parts[2])
     ):
         raise ServiceError(400, f"{TARGET_HEADER} must be <subscription>/<resource group>/<name>")
     return parts[0], parts[1], parts[2]
@@ -81,26 +79,25 @@ def parse_target(value: str | None) -> Target | None:
 
 @dataclass
 class UserSession:
-    """One user's view of one gateway (or of none, while they choose one)."""
+    """One user's view of one APIM service (or of none, while they choose one)."""
 
     user_key: str
     settings: Settings
     credential: TokenCredential
     arm: ArmClient
-    service: PoolManagerService
+    service: ApimService
     discovery: DeploymentDiscovery
-    monitor: PoolMonitor
-    tester: ApiTester
-    benchmarks: BenchmarkRunner
-    cost: CostReader
-    access: AccessChecker
+    monitor: ApimMonitor
+    tester: ApimTester
+    cost: ApimCost
+    access: ApimAccessChecker
     targets: TargetChooser
+    apim_targets: ApimTargets
     last_used: float = 0.0
 
     def close(self) -> None:
         self.arm.close()
         self.tester.close()
-        self.benchmarks.close()
         self.cost.close()
         self.targets.close()
 
@@ -149,7 +146,7 @@ class Sessions:
                 updates: dict[str, Any] = {"tenant_id": user.tenant_id}
                 if target:
                     updates.update(
-                        subscription_id=target[0], resource_group=target[1], gateway_name=target[2]
+                        subscription_id=target[0], resource_group=target[1], apim_name=target[2]
                     )
                 session = self._open(key, self._settings.model_copy(update=updates), credential)
                 self._trim(user.key)
@@ -233,9 +230,9 @@ class Sessions:
 
     def _build(self, user_key: str, settings: Settings, credential: TokenCredential) -> UserSession:
         arm = ArmClient(settings, credential, self._transport, self._sleep)
-        gateway = GatewayConnection(settings, arm, transport=self._transport, sleep=self._sleep)
-        service = PoolManagerService(settings, arm, gateway)
+        service = ApimService(settings, arm)
         discovery = DeploymentDiscovery(settings, arm, service)
+        targets = TargetChooser(settings, credential, transport=self._transport, sleep=self._sleep)
 
         def discovered_accounts() -> list[str]:
             try:
@@ -251,14 +248,10 @@ class Sessions:
             arm=arm,
             service=service,
             discovery=discovery,
-            monitor=PoolMonitor(settings, arm, service),
-            tester=ApiTester(settings, service, transport=self._transport),
-            benchmarks=BenchmarkRunner(
-                self._transport if isinstance(self._transport, httpx.AsyncBaseTransport) else None
-            ),
-            cost=CostReader(settings, service, transport=self._transport),
-            access=AccessChecker(settings, arm, service, discovered_accounts),
-            targets=TargetChooser(
-                settings, credential, transport=self._transport, sleep=self._sleep
-            ),
+            monitor=ApimMonitor(settings, arm, service),
+            tester=ApimTester(settings, service, transport=self._transport),
+            cost=ApimCost(settings, service, transport=self._transport),
+            access=ApimAccessChecker(settings, arm, service, discovered_accounts),
+            targets=targets,
+            apim_targets=ApimTargets(targets),
         )
