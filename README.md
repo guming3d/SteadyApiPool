@@ -25,6 +25,20 @@ it fails or is throttled.*
 
 ## Which gateway?
 
+<table>
+  <tr>
+    <th width="50%">Azure API Management</th>
+    <th width="50%">LiteLLM (Container Apps or AKS)</th>
+  </tr>
+  <tr>
+    <td><a href="images/apim-architecture.gif"><img src="images/apim-architecture.gif" alt="APIM: the manager publishes a backend pool of three deployments; when the primary answers 429 the circuit breaker trips for 60 s and the retry goes to the next member" width="100%"></a></td>
+    <td><a href="images/litellm-architecture.gif"><img src="images/litellm-architecture.gif" alt="LiteLLM: the manager publishes a pool (a model group) of three deployments; when the primary answers 429 it cools down for 60 s and LiteLLM retries on the next member" width="100%"></a></td>
+  </tr>
+</table>
+
+*The same pool on each gateway: the primary answers 429, the gateway retries on the next member and
+benches the primary for 60 s, then takes it back.*
+
 | | Azure API Management | LiteLLM |
 | --- | --- | --- |
 | Pick it when | Your organization already runs APIM, or wants a managed Azure service with its policies, products and portal | You want an OpenAI-style endpoint with model names, aliases and per-key limits, or an open-source gateway you can run anywhere |

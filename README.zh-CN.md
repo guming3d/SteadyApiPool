@@ -20,6 +20,20 @@
 
 ## 选择哪种网关？
 
+<table>
+  <tr>
+    <th width="50%">Azure API 管理</th>
+    <th width="50%">LiteLLM（容器应用或 AKS）</th>
+  </tr>
+  <tr>
+    <td><a href="images/apim-architecture.gif"><img src="images/apim-architecture.gif" alt="APIM：管理应用发布一个包含三个部署的后端池；主部署返回 429 时断路器跳变 60 秒，重试发往下一个成员" width="100%"></a></td>
+    <td><a href="images/litellm-architecture.gif"><img src="images/litellm-architecture.gif" alt="LiteLLM：管理应用发布一个包含三个部署的后端池（模型组）；主部署返回 429 时冷却 60 秒，LiteLLM 在下一个成员上重试" width="100%"></a></td>
+  </tr>
+</table>
+
+*同一个后端池在两种网关上：主部署返回 429，网关在下一个成员上重试，并让主部署暂停 60 秒，之后再把流量交还给它。
+动画中的文字为英文。*
+
 | | Azure API 管理 | LiteLLM |
 | --- | --- | --- |
 | 何时选择 | 你的组织已经在运行 APIM，或想要一个带有策略、产品和门户的 Azure 托管服务 | 你想要一个带有模型名、别名和按密钥限制的 OpenAI 风格终结点，或一个可以在任何地方运行的开源网关 |
