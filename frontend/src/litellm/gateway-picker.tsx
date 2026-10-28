@@ -1,28 +1,21 @@
 // Choose the LiteLLM gateway to manage, deploy one on Container Apps, or connect one that runs
 // elsewhere (e.g. on AKS, with the files this app generates). Local only; the public app is not
 // available with the gateway yet.
-import { CheckCircle2, CircleAlert, Cloud, Download, ExternalLink, Link2, LoaderCircle, Plug, Plus, RefreshCw, Server, Trash2, Unplug } from "lucide-react"
+import { CheckCircle2, CircleAlert, Download, ExternalLink, Link2, LoaderCircle, Plug, Plus, RefreshCw, Server, Trash2, Unplug } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 
 import { ApiError } from "../api"
 import { api, keys, queries } from "./api"
 import { formatMoney } from "../cost"
-import {
-  AKS_PROFILE_ESTIMATE,
-  DEFAULT_ANSWERS,
-  isGatewayName,
-  PROFILE_ESTIMATE,
-  recommend,
-  suggestGatewayName,
-  type ChoiceAnswers,
-  type Platform,
-} from "./gateway-choice"
+import { isGatewayName, suggestGatewayName } from "./gateway-choice"
+import { CapacitySizer } from "./capacity-sizer"
+import { DEFAULT_SIZING, planSummary } from "./sizing-view"
 import { fill, useI18n } from "../i18n"
 import { targetFor } from "../product"
 import { isPublic, signIn as publicSignIn } from "../session"
 import type { SetupIdentity, TargetView } from "../types"
-import type { AksBundle, DeployCleanup, GatewayCreate, GatewayDeployStatus, GatewayPlatform, GatewayProfile, GatewayView } from "./types"
+import type { AksBundle, DeployCleanup, GatewayCreate, GatewayDeployStatus, GatewayPlatform, GatewaySizing, GatewayView } from "./types"
 import { CopyButton } from "./call-guide"
 import { Button, Dialog, ErrorText, Field } from "../components/ui"
 
@@ -270,70 +263,32 @@ function DeployGateway({ tenantId, subscriptionId, onConnect, onDeployed, onCanc
   onDeployed: () => void
   onCancel: () => void
 }) {
-  const { t } = useI18n("litellm")
-  const [answers, setAnswers] = useState<ChoiceAnswers>(DEFAULT_ANSWERS)
+  // The traffic, kept while the user goes on to deploy and back.
+  const [sizing, setSizing] = useState<GatewaySizing>(DEFAULT_SIZING)
   // aks: a new cluster the app deploys; aks-files: the files for a cluster the user has.
-  const [platform, setPlatform] = useState<Platform | "aks-files" | null>(null)
-  const recommendation = recommend(answers)
-  const set = (next: Partial<ChoiceAnswers>) => setAnswers((current) => ({ ...current, ...next }))
+  const [platform, setPlatform] = useState<GatewayPlatform | "aks-files" | null>(null)
   if (platform === "aca" || platform === "aks") {
-    return <CreateGatewayForm tenantId={tenantId} subscriptionId={subscriptionId} platform={platform} profile={recommendation.profile} onDeployed={onDeployed} onCancel={() => setPlatform(null)} />
+    return <CreateGatewayForm tenantId={tenantId} subscriptionId={subscriptionId} platform={platform} sizing={sizing} onDeployed={onDeployed} onCancel={() => setPlatform(null)} />
   }
   if (platform === "aks-files") {
     return <AksBundleForm subscriptionId={subscriptionId} onConnect={onConnect} onCancel={() => setPlatform(null)} />
   }
-  return <section className="gateway-form gateway-choice">
-    <h3>{t.choiceTitle}</h3>
-    <p className="muted">{t.choiceHint}</p>
-    <div className="form-grid">
-      <Field label={t.choiceStage}>
-        <select value={answers.stage} onChange={(event) => set({ stage: event.target.value as ChoiceAnswers["stage"] })}>
-          <option value="trial">{t.choiceStageTrial}</option>
-          <option value="production">{t.choiceStageProduction}</option>
-        </select>
-      </Field>
-      <Field label={t.choiceTpm} hint={fill(t.choiceRps, { rps: recommendation.rps.toFixed(recommendation.rps < 10 ? 1 : 0) })}>
-        <input type="number" min={0} step={0.5} value={answers.peakTpmMillions} onChange={(event) => set({ peakTpmMillions: Number(event.target.value) || 0 })} />
-      </Field>
-      <Field label={t.choiceTokens}>
-        <input type="number" min={1} step={1000} value={answers.tokensPerRequest} onChange={(event) => set({ tokensPerRequest: Number(event.target.value) || 1 })} />
-      </Field>
-      <span />
-      <label className="check span-2"><input type="checkbox" checked={answers.kubernetesTeam} onChange={(event) => set({ kubernetesTeam: event.target.checked })} />{t.choiceTeam}</label>
-      <label className="check span-2"><input type="checkbox" checked={answers.selfHostedModels} onChange={(event) => set({ selfHostedModels: event.target.checked })} />{t.choiceGpu}</label>
-      <label className="check span-2"><input type="checkbox" checked={answers.privateNetwork} onChange={(event) => set({ privateNetwork: event.target.checked })} />{t.choicePrivate}</label>
-    </div>
-    <div className="choice-result">
-      {(["aca", "aks"] as const).map((candidate) => {
-        const recommended = recommendation.platform === candidate
-        return <div key={candidate} className="choice-card" data-recommended={recommended}>
-          <header>
-            {candidate === "aca" ? <Cloud size={16} /> : <Server size={16} />}
-            <b>{candidate === "aca" ? t.choiceAca : t.choiceAks}</b>
-            {recommended && <span className="tag" data-tone="ok">{t.choiceRecommended}</span>}
-          </header>
-          <p className="muted">{candidate === "aca" ? t.choiceAcaBody : t.choiceAksBody}</p>
-          {recommended && <ul>{recommendation.reasons.map((reason) => <li key={reason}>{fill(t[reason], { replicas: recommendation.replicas })}</li>)}</ul>}
-          <div className="choice-actions">
-            <Button variant={recommended ? "primary" : "outline"} onClick={() => setPlatform(candidate)}>
-              {candidate === "aca" ? t.choiceDeployAca : t.choiceDeployAks}
-            </Button>
-            {candidate === "aks" && <Button variant="ghost" onClick={() => setPlatform("aks-files")}><Download size={13} />{t.choiceAksFiles}</Button>}
-          </div>
-        </div>
-      })}
-    </div>
-    <div className="gateway-form-actions"><Button onClick={onCancel}>{t.cancel}</Button></div>
-  </section>
+  return <CapacitySizer
+    sizing={sizing}
+    onChange={setSizing}
+    onDeploy={(chosen, planned) => { setSizing(planned); setPlatform(chosen) }}
+    onFiles={() => setPlatform("aks-files")}
+    onCancel={onCancel}
+  />
 }
 
 // -- deploying on Container Apps --------------------------------------------------------------
 
-function CreateGatewayForm({ tenantId, subscriptionId, platform, profile: suggested, onDeployed, onCancel }: {
+function CreateGatewayForm({ tenantId, subscriptionId, platform, sizing, onDeployed, onCancel }: {
   tenantId: string | null
   subscriptionId: string
   platform: GatewayPlatform
-  profile: GatewayProfile
+  sizing: GatewaySizing
   onDeployed: () => void
   onCancel: () => void
 }) {
@@ -343,7 +298,6 @@ function CreateGatewayForm({ tenantId, subscriptionId, platform, profile: sugges
   const [name, setName] = useState(() => suggestGatewayName())
   const [group, setGroup] = useState("rg-ai-gateway")
   const [location, setLocation] = useState("")
-  const [profile, setProfile] = useState<GatewayProfile>(suggested)
   const [cleanupOnFailure, setCleanupOnFailure] = useState(true)
   const [started, setStarted] = useState<{ group: string; name: string } | null>(null)
   const draft: GatewayCreate = {
@@ -352,11 +306,11 @@ function CreateGatewayForm({ tenantId, subscriptionId, platform, profile: sugges
     resource_group: group.trim(),
     location,
     name: name.trim(),
-    profile,
+    sizing,
     platform,
     cleanup_on_failure: cleanupOnFailure,
   }
-  // The region's capacity and quotas for what this deployment creates, before anything is.
+  // The region's capacity, quotas and prices for what this deployment creates, before anything is.
   const preflight = useQuery({ ...queries.preflight(draft), enabled: Boolean(location) && !started })
   const create = useMutation({
     mutationFn: () => api.createGateway(draft),
@@ -383,10 +337,9 @@ function CreateGatewayForm({ tenantId, subscriptionId, platform, profile: sugges
   const valid = isGatewayName(name.trim()) && RESOURCE_GROUP.test(group.trim()) && Boolean(location) && !blocked
   const openRegions = (preflight.data?.open_regions ?? []).filter((item) => locations.includes(item))
   const aks = platform === "aks"
-  const estimate = (aks ? AKS_PROFILE_ESTIMATE : PROFILE_ESTIMATE)[profile]
-  const profileHint = profile === "dev"
-    ? aks ? t.aksProfileDevHint : t.profileDevHint
-    : aks ? t.aksProfileProductionHint : t.profileProductionHint
+  const plan = preflight.data?.plan
+  const price = preflight.data?.list_price
+  const summary = plan && planSummary(plan, locale)
   return <form className="gateway-form" onSubmit={(event) => { event.preventDefault(); if (valid) create.mutate() }}>
     <h3>{aks ? t.aksCreateTitle : t.targetCreate}</h3>
     <div className="form-grid">
@@ -399,13 +352,6 @@ function CreateGatewayForm({ tenantId, subscriptionId, platform, profile: sugges
         <datalist id="gateway-create-groups">{options.data.resource_groups.map((item) => <option key={item.name} value={item.name} />)}</datalist>
         <small>{existingGroup ? fill(t.createGroupExisting, { location: existingGroup.location }) : t.createGroupNew}</small>
       </label>
-      <label className="field">{t.createProfile}
-        <select value={profile} onChange={(event) => setProfile(event.target.value as GatewayProfile)}>
-          <option value="dev">{t.profileDev}</option>
-          <option value="production">{t.profileProduction}</option>
-        </select>
-        <small>{profileHint}</small>
-      </label>
       <label className="field">{t.createLocation}
         <select value={location} disabled={!locations.length} onChange={(event) => setLocation(event.target.value)}>
           {!locations.length && <option value="">{t.createNoLocations}</option>}
@@ -413,10 +359,18 @@ function CreateGatewayForm({ tenantId, subscriptionId, platform, profile: sugges
         </select>
       </label>
     </div>
-    <div className="state">{fill(t.createEstimate, {
-      low: formatMoney(estimate.low, "USD", locale, 0),
-      high: formatMoney(estimate.high, "USD", locale, 0),
-    })}</div>
+    {plan && summary && <div className="state">{fill(t.createPlanSummary, {
+      summary: fill(aks ? t.planSummaryAks : t.planSummaryAca, { ...summary, redis: summary.redis ? fill(t.planRedis, { sku: summary.redis }) : t.planNoRedis }),
+    })}</div>}
+    {preflight.data && <div className="state">{!price
+      ? t.createPriceUnknown
+      : Math.round(price.monthly_low) === Math.round(price.monthly_high)
+        ? fill(t.createPlanPriceFixed, { price: formatMoney(price.monthly_low, price.currency, locale, 0), location })
+        : fill(t.createPlanPrice, {
+          low: formatMoney(price.monthly_low, price.currency, locale, 0),
+          high: formatMoney(price.monthly_high, price.currency, locale, 0),
+          location,
+        })}</div>}
     {options.data.unregistered_providers.length > 0 && <div className="state">{fill(t.createRegisterProvider, { providers: options.data.unregistered_providers.join(", ") })}</div>}
     {location && (preflight.isLoading
       ? <div className="state"><LoaderCircle className="spin" size={14} />{fill(t.preflightChecking, { location })}</div>

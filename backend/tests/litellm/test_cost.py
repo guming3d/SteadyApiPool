@@ -11,11 +11,14 @@ from fastapi.testclient import TestClient
 
 from pool_manager.app import app
 from pool_manager.cost import region_name
-from pool_manager.litellm.cost import list_price
+from pool_manager.litellm.cost import list_price, plan_price
 from pool_manager.litellm.gateway import container_app_info
+from pool_manager.litellm.gateway_template import aca_parameters
+from pool_manager.litellm.models import GatewaySizing
+from pool_manager.litellm.sizing import plan
 from tests.fake_azure import GATEWAY_APP, RETAIL_PRICES, FakeAzure
 from tests.litellm.fake_litellm import MASTER_KEY, URL
-from tests.litellm.test_app import _client, _settings
+from tests.litellm.test_app import PRODUCTION, _client, _settings
 from tests.litellm.test_setup import _jwt
 
 SINCE = datetime.now(UTC).date().replace(day=1).isoformat()
@@ -71,20 +74,47 @@ def test_cost_has_spend_and_an_estimate(client: TestClient, azure: FakeAzure) ->
     assert tags == {"name": "ai-gateway", "operator": "In", "values": ["gw"]}
 
 
-def test_a_production_gateway_adds_redis() -> None:
+def test_a_gateway_from_before_the_sizing_plan_is_priced_by_its_profile() -> None:
     fake = FakeAzure()
     app_id = fake.add_gateway("gw", profile="production")
     info = container_app_info(fake.container_apps[app_id.casefold()], "gw")
 
-    price = list_price(_prices(), info, "production")
+    price = list_price(_prices(), info)
 
     assert price is not None
     items = {item.kind: item for item in price.items}
-    assert items["container_apps"].detail == "2 vCPU, 4 GiB x 2-5 replicas"
-    assert items["container_apps"].monthly_low == pytest.approx(94.61, abs=0.01)
-    assert items["container_apps"].monthly_high == pytest.approx(788.4, abs=0.01)
+    assert items["container_apps"].detail == "2.25 vCPU, 4.5 GiB x 2-10 replicas"
+    assert items["container_apps"].monthly_low == pytest.approx(106.43, abs=0.01)
+    assert items["container_apps"].monthly_high == pytest.approx(1773.9, abs=0.01)
+    # What production deployed then: Burstable B2s and Redis B0.
+    assert items["postgres"].detail == "B2s + 32 GB"
     assert items["postgres"].monthly_low == pytest.approx(53.32, abs=0.01)
     assert items["redis"].monthly_low == pytest.approx(23.36, abs=0.01)
+
+
+def test_a_sized_gateway_is_priced_from_its_tags() -> None:
+    sizing = GatewaySizing.model_validate(PRODUCTION)
+    found = plan(sizing, "aca")
+    parameters = {
+        key: value["value"] for key, value in aca_parameters("gw", "eastus2", sizing, found).items()
+    }
+    fake = FakeAzure()
+    app_id = fake.add_gateway("gw", profile="production", parameters=parameters)
+    info = container_app_info(fake.container_apps[app_id.casefold()], "gw")
+
+    price = list_price(_prices(), info)
+
+    assert price is not None
+    items = {item.kind: item for item in price.items}
+    assert items["container_apps"].detail == "2.25 vCPU, 4.5 GiB x 2-6 replicas"
+    # General Purpose D2ds_v5: its series' "2 vCore" price, not the per-vCore one.
+    assert items["postgres"].detail == "D2ds_v5 + 32 GB"
+    assert items["postgres"].monthly_low == pytest.approx(133.62, abs=0.01)
+    assert items["redis"].detail == "Balanced B0 x 2"
+    # The same as the plan said before it was deployed.
+    before = plan_price(_prices(), found)
+    assert before is not None
+    assert (before.monthly_low, before.monthly_high) == (price.monthly_low, price.monthly_high)
 
 
 def test_cost_is_cached_until_refreshed(client: TestClient, azure: FakeAzure) -> None:
@@ -199,5 +229,5 @@ def test_deployed_spend_is_read_with_the_users_own_token(azure: FakeAzure) -> No
 def test_an_estimate_needs_the_container_apps_meters() -> None:
     fake = FakeAzure()
     info = container_app_info(fake.container_apps[GATEWAY_APP.casefold()], "gw")
-    assert list_price({"aca": []}, info, "dev") is None
+    assert list_price({"aca": []}, info) is None
     assert region_name("East US 2") == "eastus2"

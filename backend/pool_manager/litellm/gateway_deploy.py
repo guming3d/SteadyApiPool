@@ -32,13 +32,14 @@ from ..errors import ServiceError, arm_failure
 from .capacity import CapacityCheck, CapacityReport
 from .gateway import GATEWAY_TAG, MANAGED_TAG, MANAGED_TAG_VALUE
 from .gateway_template import aca_parameters, aca_template
-from .models import DeployStep, GatewayCreate, GatewayDeployStatus, GatewayPreflight
+from .models import DeployStep, GatewayCreate, GatewayDeployStatus, GatewayPlan
+from .sizing import describe, plan
 
 logger = logging.getLogger(__name__)
 
 RESOURCES_API_VERSION = "2021-04-01"
 DEPLOYMENTS_API_VERSION = "2024-03-01"
-# What the template creates; Microsoft.Cache only for the production profile.
+# What the template creates; Microsoft.Cache only when the plan has Redis.
 PROVIDERS = (
     "Microsoft.App",
     "Microsoft.OperationalInsights",
@@ -122,34 +123,43 @@ class GatewayDeployer:
 
     # -- before anything is created -------------------------------------------------------
 
-    def preflight(self, arm: ArmClient, body: GatewayCreate) -> GatewayPreflight:
-        """What would keep this deployment from succeeding there, without changing anything."""
-        try:
-            report = self.capacity.problems(
-                arm, body.subscription_id, body.location, body.platform, body.profile
+    @staticmethod
+    def plan(body: GatewayCreate) -> GatewayPlan:
+        """What the deployment creates, from its scenario; refused when it can't be built."""
+        found = plan(body.sizing, body.platform)
+        if found.problems:
+            raise ServiceError(
+                409,
+                f"{' '.join(_sentence(describe(note)) for note in found.problems)} "
+                "Nothing was created.",
             )
+        return found
+
+    def preflight(
+        self, arm: ArmClient, body: GatewayCreate, found: GatewayPlan
+    ) -> tuple[list[str], list[str]]:
+        """What would keep this deployment from succeeding there, without changing anything,
+        and the regions where nothing would."""
+        if found.problems:
+            return [describe(note) for note in found.problems], []
+        try:
+            report = self.capacity.problems(arm, body.subscription_id, body.location, found)
             regions = (
-                self.capacity.open_regions(
-                    arm, body.subscription_id, body.platform, body.profile, body.location
-                )
+                self.capacity.open_regions(arm, body.subscription_id, found, body.location)
                 if report.problems
                 else []
             )
         except ArmError as error:
             raise arm_failure(error, "check this region") from error
-        return GatewayPreflight(
-            location=body.location, problems=report.problems, open_regions=regions
-        )
+        return report.problems, regions
 
-    def require_capacity(self, arm: ArmClient, body: GatewayCreate) -> CapacityReport:
+    def require_capacity(
+        self, arm: ArmClient, body: GatewayCreate, found: GatewayPlan
+    ) -> CapacityReport:
         """Refuses a region that can't take every resource the deployment creates."""
-        report = self.capacity.problems(
-            arm, body.subscription_id, body.location, body.platform, body.profile
-        )
+        report = self.capacity.problems(arm, body.subscription_id, body.location, found)
         if report.problems:
-            regions = self.capacity.open_regions(
-                arm, body.subscription_id, body.platform, body.profile, body.location
-            )
+            regions = self.capacity.open_regions(arm, body.subscription_id, found, body.location)
             hint = f" Regions where it fits: {', '.join(regions[:5])}." if regions else ""
             raise ServiceError(
                 409,
@@ -220,6 +230,7 @@ class GatewayDeployer:
 
     def start(self, arm: ArmClient, body: GatewayCreate, actor: str) -> None:
         """Starts the deployment; ``status`` follows it."""
+        found = self.plan(body)
         try:
             self.check(
                 arm,
@@ -227,23 +238,26 @@ class GatewayDeployer:
                 existing=app_path(body.subscription_id, body.resource_group, body.name),
                 existing_api=self._settings.container_apps_api_version,
             )
-            self.require_capacity(arm, body)
-            created = self.provision(arm, body, actor, providers=PROVIDERS)
+            self.require_capacity(arm, body, found)
+            created = self.provision(
+                arm, body, actor, providers=PROVIDERS, redis=found.redis_sku is not None
+            )
             self.deploy(
                 arm,
                 body,
                 template=aca_template(),
-                parameters=aca_parameters(body.name, body.location, body.profile),
+                parameters=aca_parameters(body.name, body.location, body.sizing, found),
                 tags={MANAGED_TAG: MANAGED_TAG_VALUE},
                 created_group=created,
             )
         except ArmError as error:
             raise arm_failure(error, "deploy this gateway") from error
         logger.info(
-            "%s started deploying gateway %s (%s) in %s",
+            "%s started deploying gateway %s (%d-%d replicas) in %s",
             actor,
             body.name,
-            body.profile,
+            found.min_replicas,
+            found.max_replicas,
             group_path(body.subscription_id, body.resource_group),
         )
 
@@ -266,14 +280,18 @@ class GatewayDeployer:
             )
 
     def provision(
-        self, arm: ArmClient, body: GatewayCreate, actor: str, *, providers: tuple[str, ...]
+        self,
+        arm: ArmClient,
+        body: GatewayCreate,
+        actor: str,
+        *,
+        providers: tuple[str, ...],
+        redis: bool,
     ) -> bool:
         """Registers the resource providers the template needs and creates the resource group
         when it is missing (tagged as this app's); an existing group is never changed. Returns
         whether it created the group."""
-        missing = self.unregistered(
-            arm, body.subscription_id, redis=body.profile == "production", providers=providers
-        )
+        missing = self.unregistered(arm, body.subscription_id, redis=redis, providers=providers)
         if missing:
             logger.info("%s registers %s", actor, ", ".join(missing))
             self._register(arm, body.subscription_id, missing)

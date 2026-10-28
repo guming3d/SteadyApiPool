@@ -43,7 +43,7 @@ Python。
 | 应用会设置什么 | 一个 APIM 服务（你已有的，或新建的基本 v2 服务），每个后端池一个 `Pool` 后端，以及一个绑定到它的 API | 容器应用上带 PostgreSQL 的 LiteLLM 代理（一步完成）或新的 AKS 群集，或连接你已有的网关；每个后端池一个模型组 |
 | 客户端如何调用 | `https://<apim>.azure-api.net/<api-path>/chat/completions?api-version=…`，带上 `Ocp-Apim-Subscription-Key` | `https://<gateway>/v1/chat/completions`，使用虚拟密钥，并把后端池 ID（或别名）作为模型 |
 | 失败处理 | 每个成员一个断路器，API 策略中的重试，可选的会话感知 | 每个成员的冷却，在另一个成员上重试，Responses API 的后续请求固定发往最初响应的部署 |
-| 费用 | 服务所选的层（建议从基本 v2 开始；开发人员层没有 SLA），按小时计费 | 容器应用约每月 $46–115（开发）或 $171–865（生产）；新的 AKS 群集约每月 $190–1,200（标价） |
+| 费用 | 服务所选的层（建议从基本 v2 开始；开发人员层没有 SLA），按小时计费 一个容器应用副本起价约每月 $46；部署前，规模计算器会按你的流量和区域为规模计算价格（标价） |
 | 其他形式 | [公开应用](#公开部署到-azure-容器应用)：任何人都可以用自己的 Azure 帐户登录 | — |
 
 两种网关以相同的标识规则管理同样的 Foundry 部署（网关用它的托管标识调用部署，不使用密钥），你也可以在设置页上
@@ -113,18 +113,18 @@ scripts/start-local.sh         # macOS、Linux、WSL
 
 在 Azure 容器应用上的某个 LiteLLM 网关上点击**使用此网关**。
 
-还没有网关？点击**部署网关**。应用会先问**网关在哪里运行？**（见下文[容器应用还是 AKS？](#容器应用还是-aks)），
-并给出推荐：
+还没有网关？点击**部署网关**。应用会先按你的流量确定网关规模（见下文[确定网关规模](#确定网关规模)），
+并推荐容器应用或 AKS：
 
-- **部署到容器应用**会打开一个所有内容都已填好的表单：唯一的名称、资源组、区域和规模（**开发 / 试用**或
-  **生产**），并附有标价估算。选择区域时，应用会检查该区域能否容纳网关的每个资源（见下文
+- **部署到容器应用**会打开一个所有内容都已填好的表单：唯一的名称、资源组和区域，以及要部署的规模和它在该区域
+  的标价。选择区域时，应用会检查该区域能否容纳网关的每个资源（见下文
   [部署之前，以及部署仍然失败时](#部署之前以及部署仍然失败时)）。点击**部署**。应用以你自己的 Azure 权限部署 LiteLLM、PostgreSQL、一个托管标识和
   Application Insights，并跟踪部署进度，通常需要 5–15 分钟（PostgreSQL 最慢）。期间可以关闭应用，设置会接着跟踪。
   资源从创建起就开始计费。
 - **在 AKS 上部署**为**新的 AKS 群集**打开同样的表单。点击**部署**后，应用分三个阶段进行，并实时显示进度（通常共
   15–25 分钟）：
   1. **Azure 资源**：群集（Microsoft Entra ID 与 Azure RBAC、工作负载标识、托管 Gateway API）、PostgreSQL、网关
-     的托管标识、Application Insights，以及生产配置的 Redis。你会获得该群集的 *Azure Kubernetes 服务 RBAC 群集管理员*
+     的托管标识、Application Insights，以及多于一个 Pod 时的 Redis。你会获得该群集的 *Azure Kubernetes 服务 RBAC 群集管理员*
      角色，因此部署需要资源组上的所有者或用户访问管理员权限。
   2. **在群集中安装**：通过 AKS 运行命令（你的电脑上无需 kubectl 或 Helm）安装 cert-manager、OpenTelemetry
      Collector、LiteLLM 的 Helm 图表和 HTTPS 网关。
@@ -144,25 +144,40 @@ scripts/start-local.sh         # macOS、Linux、WSL
 它调用 Foundry 时使用的托管标识对象 ID 和它的 Application Insights 资源 ID。应用会用网关本身验证 URL 和主密钥，
 并把主密钥加密保存在本机，从不以明文写入文件。
 
-![网关在哪里运行？几个问题，推荐 Azure 容器应用，以及 AKS 选项](docs/images/onboarding-2b-deploy-gateway.png)
+![按你的流量确定网关规模：峰值 RPM、token、超时和流式传输，推荐容器应用的规模并展开了计算过程，旁边是 AKS 的规模](docs/images/onboarding-2b-deploy-gateway.png)
 
 接下来会打开一个两分钟的导览。可以跟着看，也可以跳过；顶栏的**导览**可以重新播放。
 
-##### 容器应用还是 AKS？
+##### 确定网关规模
 
-问卷会询问网关的用途、峰值 TPM、每个请求的平均 token 数，以及三个是/否问题，然后推荐：
+规模计算器会询问峰值时的流量：每分钟请求数、平均输入和输出 token 数、单次调用最长时间，以及响应是否以流式传输
+返回。**更多选项**中有模型速度（快、标准或推理模型三种预设，或填写你自己的平均响应时间）、峰值之上的余量（默认
+25%）、是否要承受一个可用性区域故障（默认开启），以及你们是否已在运维 AKS、是否要在网关旁运行自托管模型、是否
+需要专用网络。
 
-| | Azure 容器应用（默认） | Azure Kubernetes 服务（AKS） |
-| --- | --- | --- |
-| 何时选择 | 大多数情况：试用，以及每秒约 250 个请求以内的生产流量（生产配置 5 个副本的承载量） | 你已有 AKS 群集和运维它的团队；要在网关旁运行自托管（GPU）模型；或峰值超过每秒约 250 个请求（峰值 TPM ÷ 60 ÷ 每个请求的 token 数） |
-| 如何部署 | 由本应用一步部署，无需运维群集 | 由本应用新建并配置好的群集（之后由你维护），或为已有群集生成的文件 |
-| 规模 | **开发 / 试用**：1 个副本，无 Redis。**生产**：2–5 个副本按负载伸缩，通过 Redis 共享冷却状态 | **开发 / 试用**：1 个 Standard_D4ds_v5 节点，免费层，无 Redis。**生产**：3–6 个节点跨可用性区域，标准层（运行时间 SLA），2–6 个 LiteLLM 副本通过 Redis 共享冷却状态 |
-| 标价 | 开发约**每月 $46–115**；生产约**每月 $171–865** | 新群集：开发约**每月 $190–230**；生产约**每月 $670–1,200**。已有群集：其费用，加上 PostgreSQL |
+后端据此算出网关的规模，**计算过程**会逐步列出每一步的数字：
 
-这些价格是**零售标价估算**（美元，美国东部 2，从空闲到繁忙），涵盖每种规模部署的内容：容器应用副本、PostgreSQL，
-以及生产规模的 Redis。不包括免费额度、日志引入和折扣，当然也不包括模型用量，后者照常由 Foundry 计费。网关创建后，
-它的面板会显示本月实际花费和所在区域的标价。对于生产规模，推荐还会说明峰值时需要规划多少个副本（大约每秒 50 个
-请求一个副本）。
+| 步骤 | 算法 |
+| --- | --- |
+| 请求和 token | 每秒请求数 = RPM ÷ 60。每分钟 token 数 = RPM ×（输入 + 输出）：即各个池中 Foundry 部署合计需要的配额 |
+| 同时进行的调用 | 每秒请求数 × 每次调用的时间（首个 token 之前的时间，加上按模型速度输出的时间）；以及每个调用都拖到超时时的数量 |
+| 一个副本 | 每次调用占用的网关 CPU（固定开销、请求和响应正文、每个流式 token），对比一个 LiteLLM 工作进程使用一个核心的 70%；以及它的内存能容纳多少个调用 |
+| 副本 | 峰值所需的副本，加上余量，再加一个应对区域故障的副本（至少两个）。容器应用按峰值时每个副本的每秒请求数添加副本；AKS 按 60% CPU |
+| 数据库和 Redis | 连接数足以容纳 副本数 × 10 × 2（更新时翻倍）的最小 PostgreSQL：常规用途，只有一个副本时才用可突发。多于一个副本就加 Redis |
+| AKS | 容纳这些 Pod 的节点大小和范围（D4ds_v5 每个 2 个、D8ds_v5 每个 5 个、D16ds_v5 每个 12 个），至少三个跨可用性区域的节点，以及足够的出站 IP，让每个节点在所有调用都拖到超时时仍有足够的 SNAT 端口 |
+
+除非流量排除了它，否则推荐**容器应用**。它的入口会结束 240 秒没有任何输出的请求（实测：一个不输出的调用在 241 秒
+收到 504，而每 10 秒流式输出一次的调用完整运行了 300 秒），所以不流式传输且可能超过这个时间的调用，或首个 token
+晚于这个时间的调用，会推荐 **AKS**；需要超过 30 个副本的峰值、已在运维 AKS 的团队和自托管 GPU 模型也是如此。每张
+卡片显示该平台的规模、阻止它在那里运行的原因，以及部署按钮。随后的部署表单会按你选择的区域为这个规模计算标价，
+区域检查也使用它的规格。
+
+网关每次调用的 CPU 用量是用 `backend/tests/litellm/litellm_stack/calibrate.py` 在按本应用部署方式配置的 LiteLLM 上
+实测的（Docker，模拟的上游）：每次调用约 27 毫秒，每个流式 token 约 0.75 毫秒，启用 OpenTelemetry 时每 1,000 个提示
+token 再让每个流式 token 多约 0.11 毫秒；一个工作进程满载时每秒处理 26–46 个调用。**流式传输决定网关的规模**：500 个
+token 的流式响应约为完整返回的 15 倍。Azure 的 CPU 可能略有不同，内存是估算值，所以部署后请按峰值对某个池做压力测试
+（池的**压力测试**，或 `scripts/benchmark.py`）来确认。价格是从空闲到繁忙的零售标价，
+不含免费额度、日志引入、折扣和模型用量；网关创建后，它的面板会显示本月实际花费。
 
 不能对互联网开放的网关在两者上都可以实现，但这里没有自动化专用网络：在容器应用上，之后把环境放进虚拟网络
 （或修改模板）；在 AKS 上，使用内部负载均衡器或专用入口。
@@ -310,7 +325,7 @@ backend/.venv/Scripts/python scripts/demo_server.py    # macOS 和 Linux 上为 
 | 功能 | 说明 |
 | --- | --- |
 | **设置向导** | 四个步骤：**登录**、网关（**AI 网关**或 **APIM 服务**）、**权限**和**网关 → Foundry**。它检查登录、网关（对于 LiteLLM：可访问、数据库已连接、主密钥有效）、网关的托管标识、你对网关的访问权限，以及网关对 Foundry 的访问权限。能用你的 Azure 权限修复的就直接修复，其余的生成一份可以直接发给管理员的申请。在本地还可以选择网关类型，并选择、新建、连接或删除网关。 |
-| **网关选择** | APIM：已有的服务，或新建一个。LiteLLM：根据几个回答推荐容器应用或 AKS，可一步部署到容器应用，或新建 AKS 群集并在其上安装带 HTTPS 的 LiteLLM，或为已有群集生成部署文件，或连接任何 LiteLLM 代理。 |
+| **网关选择** | APIM：已有的服务，或新建一个。LiteLLM：按峰值流量确定网关规模并推荐容器应用或 AKS，可一步部署到容器应用，或新建 AKS 群集并在其上安装带 HTTPS 的 LiteLLM，或为已有群集生成部署文件，或连接任何 LiteLLM 代理。 |
 | **导览** | 面向 AI 网关新手的两分钟页面导览。设置完成后自动运行一次；顶栏的**导览**可以重新播放。 |
 | **部署发现** | 按模型分组，列出你的订阅中的 Azure OpenAI / Foundry 部署，并把选中的部署导入到新的或已有的后端池。 |
 | **部署模型** | 用你自己的 Azure 权限在 Foundry 帐户中创建按令牌计费的 OpenAI 模型部署，无需打开 Foundry 门户。 |
@@ -325,6 +340,8 @@ backend/.venv/Scripts/python scripts/demo_server.py    # macOS 和 Linux 上为 
 | **指标监控** | 后端池的请求数、可用性、429 和延迟（来自 APIM 的 Azure Monitor 指标，或 LiteLLM 网关在 Application Insights 中的 OpenTelemetry 跟踪），以及来自 Azure Monitor 的每个成员的流量份额、令牌数和延迟。 |
 | **费用** | 网关资源本月的花费和标价。点击顶栏中的网关名称打开；在 LiteLLM 上，那里还有 LiteLLM 自带管理界面的链接。 |
 | **同一模型** | 如果后端池中的 Foundry 成员提供不同的模型，则拒绝保存。模型从 Azure 读取，而不是根据部署名称猜测。 |
+| **池配额** | 在后端池的成员下方显示其 Foundry 部署合计每分钟允许的 token 和请求数（来自每个部署自己的 `rateLimits`，否则按容量每单位 1,000 TPM、6 RPM 估算）。在 LiteLLM 上，低于网关确定规模时的流量会给出警告。 |
+| **调整规模（LiteLLM）** | 网关面板中的**按新的流量调整规模**会为本应用部署的网关按新的峰值重新计算规模，列出每项更改，再以你自己的 Azure 权限应用：容器应用上的副本数、副本大小和缩放触发；AKS 上的节点范围和 LiteLLM 的 Pod；数据库只在你勾选时调整。它会提示可能影响生产流量，并等待你确认；无法就地更改的内容会给出命令。 |
 | **删除** | 删除一个后端池，或此应用在网关上创建的全部内容，删除前会准确列出将被删除的内容。在本地还可以删除此应用创建的网关（APIM 服务会被软删除，48 小时内可恢复；LiteLLM 网关会被永久删除）。 |
 | **公开应用（APIM）** | 部署在容器应用上的网站，任何人都可以用自己的 Microsoft 帐户登录，并以自己的 Azure 权限工作；服务器不保存任何内容。 |
 | **安全性** | 应用只更改和删除它自己创建的内容，并且只在你看过之后才这样做。在 APIM 上，每次更新都基于 ETag 条件请求，从不改写不是它写入的策略；在 LiteLLM 上，在其他地方添加的后端池以只读方式显示。带有受保护 ID 前缀（`POOL_MANAGER_PROTECTED_PREFIXES`）的资源在两种网关上都是只读的。 |
@@ -374,7 +391,7 @@ backend/.venv/Scripts/python scripts/demo_server.py    # macOS 和 Linux 上为 
   部署。它在网关配置中对所有后端池生效，不能按后端池设置。
 - **没有运行状况检查。** 只有真实的失败请求才会让成员进入冷却。所有成员都在冷却时，客户端会收到最后一个上游错误
   （429 仍是 429），所以客户端应退避后重试。
-- 有多个副本时，冷却状态只能通过 Redis 共享；容器应用上的生产规模包含 Redis。
+- 有多个副本时，冷却状态只能通过 Redis 共享；规模计算器会为每个多于一个副本的规模加上 Redis。
 
 ### 发现的部署
 
@@ -394,11 +411,11 @@ backend/.venv/Scripts/python scripts/demo_server.py    # macOS 和 Linux 上为 
 
 | 资源 | 说明 |
 | --- | --- |
-| 容器应用 `<name>` | LiteLLM `v1.106.4`（固定映像 `ghcr.io/berriai/litellm:v1.106.4`），端口 4000，通过外部 HTTPS 入口公开，另有一个 OpenTelemetry Collector 边车容器把模型调用的跟踪发送到 Application Insights。开发规模 1 个副本；生产规模 2–5 个副本。主密钥、盐密钥、数据库 URL 和 `config.yaml` 都是容器应用机密 |
-| 容器应用环境 `cae-<name>` | 消耗计划，日志发送到 Log Analytics |
+| 容器应用 `<name>` | LiteLLM `v1.106.4`（固定映像 `ghcr.io/berriai/litellm:v1.106.4`），端口 4000，通过外部 HTTPS 入口公开，另有一个 OpenTelemetry Collector 边车容器把模型调用的跟踪发送到 Application Insights。副本数、副本大小（只有一个副本时为 1 vCPU、2 GiB，否则为 2 vCPU、4 GiB，即 LiteLLM 对单个工作进程的建议）和缩放规则都来自规模计算。入口会结束 240 秒没有输出的请求。主密钥、盐密钥、数据库 URL 和 `config.yaml` 都是容器应用机密 |
+| 容器应用环境 `cae-<name>` | 工作负载配置文件环境，LiteLLM 运行在其消耗配置文件上；日志发送到 Log Analytics。之后可以添加带高级入口的专用配置文件（空闲超时最长 30 分钟，而不是 240 秒），它至少需要两个专用节点 |
 | 用户分配的托管标识 `id-<name>` | LiteLLM 调用 Foundry 时使用的身份（`AZURE_CLIENT_ID`）；设置向导会在成员帐户上为它分配 *Cognitive Services OpenAI User*。它没有其他角色 |
-| Azure Database for PostgreSQL 灵活服务器 | LiteLLM 的模型表、虚拟密钥和花费记录。可突增 B1ms（开发）或 B2s（生产），32 GB。公共网络访问，仅允许 Azure 服务 |
-| Azure 托管 Redis（仅生产） | Balanced B0，让各副本共享冷却状态 |
+| Azure Database for PostgreSQL 灵活服务器 | LiteLLM 的模型表、虚拟密钥和花费记录。只有一个副本时为可突发 B1ms，否则为规模所需连接数对应的常规用途规格（D2ds_v5 起）：可突发层在持续负载下会耗尽 CPU 额度。32 GB。LiteLLM 每分钟写入一次花费，每个副本最多保持 10 个连接。公共网络访问，仅允许 Azure 服务 |
+| Azure 托管 Redis（多于一个副本时） | 按峰值从 Balanced B0 到 B5，让各副本共享冷却状态 |
 | Log Analytics 工作区 `log-<name>`、Application Insights `appi-<name>` | 容器日志，以及指标监控选项卡所用的跟踪 |
 
 网关的机密由应用在部署时生成一次，之后应用从不轮换：盐密钥用于加密 LiteLLM 保存的成员密钥，因此不能更改。
@@ -409,7 +426,7 @@ backend/.venv/Scripts/python scripts/demo_server.py    # macOS 和 Linux 上为 
 一次部署会同时创建多个资源；以前如果 Azure 中途拒绝其中一个，其余资源就会留下来并继续计费。现在：
 
 - **先检查区域。** 填写表单时，应用以只读方式检查该区域能否容纳网关需要的每个资源：Azure 是否在该区域提供每种
-  资源类型；PostgreSQL 灵活服务器（订阅在该区域的限制、服务器版本、所选规模的可突发 SKU 以及 vCore 配额）；
+  资源类型；PostgreSQL 灵活服务器（订阅在该区域的限制、服务器版本、所选规模的 SKU 以及它的 vCore 配额）；
   是否还能再创建一个容器应用环境；在 AKS 上还检查节点大小、其可用性区域和 vCPU 配额。所有问题一次列出，并给出
   能够部署的区域；在区域可用之前，**部署**按钮保持禁用。
 - **开始之前由 Azure 验证部署。** 点击**部署**后，应用先请 ARM 按实际要发送的内容验证这次部署（由各资源提供程序
@@ -434,17 +451,18 @@ backend/.venv/Scripts/python scripts/demo_server.py    # macOS 和 Linux 上为 
 
 | 资源 | 说明 |
 | --- | --- |
-| AKS 群集 `<名称>` | Microsoft Entra ID 与 Azure RBAC（无本地帐户），OIDC 颁发者和工作负载标识，Azure CNI 覆盖网络，Azure Linux 节点（Standard_D4ds_v5）。入口使用托管 Gateway API 和应用程序路由的 Istio 实现（托管 NGINX 入口已停用）。补丁版本和节点映像自动升级 |
-| 群集中的 `litellm` 命名空间 | LiteLLM 的 Helm 图表（固定为 `1.106.4`，使用工作负载标识）、把模型调用跟踪发送到 Application Insights 的 OpenTelemetry Collector，以及位于公共 IP 上、DNS 名称为 `<名称>.<区域>.cloudapp.azure.com` 的网关。cert-manager（位于 `cert-manager`）获取并续订 Let's Encrypt 证书。纯 HTTP 只会重定向到 HTTPS |
+| AKS 群集 `<名称>` | Microsoft Entra ID 与 Azure RBAC（无本地帐户），OIDC 颁发者和工作负载标识，Azure CNI 覆盖网络，Azure Linux 节点。节点大小和自动缩放范围、层（区域冗余时为标准层）、出站 IP 以及每个节点的 SNAT 端口都来自规模计算：每个对 Foundry 的并发调用都占用一个端口，默认每个节点 1,024 个。入口使用托管 Gateway API 和应用程序路由的 Istio 实现（托管 NGINX 入口已停用）。补丁版本和节点映像自动升级 |
+| 群集中的 `litellm` 命名空间 | LiteLLM 的 Helm 图表（固定为 `1.106.4`，使用工作负载标识，每个 Pod 1 vCPU、4 GiB，数量按规模计算，按 CPU 伸缩）、把模型调用跟踪发送到 Application Insights 的 OpenTelemetry Collector，以及位于公共 IP 上、DNS 名称为 `<名称>.<区域>.cloudapp.azure.com` 的网关。cert-manager（位于 `cert-manager`）获取并续订 Let's Encrypt 证书。纯 HTTP 只会重定向到 HTTPS |
 | 用户分配的托管标识 `id-<名称>` | 与 LiteLLM 的服务帐户联合；LiteLLM 以它的身份调用 Foundry。设置向导会在成员帐户上为它授予 *Cognitive Services OpenAI User* |
-| PostgreSQL、Redis（生产）、Log Analytics、Application Insights | 与容器应用相同 |
+| PostgreSQL、Redis（多于一个 Pod 时）、Log Analytics、Application Insights | 与容器应用相同 |
 | 角色分配 | 你在该群集上的 *Azure Kubernetes 服务 RBAC 群集管理员* |
 
 机密（主密钥、盐密钥、Postgres 密码）由应用生成，安装完成前保存在你的电脑上；它们只通过运行命令的文件作为
 Kubernetes 机密进入群集，安装过程从不打印它们。之后应用只保留加密的主密钥，与连接的网关相同。
 
-**群集由你维护。** 本应用只管理 LiteLLM 中的后端池、别名和密钥，不管理群集中的任何内容。网关面板列出了可直接复制的
-命令，并链接到 Azure 门户中的群集：
+**群集由你维护。** 本应用只管理 LiteLLM 中的后端池、别名和密钥；只有当你在网关面板中调整规模时（**按新的流量调整规模**：
+节点范围，以及通过运行命令中的 `helm upgrade --reuse-values` 调整 LiteLLM 的 Pod，事先提示并经你确认）才会更改群集。
+网关面板列出了可直接复制的命令，并链接到 Azure 门户中的群集：
 
 ```sh
 az aks get-credentials -g <资源组> -n <名称>                  # kubectl 访问（Entra ID 登录）

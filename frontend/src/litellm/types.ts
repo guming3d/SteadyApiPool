@@ -134,12 +134,14 @@ export type Capabilities = {
   /** Base URL of the gateway, e.g. https://<app>.<env>.<region>.azurecontainerapps.io. */
   gateway_url: string | null
   litellm_version: string | null
+  /** The traffic the gateway was deployed or resized for; null before the sizer. */
+  sized_for: GatewaySizing | null
   /** Application Insights component that receives the gateway's spans. */
   app_insights_id: string | null
   discovery_subscriptions: string[]
 }
 
-/** "dev": one replica, no Redis; "production": 2-5 replicas sharing cooldowns in Redis. */
+/** A label from the sizing plan: "dev" for a single replica, else "production". */
 export type GatewayProfile = "dev" | "production"
 
 /** A LiteLLM gateway on Container Apps. */
@@ -170,21 +172,130 @@ export type GatewayCreateOptions = {
 
 export type TargetSelect = { tenant_id: string | null; subscription_id: string; resource_group: string; gateway_name: string }
 
+export type ModelSpeed = "fast" | "standard" | "reasoning"
+
+/** The traffic a gateway is sized for (backend litellm/sizing.py): its peak. */
+export type GatewaySizing = {
+  peak_rpm: number
+  input_tokens: number
+  output_tokens: number
+  /** The longest a call may take: LiteLLM's request_timeout. */
+  timeout_seconds: number
+  streaming: boolean
+  model_speed: ModelSpeed
+  /** Overrides the speed preset: average seconds a call takes. */
+  response_seconds: number | null
+  headroom_percent: number
+  /** One more replica than the peak needs, at least two, zones for AKS nodes. */
+  zone_redundant: boolean
+  kubernetes_team: boolean
+  self_hosted_models: boolean
+  private_network: boolean
+}
+
+export type PlanNoteCode =
+  | "platform_simple" | "platform_team" | "platform_gpu" | "platform_timeout" | "platform_scale"
+  | "platform_chosen" | "private_aks" | "private_manual" | "call_exceeds_timeout" | "single_replica"
+  | "redis_buffer" | "foundry_quota" | "outbound_capped" | "pool_lowered" | "aca_timeout"
+  | "aca_replicas" | "aks_too_big" | "database_too_small"
+
+export type PlanNote = { code: PlanNoteCode; values: Record<string, number | string> }
+
+export type AksPlan = {
+  node_size: string
+  node_vcpus: number
+  pods_per_node: number
+  node_min: number
+  node_max: number
+  tier: "Free" | "Standard"
+  outbound_ips: number
+  outbound_ports: number
+  ports_needed: number
+}
+
+/** What the sizer derives for one platform, with every number it used. */
+export type GatewayPlan = {
+  platform: GatewayPlatform
+  profile: GatewayProfile
+  rps: number
+  tpm: number
+  call_seconds: number
+  in_flight: number
+  in_flight_slow: number
+  cpu_ms: number
+  replica_rps: number
+  replica_in_flight: number
+  bound_by: "cpu" | "in_flight"
+  peak_replicas: number
+  min_replicas: number
+  max_replicas: number
+  scale_rps: number
+  replica_cpu: number
+  replica_memory_gib: number
+  bandwidth_mbps: number
+  postgres_sku: string
+  postgres_tier: "Burstable" | "GeneralPurpose"
+  postgres_connections: number
+  postgres_limit: number
+  db_pool: number
+  redis_sku: string | null
+  aks: AksPlan | null
+  request_timeout: number
+  route_timeout: number
+  reasons: PlanNote[]
+  warnings: PlanNote[]
+  /** Anything here keeps the plan from being deployed on this platform. */
+  problems: PlanNote[]
+}
+
+export type GatewayPlans = { recommended: GatewayPlatform; aca: GatewayPlan; aks: GatewayPlan }
+
+export type ResizeItem =
+  | "replicas" | "scale_rule" | "replica_size" | "nodes" | "pods" | "database" | "node_size"
+  | "outbound" | "tier" | "redis" | "timeout"
+
+/** apply: the app changes it; optional: only when asked; manual: the user does (command, if any). */
+export type ResizeChange = {
+  item: ResizeItem
+  current: string
+  proposed: string
+  action: "apply" | "optional" | "manual"
+  command: string | null
+}
+
+/** What resizing the gateway for a scenario would change; read without changing anything. */
+export type ResizePlan = {
+  platform: GatewayPlatform
+  plan: GatewayPlan
+  changes: ResizeChange[]
+  /** The gateway as it was read; applying refuses one that changed since. */
+  etag: string
+  sized_for: GatewaySizing | null
+  problems: string[]
+}
+
+export type ResizeApply = { sizing: GatewaySizing; etag: string; database: boolean }
+export type ResizeResult = { applied: ResizeItem[]; command_id: string | null }
+export type ResizeCommand = { state: "running" | "succeeded" | "failed"; exit_code: number | null; log_tail: string | null }
+
 export type GatewayCreate = {
   tenant_id: string | null
   subscription_id: string
   resource_group: string
   location: string
   name: string
-  profile: GatewayProfile
+  sizing: GatewaySizing
   platform: GatewayPlatform
   /** When a resource fails: stop the deployment and delete what it created. */
   cleanup_on_failure: boolean
 }
 
-/** What would keep a deployment there from succeeding, read before anything is created. */
+/** What the deployment would create there and cost, and what would keep it from succeeding. */
 export type GatewayPreflight = {
   location: string
+  plan: GatewayPlan
+  /** null when the Retail Prices API is unreachable. */
+  list_price: ListPrice | null
   problems: string[]
   /** Common regions where nothing is in the way; only looked up when there are problems. */
   open_regions: string[]

@@ -36,6 +36,7 @@ import type { PoolCreateRequest, PoolEditorProps } from "../product"
 import { PoolBreakerSettings } from "./pool-breaker-settings"
 import { RoutingPreview } from "./routing-preview"
 import { RemovePoolDialog } from "./removal-dialog"
+import { PoolQuotaNotice } from "../components/pool-quota"
 import { Button, ErrorText, Field, FieldHelp } from "../components/ui"
 
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]{0,79}$/
@@ -395,6 +396,7 @@ export function PoolEditor({
     />}
     {!validMembers && !readOnly && <div className="state warning"><CircleAlert size={14} />{t.needMembers}</div>}
     <ModelCheckNotice check={modelResult} loading={draft.members.length > 0 && modelCheck.isFetching && !modelResult} />
+    <PoolQuotaNotice product="apim" check={modelResult} sized={null} />
   </>
 
   const affinityBlock = <div className="affinity">

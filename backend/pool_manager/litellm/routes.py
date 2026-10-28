@@ -30,6 +30,7 @@ from ..routes import (
     Actor,
     Owner,
     Reader,
+    SettingsDep,
     SubscriptionQuery,
     TenantQuery,
     Writer,
@@ -58,7 +59,9 @@ from .models import (
     GatewayDelete,
     GatewayDeleteCheck,
     GatewayDeployStatus,
+    GatewayPlans,
     GatewayPreflight,
+    GatewaySizing,
     GatewayView,
     MemberBackendWrite,
     PoolEndpoint,
@@ -67,11 +70,16 @@ from .models import (
     RemovalConfirm,
     RemovalPlan,
     RemovalResult,
+    ResizeApply,
+    ResizeCommand,
+    ResizePlan,
+    ResizeResult,
     ServiceCost,
     TargetSelect,
     VirtualKeySecret,
     VirtualKeyView,
 )
+from .resize import GatewayResizer
 from .service import LiteLLMService
 from .target import LiteLLMTargets
 
@@ -204,6 +212,33 @@ def service_cost(
     return cost.get(user, principal.name, refresh=refresh)
 
 
+# Read-only: what resizing the gateway for this traffic would change, read as the user.
+@bound.post("/gateway/resize/plan")
+def resize_plan(
+    body: GatewaySizing, request: Request, access: Access, settings: SettingsDep, _: Reader
+) -> ResizePlan:
+    user = access.require_user(user_token(request.headers))
+    return GatewayResizer(settings).plan(user, body)[0]
+
+
+# Changes the running gateway with the user's own Azure rights; the UI warns that traffic may be
+# affected first, and the plan it showed must still match the gateway (etag).
+@bound.post("/gateway/resize")
+def resize_gateway(
+    body: ResizeApply, request: Request, access: Access, settings: SettingsDep, principal: Writer
+) -> ResizeResult:
+    user = access.require_user(user_token(request.headers))
+    return GatewayResizer(settings).apply(user, body, principal.name)
+
+
+@bound.get("/gateway/resize/{command_id}")
+def resize_command(
+    command_id: str, request: Request, access: Access, settings: SettingsDep, _: Reader
+) -> ResizeCommand:
+    user = access.require_user(user_token(request.headers))
+    return GatewayResizer(settings).command(user, command_id)
+
+
 # Read-only: everything this app created on the gateway, which cleanup would remove.
 @bound.get("/cleanup")
 def cleanup_plan(service: Service, _: Reader) -> RemovalPlan:
@@ -298,9 +333,16 @@ def create_gateway(body: GatewayCreate, targets: Targets, principal: Actor) -> G
     return targets.create(body, principal.name)
 
 
+@router.post("/target/gateways/plan")
+def gateway_plans(body: GatewaySizing, targets: Targets, _: Reader) -> GatewayPlans:
+    """Read-only arithmetic: how big a gateway has to be for this traffic, on each platform."""
+    return targets.plans(body)
+
+
 @router.post("/target/gateways/preflight")
 def gateway_preflight(body: GatewayCreate, targets: Targets, _: Reader) -> GatewayPreflight:
-    """Read-only: what would keep a deployment there from succeeding."""
+    """Read-only: what the deployment would create there and cost, and what would keep it from
+    succeeding."""
     return targets.preflight(body)
 
 

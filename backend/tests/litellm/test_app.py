@@ -31,7 +31,7 @@ from pool_manager.litellm.access import LiteLLMAccessChecker
 from pool_manager.litellm.api_test import LiteLLMTester
 from pool_manager.litellm.benchmark import BenchmarkRunner
 from pool_manager.litellm.cleanup import GatewayCleanup
-from pool_manager.litellm.cost import LiteLLMCost
+from pool_manager.litellm.cost import LiteLLMCost, PlanPrices
 from pool_manager.litellm.gateway import GatewayConnection
 from pool_manager.litellm.metrics import LiteLLMMonitor
 from pool_manager.litellm.service import LiteLLMService
@@ -42,6 +42,23 @@ from tests.fake_azure import FakeAzure, FakeCredential
 from tests.litellm.fake_litellm import URL
 
 WRITE = {"X-Pool-Manager": "1"}
+# Traffic the sizer turns into the smallest gateway (one replica, Burstable, no Redis) and into
+# a production one (2-6 replicas, General Purpose, Redis; on AKS three nodes across zones). The
+# production calls aren't streamed: streaming costs the gateway far more CPU (sizing.py).
+TRIAL: dict[str, Any] = {
+    "peak_rpm": 60,
+    "input_tokens": 1000,
+    "output_tokens": 300,
+    "timeout_seconds": 120,
+    "zone_redundant": False,
+}
+PRODUCTION: dict[str, Any] = {
+    "peak_rpm": 6000,
+    "input_tokens": 2000,
+    "output_tokens": 500,
+    "timeout_seconds": 120,
+    "streaming": False,
+}
 
 
 def _settings(**overrides: Any) -> Settings:
@@ -103,6 +120,7 @@ def _client(
         secrets=secrets,
         # Cleanups after failed deployments run inline, at once.
         cleanup=GatewayCleanup(run=lambda job: job(), sleep=lambda _: None),
+        prices=PlanPrices(settings, transport=azure.transport()),
     )
     overrides = {
         get_settings: settings,

@@ -49,7 +49,7 @@ Azure to create the gateway, if you don't have one) and needs only Python.
 | What the app sets up | An APIM service (yours, or a new Basic v2 one), a `Pool` backend per pool and an API bound to it | A LiteLLM proxy with PostgreSQL on Container Apps (one step) or a new AKS cluster, or a connection to yours; a model group per pool |
 | How clients call it | `https://<apim>.azure-api.net/<api-path>/chat/completions?api-version=…` with `Ocp-Apim-Subscription-Key` | `https://<gateway>/v1/chat/completions` with a virtual key and the pool ID (or an alias) as the model |
 | Failure handling | A circuit breaker per member, retries in the API's policy, optional session affinity | Cooldown per member, retries on another member, Responses API follow-ups pinned to the deployment that answered |
-| Cost | The service's tier (Basic v2 is the suggested start; Developer has no SLA), billed by the hour | Container Apps about $46–115 a month (dev) or $171–865 (production); a new AKS cluster about $190–1,200 (list prices) |
+| Cost | The service's tier (Basic v2 is the suggested start; Developer has no SLA), billed by the hour From about $46 a month for one Container Apps replica; the sizer prices the plan for your traffic in your region before you deploy (list prices) |
 | Also available as | The [public app](#public-app-on-azure-container-apps), where anyone signs in with their own Azure account | — |
 
 Both kinds manage the same Foundry deployments with the same identity rules (the gateway calls
@@ -123,11 +123,11 @@ minutes (the Developer tier takes 30–40). Azure bills the service from the mom
 
 Click **Use this gateway** on a LiteLLM gateway on Azure Container Apps.
 
-No gateway yet? Click **Deploy a gateway**. The app first asks **Where should the gateway run?**
-(see [Container Apps or AKS?](#container-apps-or-aks) below) and recommends one:
+No gateway yet? Click **Deploy a gateway**. The app first sizes it for your traffic (see
+[Sizing the gateway](#sizing-the-gateway) below) and recommends Container Apps or AKS:
 
 - **Deploy on Container Apps** opens a form with everything filled in: a unique name, a resource
-  group, a region and the size (**Dev / trial** or **Production**), with a list-price estimate.
+  group and a region, with the plan it deploys and its list price in that region.
   As you pick the region it checks that the region can take every resource of the gateway (see
   [Before deploying, and when it fails anyway](#before-deploying-and-when-it-fails-anyway)).
   Click **Deploy**. The app deploys LiteLLM, PostgreSQL, a managed identity and Application
@@ -137,8 +137,8 @@ No gateway yet? Click **Deploy a gateway**. The app first asks **Where should th
 - **Deploy on AKS** opens the same form for a **new AKS cluster**. Click **Deploy**; the app
   then works in three phases, shown as it goes (usually 15–25 minutes in all):
   1. **Azure resources**: the cluster (Entra ID with Azure RBAC, workload identity, the managed
-     Gateway API), PostgreSQL, the gateway's identity, Application Insights and, for production,
-     Redis. You get *Azure Kubernetes Service RBAC Cluster Admin* on the cluster, so deploying
+     Gateway API), PostgreSQL, the gateway's identity, Application Insights and, with more than
+     one pod, Redis. You get *Azure Kubernetes Service RBAC Cluster Admin* on the cluster, so deploying
      needs Owner or User Access Administrator on the resource group.
   2. **Install in the cluster**: through AKS Run Command (no kubectl or Helm needed on your
      machine) the app installs cert-manager, an OpenTelemetry Collector, LiteLLM's Helm chart and
@@ -166,28 +166,47 @@ HTTPS URL, its master key and, optionally, the object ID of the managed identity
 as and its Application Insights resource ID. The app checks both against the gateway and keeps the
 master key encrypted on this machine, never in a file in plain text.
 
-![Where should the gateway run? A few questions, Azure Container Apps recommended, and the AKS option](docs/images/onboarding-2b-deploy-gateway.png)
+![Size the gateway for your traffic: peak RPM, tokens, timeout and streaming, with the Container Apps plan recommended and How we got this open, beside the AKS plan](docs/images/onboarding-2b-deploy-gateway.png)
 
 A two-minute guided tour opens next. Take it or skip it; **Tour** in the top bar replays it.
 
-##### Container Apps or AKS?
+##### Sizing the gateway
 
-The questionnaire asks what the gateway is for, the peak tokens per minute, the average tokens per
-request, and three yes/no questions. It recommends:
+The sizer asks for your traffic at its peak: requests a minute, the average input and output
+tokens, the longest a call may take, and whether responses are streamed. **More options** has the
+model speed (fast, standard or reasoning, or your own average response time), the headroom above
+the peak (25 % by default), surviving the loss of an availability zone (on by default), and
+whether you run AKS already, host your own models next to the gateway or need a private network.
 
-| | Azure Container Apps (the default) | Azure Kubernetes Service (AKS) |
-| --- | --- | --- |
-| When | Most cases: trials, and production traffic up to about 250 requests a second (what the production profile's 5 replicas serve) | You already run an AKS cluster and have people for it; self-hosted (GPU) models should run next to the gateway; or the peak is over about 250 requests a second (peak TPM ÷ 60 ÷ tokens per request) |
-| How | Deployed by this app in one step, with no cluster to run | A new cluster deployed and set up by this app (then maintained by you), or the generated files for a cluster you already have |
-| Size | **Dev / trial**: one replica, no Redis. **Production**: 2–5 replicas scaling with load, sharing cooldowns through Redis | **Dev / trial**: one Standard_D4ds_v5 node, Free tier, no Redis. **Production**: 3–6 nodes across zones, Standard tier (uptime SLA), 2–6 LiteLLM replicas sharing cooldowns through Redis |
-| List price | Dev about **$46–115 a month**; production about **$171–865 a month** | New cluster: dev about **$190–230 a month**; production about **$670–1,200 a month**. Your own cluster: its cost, plus PostgreSQL |
+From these the backend works out the gateway, and **How we got this** shows each step with its
+numbers:
 
-The prices are **retail list-price estimates** (USD, East US 2, from quiet to busy) for what each
-profile deploys: Container Apps replicas, PostgreSQL and, for production, Redis. They leave out
-free grants, log ingestion and discounts, and of course your model usage, which Foundry bills as
-usual. Once the gateway exists, its panel shows this month's actual spend and the list price for
-its region. For production the recommendation also says how many replicas to plan for (about one
-per 50 requests a second at the peak).
+| Step | How |
+| --- | --- |
+| Requests and tokens | Requests a second = RPM ÷ 60. Tokens a minute = RPM × (input + output): the Foundry quota your pools need together |
+| Calls in flight | Requests a second × the time a call takes (the first token, then the output at the model's speed); and the same with every call slowed to the timeout |
+| One replica | Gateway CPU per call (a fixed cost, the bodies, each streamed token) against one LiteLLM worker at 70 % of a core; and how many calls its memory holds |
+| Replicas | The peak's, plus the headroom, plus one for a zone (at least two). Container Apps adds replicas at the peak's requests a second per replica; AKS at 60 % CPU |
+| Database and Redis | The smallest PostgreSQL whose connections cover replicas × 10 × 2 (an update doubles them): General Purpose, Burstable only for a single replica. Redis whenever there is more than one replica |
+| AKS | The node size and range for the pods (2 a D4ds_v5, 5 a D8ds_v5, 12 a D16ds_v5), at least three nodes across zones, and outbound IPs with enough SNAT ports per node for every call slowed to the timeout |
+
+It recommends **Container Apps** unless the traffic rules it out. Its ingress ends a request that
+sends nothing for 240 seconds (measured: a silent call got a 504 at 241 s, while a call streaming
+every 10 s ran its full 300 s), so calls that may take longer without streaming, or whose first
+token comes later than that, go to **AKS**; so do peaks that need more than 30 replicas, teams that
+already run AKS, and self-hosted GPU models. Each card shows that platform's plan, anything that
+keeps it from running there, and a deploy button. The deploy form then prices exactly that plan in
+the region you pick, and the region check uses its sizes.
+
+The gateway CPU per call was measured with `backend/tests/litellm/litellm_stack/calibrate.py` on
+LiteLLM configured as this app deploys it (Docker, a fake upstream): about 27 ms a call, about
+0.75 ms per streamed token, and with OpenTelemetry about 0.11 ms more per streamed token for
+every 1,000 prompt tokens, with one worker doing 26–46 calls a second flat out. **Streaming is
+what makes a gateway big**: a 500-token stream costs about 15 times a whole answer. Azure's CPUs
+may differ somewhat, and memory is estimated, so after deploying, load-test a pool at your peak
+(the pool's **Load test**, or `scripts/benchmark.py`) to confirm the plan. Prices are retail list
+prices from quiet to busy, without free grants, log ingestion, discounts and your model usage;
+once the gateway exists, its panel shows this month's actual spend.
 
 A gateway that must not be reachable from the internet works on both, but private networking
 isn't automated here: on Container Apps, put the environment in a virtual network afterwards (or
@@ -357,7 +376,7 @@ metrics); `--product` and `--stage` choose where it starts.
 | Area | What it does |
 | --- | --- |
 | **Setup wizard** | Four steps: **Sign in**, the gateway (**AI gateway** or **APIM service**), **Permissions** and **Gateway → Foundry**. It checks sign-in, the gateway (for LiteLLM: reachable, database connected, master key valid), its managed identity, your access to it and the gateway's access to Foundry. It fixes what your Azure rights allow and writes a ready-to-send admin request for the rest. Locally it also chooses the kind of gateway, and picks, creates, connects or deletes the gateway. |
-| **Gateway choice** | APIM: an existing service, or a new one. LiteLLM: recommends Container Apps or AKS from a few answers, deploys on Container Apps in one step, or creates a new AKS cluster and installs LiteLLM with HTTPS on it, or generates the files for a cluster you already have, or connects any LiteLLM proxy. |
+| **Gateway choice** | APIM: an existing service, or a new one. LiteLLM: sizes the gateway for your peak traffic and recommends Container Apps or AKS, deploys on Container Apps in one step, or creates a new AKS cluster and installs LiteLLM with HTTPS on it, or generates the files for a cluster you already have, or connects any LiteLLM proxy. |
 | **Guided tour** | A two-minute walkthrough for people new to AI gateways. It runs once after setup; **Tour** in the top bar replays it. |
 | **Deployment discovery** | Lists the Azure OpenAI / Foundry deployments in your subscriptions, grouped by model, and imports the ones you select into a new or existing pool. |
 | **Deploy a model** | Creates a pay-per-token OpenAI model deployment in a Foundry account, using your own Azure rights, so you don't need the Foundry portal. |
@@ -372,6 +391,8 @@ metrics); `--product` and `--stage` choose where it starts.
 | **Metrics** | Requests, availability, 429s and latency for the pool (from APIM's Azure Monitor metrics, or the LiteLLM gateway's OpenTelemetry traces in Application Insights), plus traffic share, tokens and latency per member from Azure Monitor. |
 | **Cost** | This month's spend for the gateway's resources and their list price. Open it from the gateway name in the top bar, which on LiteLLM also links LiteLLM's own admin UI. |
 | **Same model** | Refuses to save a pool whose Foundry members serve different models. The model is read from Azure, not guessed from the deployment name. |
+| **Pool quota** | Under a pool's members: the tokens and requests a minute its Foundry deployments allow together (each deployment's own `rateLimits`, else its capacity at 1,000 TPM and 6 RPM a unit). On LiteLLM it warns when that is less than the traffic the gateway was sized for. |
+| **Resize (LiteLLM)** | **Resize for new traffic** in the gateway panel sizes a gateway this app deployed for a new peak and lists every change before applying it with your own Azure rights: replicas, their size and scale trigger on Container Apps; the node range and LiteLLM's pods on AKS; the database only when you tick it. It warns that production traffic may be affected and waits for you to confirm; what it can't change in place comes as commands. |
 | **Removing** | Removes a pool, or everything this app created on the gateway, after showing exactly what will go. Locally it can also delete a gateway it created (an APIM service is soft-deleted and restorable for 48 hours; a LiteLLM gateway is gone for good). |
 | **Public app (APIM)** | A website on Container Apps where anyone signs in with their own Microsoft account and works with their own Azure rights; nothing is stored on the server. |
 | **Safety** | The app only changes and deletes what it created, and only after you have seen it. On APIM every update is ETag-conditional and it never rewrites policy it didn't write; on LiteLLM pools added elsewhere are shown read-only. Resources with a protected ID prefix (`POOL_MANAGER_PROTECTED_PREFIXES`) are read-only on both. |
@@ -427,8 +448,8 @@ Defaults for a new pool:
 - **No health checks.** Only real failed requests put a member in cooldown. When every member is
   cooling down, the client gets the last upstream error (a 429 stays a 429), so clients should
   back off and retry.
-- With more than one replica, cooldowns are only shared through Redis, which the production
-  profile on Container Apps includes.
+- With more than one replica, cooldowns are only shared through Redis, which the sizer adds to
+  every plan with more than one replica.
 
 ### Discovered deployments
 
@@ -448,11 +469,11 @@ compiled into `backend/pool_manager/litellm/templates/litellm-aca.json`). Everyt
 
 | Resource | Notes |
 | --- | --- |
-| Container App `<name>` | LiteLLM `v1.106.4` (pinned image `ghcr.io/berriai/litellm:v1.106.4`) on port 4000 behind external HTTPS ingress, plus an OpenTelemetry Collector sidecar that sends model-call spans to Application Insights. Dev: 1 replica; production: 2–5 replicas. The master key, salt key, database URL and `config.yaml` are Container App secrets |
-| Container Apps environment `cae-<name>` | Consumption plan, logs to Log Analytics |
+| Container App `<name>` | LiteLLM `v1.106.4` (pinned image `ghcr.io/berriai/litellm:v1.106.4`) on port 4000 behind external HTTPS ingress, plus an OpenTelemetry Collector sidecar that sends model-call spans to Application Insights. Its replicas, their size (1 vCPU and 2 GiB for a single replica, else 2 vCPU and 4 GiB, LiteLLM's guidance for one worker) and its scale rule come from the plan. The ingress ends a request that sends nothing for 240 seconds. The master key, salt key, database URL and `config.yaml` are Container App secrets |
+| Container Apps environment `cae-<name>` | Workload profiles environment with LiteLLM on its Consumption profile; logs to Log Analytics. You can add a dedicated profile with premium ingress later (idle timeout up to 30 minutes instead of 240 seconds); it needs at least two dedicated nodes |
 | User-assigned identity `id-<name>` | What LiteLLM calls Foundry as (`AZURE_CLIENT_ID`); the setup wizard grants it *Cognitive Services OpenAI User* on member accounts. It has no other role |
-| Azure Database for PostgreSQL Flexible Server | LiteLLM's model table, virtual keys and spend. Burstable B1ms (dev) or B2s (production), 32 GB. Public network access, limited to Azure services |
-| Azure Managed Redis (production only) | Balanced B0, so replicas share cooldowns |
+| Azure Database for PostgreSQL Flexible Server | LiteLLM's model table, virtual keys and spend. Burstable B1ms for a single replica, else the General Purpose size (D2ds_v5 and up) the plan's connections need: Burstable runs out of CPU credits under sustained load. 32 GB. LiteLLM writes spend once a minute and keeps at most 10 connections per replica. Public network access, limited to Azure services |
+| Azure Managed Redis (more than one replica) | Balanced B0 to B5 by the peak, so replicas share cooldowns |
 | Log Analytics workspace `log-<name>`, Application Insights `appi-<name>` | Container logs, and the traces behind the Metrics tab |
 
 The gateway's secrets are generated once by the app when it deploys and are never rotated by it:
@@ -467,7 +488,7 @@ the others behind, billed. Now:
 - **The region is checked first.** While you fill in the form, the app reads, without changing
   anything, whether the region can take each resource the gateway needs: that Azure offers each
   resource type there, PostgreSQL Flexible Server (the subscription's restrictions in the region,
-  the server version, the Burstable size of the profile and the vCore quota), room for one more
+  the server version, the plan's size and its vCore quota), room for one more
   Container Apps environment and, on AKS, the node size, its zones and the vCPU quota. It lists
   every problem at once, offers regions where everything fits, and **Deploy** stays off until the
   region works.
@@ -504,10 +525,10 @@ Apps gateway's.
 
 | Resource | Notes |
 | --- | --- |
-| AKS cluster `<name>` | Entra ID with Azure RBAC and no local accounts, OIDC issuer and workload identity, Azure CNI overlay, Azure Linux nodes (Standard_D4ds_v5). The managed Gateway API with application routing's Istio implementation is the ingress (the managed NGINX ingress is retired). Patch versions and node images upgrade automatically |
-| In the cluster, namespace `litellm` | LiteLLM's Helm chart (pinned `1.106.4`) with workload identity, an OpenTelemetry Collector sending model-call spans to Application Insights, and a Gateway on a public IP whose DNS name is `<name>.<region>.cloudapp.azure.com`. cert-manager (in `cert-manager`) gets its Let's Encrypt certificate and renews it. Plain HTTP only redirects to HTTPS |
+| AKS cluster `<name>` | Entra ID with Azure RBAC and no local accounts, OIDC issuer and workload identity, Azure CNI overlay, Azure Linux nodes. Their size and autoscaler range, the tier (Standard with zone redundancy), and the outbound IPs and SNAT ports per node come from the plan: every concurrent call to Foundry holds a port, and the default is 1,024 a node. The managed Gateway API with application routing's Istio implementation is the ingress (the managed NGINX ingress is retired). Patch versions and node images upgrade automatically |
+| In the cluster, namespace `litellm` | LiteLLM's Helm chart (pinned `1.106.4`) with workload identity, 1 vCPU and 4 GiB per pod, as many as the plan says (scaled on CPU), an OpenTelemetry Collector sending model-call spans to Application Insights, and a Gateway on a public IP whose DNS name is `<name>.<region>.cloudapp.azure.com`. cert-manager (in `cert-manager`) gets its Let's Encrypt certificate and renews it. Plain HTTP only redirects to HTTPS |
 | User-assigned identity `id-<name>` | Federated with LiteLLM's service account; what LiteLLM calls Foundry as. The setup wizard grants it *Cognitive Services OpenAI User* on member accounts |
-| PostgreSQL, Redis (production), Log Analytics, Application Insights | As for Container Apps |
+| PostgreSQL, Redis (more than one pod), Log Analytics, Application Insights | As for Container Apps |
 | Role assignment | *Azure Kubernetes Service RBAC Cluster Admin* for you, on the cluster |
 
 The app made the secrets (master key, salt key, Postgres password) and kept them on your machine
@@ -515,9 +536,11 @@ until the install finished; they reached the cluster only as Kubernetes secrets,
 Command's files, and the install never prints them. Afterwards the app keeps only the master key,
 encrypted, like for a connected gateway.
 
-**You maintain the cluster.** The app manages pools, aliases and keys in LiteLLM, and nothing in
-the cluster. The gateway panel lists the commands, ready to copy, and links to the cluster in the
-portal:
+**You maintain the cluster.** The app manages pools, aliases and keys in LiteLLM, and changes the
+cluster only when you resize it from the gateway panel (**Resize for new traffic**: the node
+range, and LiteLLM's pods through `helm upgrade --reuse-values` in Run Command, after a warning
+and your confirmation). The gateway panel lists the commands, ready to copy, and links to the
+cluster in the portal:
 
 ```sh
 az aks get-credentials -g <group> -n <name>                 # kubectl access (Entra ID sign-in)

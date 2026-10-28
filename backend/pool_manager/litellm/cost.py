@@ -5,17 +5,19 @@ on everything they create: in the gateway's resource group, or for AKS in the su
 cluster's nodes and load balancer are in its node resource group, which AKS tags like the
 cluster).
 
-The estimate is for what the templates deploy: Container Apps replicas (busy at the active rate,
-quiet at the idle rate, so a range) and the environment, or AKS nodes (from the fewest to the
-most the autoscaler runs) and the Standard tier for production; then Postgres Flexible Server
-and, for production, Azure Managed Redis. It leaves out the monthly free grant, log ingestion
-and discounts.
+The estimate is for what the gateway runs: from its sizing plan before it exists
+(``plan_price``), else from what was deployed. Container Apps replicas (busy at the active rate,
+quiet at the idle rate, so a range), or AKS nodes (from the fewest to the most the autoscaler
+runs) and the Standard tier; then Postgres Flexible Server and Azure Managed Redis at the sizes
+the plan picked (the tags ``ai-gateway-postgres`` and ``ai-gateway-redis``; a gateway deployed
+before them by its profile). It leaves out the monthly free grant, log ingestion and discounts.
 """
 
 from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Mapping
 from typing import Any
 
 import httpx
@@ -25,18 +27,22 @@ from ..config import Settings
 from ..cost import HOURS_PER_MONTH, CostReader, meter, region_name
 from .aks_deploy import CONTAINER_SERVICE_API_VERSION
 from .gateway import GATEWAY_TAG, GatewayInfo, GatewayUnavailable
-from .gateway_template import AKS_NODE_SIZE
-from .models import CostItem, ListPrice, ServiceCost
+from .models import CostItem, GatewayPlan, ListPrice, ServiceCost
 from .service import LiteLLMService
+from .sizing import SIDECAR, postgres_size
 
 logger = logging.getLogger(__name__)
 
 SECONDS_PER_MONTH = HOURS_PER_MONTH * 3600
-# What each profile of the template deploys besides the Container App.
-POSTGRES_SKU = {"dev": "B1MS", "production": "B2S"}
 POSTGRES_STORAGE_GB = 32
-# Azure Managed Redis Balanced B0, with high availability (two instances).
-REDIS_SKU, REDIS_INSTANCES = "B0", 2
+# Azure Managed Redis runs two instances (high availability).
+REDIS_INSTANCES = 2
+# What a gateway deployed before the size tags runs, by its profile: Postgres and Redis.
+_PROFILE_SIZES: dict[str, tuple[str, str | None]] = {
+    "dev": ("Standard_B1ms", None),
+    "production": ("Standard_B2s", "Balanced_B0"),
+}
+DEFAULT_NODE_SIZE = "Standard_D4ds_v5"
 # One query per service; each lists every meter of the region (VMs: only the node size).
 _SERVICES = {
     "aca": "Azure Container Apps",
@@ -45,18 +51,40 @@ _SERVICES = {
     "vm": "Virtual Machines",
     "aks": "Azure Kubernetes Service",
 }
-_FILTERS = {"vm": f" and armSkuName eq '{AKS_NODE_SIZE}'"}
 _ACA_SERVICES = ("aca", "postgres", "redis")
 _AKS_SERVICES = ("vm", "aks", "postgres", "redis")
 
+Prices = dict[str, list[dict[str, Any]]]
 
-def _database_items(prices: dict[str, list[dict[str, Any]]], profile: str) -> list[CostItem]:
-    """PostgreSQL, and Redis for production: the same on Container Apps and AKS."""
+
+def _postgres_meter(sku: str) -> tuple[str, str, str]:
+    """The Retail Prices API's compute meter for a server size: each Burstable size has a meter
+    of its own ("B1MS"), General Purpose sizes are an "<n> vCore" SKU of their series' meter.
+    Returns (SKU name, product name contains, what the estimate calls it)."""
+    short = sku.removeprefix("Standard_")
+    size = postgres_size(sku)
+    if size.edition == "Burstable":
+        return short.upper(), "Burstable BS Series Compute", short
+    return f"{size.vcores} vCore", "General Purpose Ddsv5 Series Compute", short
+
+
+def sizes_from_tags(tags: Mapping[str, Any]) -> tuple[str, str | None]:
+    """The Postgres and Redis sizes a deployed gateway runs, from its tags."""
+    profile = str(tags.get("ai-gateway-profile") or "dev")
+    postgres, redis = _PROFILE_SIZES.get(profile, _PROFILE_SIZES["dev"])
+    if tags.get("ai-gateway-postgres"):
+        postgres = str(tags["ai-gateway-postgres"])
+        redis = str(tags.get("ai-gateway-redis") or "") or None
+    return postgres, redis
+
+
+def _database_items(prices: Prices, postgres_sku: str, redis_sku: str | None) -> list[CostItem]:
+    """PostgreSQL and Redis: the same on Container Apps and AKS."""
     items: list[CostItem] = []
+    sku_name, product, label = _postgres_meter(postgres_sku)
     postgres = prices.get("postgres") or []
-    sku = POSTGRES_SKU.get(profile, "B1MS")
     compute = meter(
-        postgres, lambda i: i.get("meterName") == sku and "Compute" in str(i.get("productName"))
+        postgres, lambda i: i.get("skuName") == sku_name and product in str(i.get("productName"))
     )
     storage = meter(
         postgres,
@@ -69,16 +97,17 @@ def _database_items(prices: dict[str, list[dict[str, Any]]], profile: str) -> li
         items.append(
             CostItem(
                 kind="postgres",
-                detail=f"{sku} + {POSTGRES_STORAGE_GB} GB",
+                detail=f"{label} + {POSTGRES_STORAGE_GB} GB",
                 monthly_low=round(monthly, 2),
                 monthly_high=round(monthly, 2),
             )
         )
-    if profile == "production":
+    if redis_sku:
+        short = redis_sku.rsplit("_", 1)[-1]
         redis = meter(
             prices.get("redis") or [],
             lambda i: (
-                i.get("skuName") == REDIS_SKU
+                i.get("skuName") == short
                 and "Managed Redis - Balanced" in str(i.get("productName"))
             ),
         )
@@ -87,7 +116,7 @@ def _database_items(prices: dict[str, list[dict[str, Any]]], profile: str) -> li
             items.append(
                 CostItem(
                     kind="redis",
-                    detail=f"Balanced {REDIS_SKU} x {REDIS_INSTANCES}",
+                    detail=f"Balanced {short} x {REDIS_INSTANCES}",
                     monthly_low=round(monthly, 2),
                     monthly_high=round(monthly, 2),
                 )
@@ -105,15 +134,21 @@ def _total(items: list[CostItem], currency: str) -> ListPrice:
 
 
 def aks_list_price(
-    prices: dict[str, list[dict[str, Any]]], *, nodes: tuple[int, int], profile: str
+    prices: Prices,
+    *,
+    node_size: str,
+    nodes: tuple[int, int],
+    standard_tier: bool,
+    postgres_sku: str,
+    redis_sku: str | None,
 ) -> ListPrice | None:
     """An AKS gateway: its Linux nodes (from the fewest to the most the autoscaler runs), the
-    Standard tier's uptime SLA for production, PostgreSQL and Redis; None without a node price."""
+    Standard tier's uptime SLA, PostgreSQL and Redis; None without a node price."""
     vms = prices.get("vm") or []
     node = meter(
         vms,
         lambda i: (
-            i.get("meterName") == AKS_NODE_SIZE.removeprefix("Standard_").replace("_", " ")
+            i.get("meterName") == node_size.removeprefix("Standard_").replace("_", " ")
             and "Windows" not in str(i.get("productName"))
             and i.get("unitOfMeasure") == "1 Hour"
         ),
@@ -124,12 +159,12 @@ def aks_list_price(
     items = [
         CostItem(
             kind="aks_nodes",
-            detail=f"{AKS_NODE_SIZE} x {low}-{high}" if high != low else f"{AKS_NODE_SIZE} x {low}",
+            detail=f"{node_size} x {low}-{high}" if high != low else f"{node_size} x {low}",
             monthly_low=round(node * HOURS_PER_MONTH * low, 2),
             monthly_high=round(node * HOURS_PER_MONTH * high, 2),
         )
     ]
-    if profile == "production":
+    if standard_tier:
         tier = meter(
             prices.get("aks") or [],
             lambda i: (
@@ -145,15 +180,22 @@ def aks_list_price(
                     monthly_high=round(tier * HOURS_PER_MONTH, 2),
                 )
             )
-    items += _database_items(prices, profile)
+    items += _database_items(prices, postgres_sku, redis_sku)
     currency = str(next((item.get("currencyCode") for item in vms), None) or "USD")
     return _total(items, currency)
 
 
-def list_price(
-    prices: dict[str, list[dict[str, Any]]], info: GatewayInfo, profile: str
+def aca_list_price(
+    prices: Prices,
+    *,
+    cpu: float,
+    memory: float,
+    replicas: tuple[int, int],
+    postgres_sku: str,
+    redis_sku: str | None,
 ) -> ListPrice | None:
-    """The estimate from a region's meters; None if a meter it needs is missing."""
+    """A Container Apps gateway: its replicas (``cpu`` and ``memory`` for all containers of
+    one), PostgreSQL and Redis; None if a meter it needs is missing."""
     aca = prices.get("aca") or []
 
     def standard(name: str) -> float | None:
@@ -163,31 +205,89 @@ def list_price(
     cpu_idle = standard("Standard vCPU Idle Usage")
     mem_active = standard("Standard Memory Active Usage")
     mem_idle = standard("Standard Memory Idle Usage")
-    if None in {cpu_active, cpu_idle, mem_active, mem_idle} or info.cpu is None:
+    if cpu_active is None or cpu_idle is None or mem_active is None or mem_idle is None:
         return None
-    assert cpu_active is not None and cpu_idle is not None
-    assert mem_active is not None and mem_idle is not None
-    cpu, memory = info.cpu, info.memory_gib or 0.0
-    low_replicas = max(info.min_replicas or 1, 1)
-    high_replicas = max(info.max_replicas or low_replicas, low_replicas)
+    low, high = replicas
     items = [
         CostItem(
             kind="container_apps",
-            detail=f"{cpu:g} vCPU, {memory:g} GiB x {low_replicas}-{high_replicas} replicas"
-            if high_replicas != low_replicas
-            else f"{cpu:g} vCPU, {memory:g} GiB x {low_replicas} replica",
+            detail=f"{cpu:g} vCPU, {memory:g} GiB x {low}-{high} replicas"
+            if high != low
+            else f"{cpu:g} vCPU, {memory:g} GiB x {low} replica",
             # Quiet: the minimum replicas at the idle rate. Busy: every replica at the active rate.
-            monthly_low=round(
-                (cpu * cpu_idle + memory * mem_idle) * SECONDS_PER_MONTH * low_replicas, 2
-            ),
+            monthly_low=round((cpu * cpu_idle + memory * mem_idle) * SECONDS_PER_MONTH * low, 2),
             monthly_high=round(
-                (cpu * cpu_active + memory * mem_active) * SECONDS_PER_MONTH * high_replicas, 2
+                (cpu * cpu_active + memory * mem_active) * SECONDS_PER_MONTH * high, 2
             ),
         )
     ]
-    items += _database_items(prices, profile)
+    items += _database_items(prices, postgres_sku, redis_sku)
     currency = str(next((item.get("currencyCode") for item in aca), None) or "USD")
     return _total(items, currency)
+
+
+def list_price(prices: Prices, info: GatewayInfo) -> ListPrice | None:
+    """A deployed Container Apps gateway's estimate, from the app and its tags."""
+    if info.cpu is None:
+        return None
+    low = max(info.min_replicas or 1, 1)
+    high = max(info.max_replicas or low, low)
+    postgres, redis = sizes_from_tags(info.tags)
+    return aca_list_price(
+        prices,
+        cpu=info.cpu,
+        memory=info.memory_gib or 0.0,
+        replicas=(low, high),
+        postgres_sku=postgres,
+        redis_sku=redis,
+    )
+
+
+def plan_price(prices: Prices, plan: GatewayPlan) -> ListPrice | None:
+    """What a plan would cost, before it is deployed."""
+    if plan.aks is not None:
+        return aks_list_price(
+            prices,
+            node_size=plan.aks.node_size,
+            nodes=(plan.aks.node_min, plan.aks.node_max),
+            standard_tier=plan.aks.tier == "Standard",
+            postgres_sku=plan.postgres_sku,
+            redis_sku=plan.redis_sku,
+        )
+    return aca_list_price(
+        prices,
+        cpu=plan.replica_cpu + SIDECAR[0],
+        memory=plan.replica_memory_gib + SIDECAR[1],
+        replicas=(plan.min_replicas, plan.max_replicas),
+        postgres_sku=plan.postgres_sku,
+        redis_sku=plan.redis_sku,
+    )
+
+
+def _fetch(
+    reader: CostReader, keys: tuple[str, ...], region: str, refresh: bool, node_size: str
+) -> Prices:
+    vm_filter = f" and armSkuName eq '{node_size}'"
+    return {
+        key: reader.retail_prices(_SERVICES[key], region, refresh, vm_filter if key == "vm" else "")
+        for key in keys
+    }
+
+
+class PlanPrices(CostReader):
+    """Retail prices for a sizing plan in a region, before the gateway exists."""
+
+    def price(self, plan: GatewayPlan, location: str) -> ListPrice | None:
+        keys = _AKS_SERVICES if plan.aks is not None else _ACA_SERVICES
+        node_size = plan.aks.node_size if plan.aks is not None else DEFAULT_NODE_SIZE
+        try:
+            return plan_price(_fetch(self, keys, region_name(location), False, node_size), plan)
+        except (httpx.HTTPError, ValueError) as error:
+            logger.info("Cannot read Azure retail prices: %s", error)
+            return None
+
+    def spend_filter(self, user: ArmClient) -> dict[str, Any]:
+        raise NotImplementedError("a plan has no spend yet")
 
 
 class LiteLLMCost(CostReader):
@@ -216,12 +316,6 @@ class LiteLLMCost(CostReader):
             "tags": {"name": GATEWAY_TAG, "operator": "In", "values": [self._settings.gateway_name]}
         }
 
-    def _prices(self, keys: tuple[str, ...], region: str, refresh: bool) -> dict[str, Any]:
-        return {
-            key: self.retail_prices(_SERVICES[key], region, refresh, _FILTERS.get(key, ""))
-            for key in keys
-        }
-
     def _aks_price(self, refresh: bool) -> tuple[ListPrice | None, str | None, str | None]:
         """An AKS gateway's list price, profile and location, from its cluster."""
         try:
@@ -234,13 +328,25 @@ class LiteLLMCost(CostReader):
         if not cluster:
             return None, None, None
         location = str(cluster.get("location") or "")
-        profile = str((cluster.get("tags") or {}).get("ai-gateway-profile") or "dev")
+        tags = cluster.get("tags") or {}
+        profile = str(tags.get("ai-gateway-profile") or "dev")
         pools = (cluster.get("properties") or {}).get("agentPoolProfiles") or [{}]
         count = int(pools[0].get("count") or 1)
         nodes = (int(pools[0].get("minCount") or count), int(pools[0].get("maxCount") or count))
+        node_size = str(pools[0].get("vmSize") or DEFAULT_NODE_SIZE)
+        standard = str((cluster.get("sku") or {}).get("tier") or "").casefold() == "standard"
+        postgres, redis = sizes_from_tags(tags)
         try:
-            prices = self._prices(_AKS_SERVICES, region_name(location), refresh)
-            return aks_list_price(prices, nodes=nodes, profile=profile), profile, location
+            prices = _fetch(self, _AKS_SERVICES, region_name(location), refresh, node_size)
+            price = aks_list_price(
+                prices,
+                node_size=node_size,
+                nodes=nodes,
+                standard_tier=standard,
+                postgres_sku=postgres,
+                redis_sku=redis,
+            )
+            return price, profile, location
         except (httpx.HTTPError, ValueError) as error:
             logger.info("Cannot read Azure retail prices: %s", error)
             return None, profile, location
@@ -268,8 +374,10 @@ class LiteLLMCost(CostReader):
         price: ListPrice | None = None
         if info is not None and info.location:
             try:
-                prices = self._prices(_ACA_SERVICES, region_name(info.location), refresh)
-                price = list_price(prices, info, profile)
+                prices = _fetch(
+                    self, _ACA_SERVICES, region_name(info.location), refresh, DEFAULT_NODE_SIZE
+                )
+                price = list_price(prices, info)
             except (httpx.HTTPError, ValueError) as error:
                 logger.info("Cannot read Azure retail prices: %s", error)
         return self._cost(user, caller, refresh, profile, info.location if info else None, price)

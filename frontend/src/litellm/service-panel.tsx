@@ -1,6 +1,6 @@
 // Opened from the gateway name in the top bar: the gateway the app manages, what it costs, and
 // how to remove what the app created on it, or (locally, for gateways the app deployed) the gateway.
-import { Eraser, ExternalLink, LoaderCircle, RefreshCw, Server, Trash2 } from "lucide-react"
+import { Eraser, ExternalLink, Gauge, LoaderCircle, RefreshCw, Server, Trash2 } from "lucide-react"
 import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 
@@ -11,6 +11,7 @@ import { fill, useI18n } from "../i18n"
 import { CopyButton } from "./call-guide"
 import { DeleteGatewayDialog } from "./gateway-picker"
 import { CleanupDialog } from "./removal-dialog"
+import { ResizeDialog } from "./resize-dialog"
 import { Button, Dialog, ErrorText } from "../components/ui"
 
 /** This month's spend and a list price estimate; read only while the panel is open. */
@@ -102,7 +103,7 @@ export function ServicePanel({ onClose }: { onClose: () => void }) {
   const me = useQuery(queries.me())
   const capabilities = useQuery(queries.capabilities())
   const target = useQuery(queries.target())
-  const [action, setAction] = useState<"cleanup" | "delete" | null>(null)
+  const [action, setAction] = useState<"cleanup" | "delete" | "resize" | null>(null)
   const service = capabilities.data
   if (!service) return null
   const back = () => setAction(null)
@@ -112,6 +113,7 @@ export function ServicePanel({ onClose }: { onClose: () => void }) {
   const anchor = clusterId ?? service.gateway_resource_id
   const group = target.data?.resource_group ?? service.resource_group
   if (action === "cleanup") return <CleanupDialog gatewayName={service.gateway_name} onClose={back} />
+  if (action === "resize") return <ResizeDialog initial={service.sized_for} onClose={back} />
   if (action === "delete" && target.data?.subscription_id && anchor && group) {
     return <DeleteGatewayDialog
       gateway={{ id: anchor, name: service.gateway_name, resource_group: group }}
@@ -125,6 +127,9 @@ export function ServicePanel({ onClose }: { onClose: () => void }) {
   // Deleting is local-only, for a gateway this app deployed (on Container Apps or AKS) that
   // the environment or deployment doesn't fix; a connected one is only disconnected (in setup).
   const canDelete = target.data?.can_change === true && (service.gateway_kind === "aca" || Boolean(clusterId))
+  // A gateway this app deployed, on Container Apps or AKS; the backend checks it is this app's.
+  const canResize = service.gateway_kind === "aca" || Boolean(clusterId)
+  const sized = service.sized_for
   return <Dialog
     open
     onClose={onClose}
@@ -140,6 +145,20 @@ export function ServicePanel({ onClose }: { onClose: () => void }) {
       </dl>
       <ServiceCostSection />
       {clusterId && <MaintainCluster clusterId={clusterId} />}
+      {canResize && <section className="service-action">
+        <div>
+          <b>{t.resizeSection}</b>
+          <span className="muted">{sized
+            ? fill(t.resizeSizedFor, {
+              rpm: sized.peak_rpm.toLocaleString(),
+              input: sized.input_tokens.toLocaleString(),
+              output: sized.output_tokens.toLocaleString(),
+              timeout: sized.timeout_seconds,
+            })
+            : t.resizeNotSized}</span>
+        </div>
+        <Button disabled={!me.data?.can_write} onClick={() => setAction("resize")}><Gauge size={13} />{t.resizeOpen}</Button>
+      </section>}
       <section className="service-action">
         <div><b>{t.serviceCleanup}</b><span className="muted">{me.data?.can_write ? t.serviceCleanupHint : t.serviceReadOnly}</span></div>
         <Button disabled={!me.data?.can_write} onClick={() => setAction("cleanup")}><Eraser size={13} />{t.serviceCleanupOpen}</Button>

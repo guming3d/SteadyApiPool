@@ -36,6 +36,7 @@ _METRICS = "/providers/Microsoft.Insights/metrics"
 _COST_QUERY = "/providers/Microsoft.CostManagement/query"
 LOGS_HOST = "api.loganalytics.azure.com"
 _PG_COMPUTE = "Azure Database for PostgreSQL Flexible Server Burstable BS Series Compute"
+_PG_GENERAL = "Azure Database for PostgreSQL Flexible Server General Purpose Ddsv5 Series Compute"
 # The Retail Prices API's meters for one region, trimmed to what cost.py reads.
 RETAIL_PRICES = {
     "API Management": [
@@ -88,6 +89,18 @@ RETAIL_PRICES = {
             "skuName": "B2S",
             "meterName": "B2S",
             "retailPrice": 0.068,
+        },
+        {
+            "productName": _PG_GENERAL,
+            "skuName": "vCore",
+            "meterName": "vCore",
+            "retailPrice": 0.089,
+        },
+        {
+            "productName": _PG_GENERAL,
+            "skuName": "2 vCore",
+            "meterName": "vCore",
+            "retailPrice": 0.178,
         },
         {
             "productName": "Azure Database for PostgreSQL Flex Server Storage",
@@ -236,9 +249,10 @@ class FakeAzure:
     # reason (the capabilities API then offers no server versions there).
     postgres_restricted: dict[str, str] = field(default_factory=dict)
     # Capacity before deploying: regions offering a resource type ("Namespace/type" -> display
-    # names; types not listed are offered everywhere), Burstable PostgreSQL sizes per region
-    # (default B1ms and B2s), and free quota: PostgreSQL Burstable vCores and Container Apps
-    # environments, per region (default 100 and 10).
+    # names; types not listed are offered everywhere), PostgreSQL sizes per region (default
+    # B1ms, B2s and D2ds_v5; Standard_B* are Burstable, the rest General Purpose), and free quota:
+    # PostgreSQL vCores (each family the same) and Container Apps environments, per region
+    # (default 100 and 10).
     offered: dict[str, list[str]] = field(default_factory=dict)
     postgres_skus: dict[str, list[str]] = field(default_factory=dict)
     postgres_vcores_free: dict[str, int] = field(default_factory=dict)
@@ -265,6 +279,8 @@ class FakeAzure:
     vm_restricted: bool = False
     vcpus_free: int = 100
     run_commands: list[dict[str, Any]] = field(default_factory=list)
+    # Writes a resize makes, in order: (method, path, body).
+    writes: list[tuple[str, str, Any]] = field(default_factory=list)
     command_results: dict[str, dict[str, Any]] = field(default_factory=dict)
     run_command_polls: int = 1
     run_command_exit: int = 0
@@ -292,7 +308,10 @@ class FakeAzure:
         profile: str = "dev",
         state: str = "Succeeded",
         image: str = "ghcr.io/berriai/litellm:v1.106.4",
+        parameters: dict[str, Any] | None = None,
     ) -> str:
+        """A LiteLLM Container App; with a deployment's ``parameters``, sized as they say (else
+        by ``profile``, as a gateway deployed before the sizing plan)."""
         app_id = f"/subscriptions/{subscription}/resourceGroups/{group}{_CONTAINER_APPS}/{name}"
         identity_id = (
             f"/subscriptions/{subscription}/resourceGroups/{group}"
@@ -313,6 +332,18 @@ class FakeAzure:
             else {}
         )
         production = profile == "production"
+        cpu, memory = (2.0, "4Gi") if production else (1.0, "2Gi")
+        replicas = (2, 10) if production else (1, 1)
+        if parameters is not None:
+            cpu = float(parameters["replicaCpu"])
+            memory = str(parameters["replicaMemory"])
+            replicas = (int(parameters["minReplicas"]), int(parameters["maxReplicas"]))
+            if managed:
+                tags |= {
+                    "ai-gateway-postgres": parameters["postgresSku"],
+                    "ai-gateway-redis": parameters["redisSku"],
+                    "ai-gateway-sizing": parameters["sizing"],
+                }
         self.container_apps[app_id.casefold()] = {
             "id": app_id,
             "name": name,
@@ -337,10 +368,7 @@ class FakeAzure:
                         {
                             "name": "litellm",
                             "image": image,
-                            "resources": {
-                                "cpu": 1.75 if production else 1.0,
-                                "memory": "3.5Gi" if production else "2Gi",
-                            },
+                            "resources": {"cpu": cpu, "memory": memory},
                         },
                         {
                             "name": "otel-collector",
@@ -348,10 +376,7 @@ class FakeAzure:
                             "resources": {"cpu": 0.25, "memory": "0.5Gi"},
                         },
                     ],
-                    "scale": {
-                        "minReplicas": 2 if production else 1,
-                        "maxReplicas": 5 if production else 1,
-                    },
+                    "scale": {"minReplicas": replicas[0], "maxReplicas": replicas[1]},
                 },
             },
             "systemData": {"createdAt": "2026-10-25T10:00:00Z"},
@@ -413,6 +438,11 @@ class FakeAzure:
                 "properties": {
                     "model": {"name": model, "version": "2026-09-03", "format": model_format},
                     "provisioningState": state,
+                    # What Azure enforces for 100 units of an older chat model.
+                    "rateLimits": [
+                        {"key": "request", "renewalPeriod": 10, "count": 100},
+                        {"key": "token", "renewalPeriod": 60, "count": 100000},
+                    ],
                 },
             }
             for deployment, model, model_format in deployments
@@ -552,15 +582,21 @@ class FakeAzure:
         if provider == "Microsoft.DBforPostgreSQL" and rest[:1] == ["locations"]:
             region = rest[1]
             if rest[2:] == ["resourceType", "flexibleServers", "usages"]:
-                usage = {
-                    "name": {"value": "standardBSFamily", "localizedValue": "standardBSFamily"},
-                    "limit": self.postgres_vcores_free.get(region, 100),
-                    "currentValue": 0,
-                    "unit": "Count",
-                }
-                return httpx.Response(200, json={"value": [usage]})
+                usages = [
+                    {
+                        "name": {"value": family, "localizedValue": family},
+                        "limit": self.postgres_vcores_free.get(region, 100),
+                        "currentValue": 0,
+                        "unit": "Count",
+                    }
+                    for family in ("standardBSFamily", "standardDDSv5Family")
+                ]
+                return httpx.Response(200, json={"value": usages})
             reason = self.postgres_restricted.get(region)
-            skus = self.postgres_skus.get(region, ["Standard_B1ms", "Standard_B2s"])
+            skus = self.postgres_skus.get(
+                region, ["Standard_B1ms", "Standard_B2s", "Standard_D2ds_v5"]
+            )
+            burstable = [sku for sku in skus if sku.startswith("Standard_B")]
             capability = {
                 "name": "FlexibleServerCapabilities",
                 "restricted": "Enabled" if reason else "Disabled",
@@ -571,8 +607,14 @@ class FakeAzure:
                 "supportedServerEditions": [
                     {
                         "name": "Burstable",
-                        "supportedServerSkus": [{"name": sku, "vCores": 1} for sku in skus],
-                    }
+                        "supportedServerSkus": [{"name": sku} for sku in burstable],
+                    },
+                    {
+                        "name": "GeneralPurpose",
+                        "supportedServerSkus": [
+                            {"name": sku} for sku in skus if sku not in burstable
+                        ],
+                    },
                 ],
             }
             return httpx.Response(200, json={"value": [capability]})
@@ -685,6 +727,39 @@ class FakeAzure:
             }
             location = f"https://management.azure.com{cluster_id}/commandResults/{command}"
             return httpx.Response(202, headers={"Location": location})
+        if action.startswith("agentPools/"):
+            item = self.resources.get(cluster_id.casefold())
+            if item is None:
+                return _error(404, "ResourceNotFound")
+            pools = item["properties"]["agentPoolProfiles"]
+            pool_name = action.removeprefix("agentPools/")
+            index = next((i for i, p in enumerate(pools) if p.get("name") == pool_name), None)
+            if index is None:
+                return _error(404, "ResourceNotFound")
+            if request.method == "PUT":
+                if not self._may(
+                    caller,
+                    cluster_id,
+                    "Microsoft.ContainerService/managedClusters/agentPools/write",
+                ):
+                    return _error(403, "AuthorizationFailed")
+                self.writes.append(("PUT", path, body))
+                pools[index] = {
+                    "name": pool_name,
+                    **{k: v for k, v in body["properties"].items() if v is not None},
+                }
+                return httpx.Response(202)
+            return httpx.Response(
+                200,
+                json={
+                    "name": pool_name,
+                    "properties": {k: v for k, v in pools[index].items() if k != "name"},
+                },
+            )
+        if not action and request.method == "PATCH" and cluster_id.casefold() in self.resources:
+            self.writes.append(("PATCH", path, body))
+            self.resources[cluster_id.casefold()]["tags"] = body["tags"]
+            return httpx.Response(200, json=self.resources[cluster_id.casefold()])
         if action.startswith("commandResults/"):
             result = self.command_results.get(action.removeprefix("commandResults/"))
             if result is None:
@@ -710,6 +785,13 @@ class FakeAzure:
         return _error(400, f"unhandled {request.method} {path}")
 
     def _tagged(self, request: httpx.Request, caller: str, path: str) -> httpx.Response:
+        if request.method == "PATCH":
+            if not self._may(caller, path, "*/write"):
+                return _error(403, "AuthorizationFailed")
+            body = json.loads(request.content)
+            self.writes.append(("PATCH", path, body))
+            self.resources[path.casefold()].update(body)
+            return httpx.Response(202)
         if request.method == "DELETE":
             if not self._may(caller, path, "*/delete"):
                 return _error(403, "AuthorizationFailed")
@@ -748,6 +830,16 @@ class FakeAzure:
             )
         if action:
             return _error(400, f"unhandled {request.method} {path}")
+        if request.method == "PATCH":
+            if not self._may(caller, app_id, "Microsoft.App/containerApps/write"):
+                return _error(403, "AuthorizationFailed")
+            if app is None:
+                return _error(404, "ResourceNotFound")
+            body = json.loads(request.content)
+            self.writes.append(("PATCH", path, body))
+            app["properties"]["template"] = body["properties"]["template"]
+            app["tags"] = body["tags"]
+            return httpx.Response(202)
         if request.method == "DELETE":
             if not self._may(caller, app_id, "Microsoft.App/containerApps/delete"):
                 return _error(403, "AuthorizationFailed")
@@ -950,11 +1042,35 @@ class FakeAzure:
         subscription: str = SUBSCRIPTION,
         location: str = "swedencentral",
         profile: str = "dev",
+        parameters: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """An AKS cluster this app deployed LiteLLM on, with the resources next to it; returns
-        its deployment's outputs."""
+        its deployment's outputs. With a deployment's ``parameters``, sized as they say."""
         base = f"/subscriptions/{subscription}/resourceGroups/{group}/providers"
         tags = {"managed-by": "ai-gateway-pool", "ai-gateway": name}
+        production = profile == "production"
+        pool: dict[str, Any] = (
+            {"name": "system", "count": 3, "minCount": 3, "maxCount": 6}
+            if production
+            else {"name": "system", "count": 1}
+        )
+        cluster_tags: dict[str, Any] = {"ai-gateway-profile": profile}
+        tier = "Standard" if production else "Free"
+        redis = production
+        if parameters is not None:
+            low, high = int(parameters["nodeMin"]), int(parameters["nodeMax"])
+            pool = {"name": "system", "count": low, "vmSize": parameters["nodeVmSize"]}
+            if high > low:
+                pool |= {"minCount": low, "maxCount": high}
+            cluster_tags = {
+                "ai-gateway-profile": parameters["profile"],
+                "ai-gateway-postgres": parameters["postgresSku"],
+                "ai-gateway-redis": parameters["redisSku"],
+                "ai-gateway-install": parameters["install"],
+                "ai-gateway-sizing": parameters["sizing"],
+            }
+            tier = parameters["clusterTier"]
+            redis = bool(parameters["redisSku"])
         cluster_id = f"{base}/{AKS_CLUSTER_TYPE}/{name}"
         insights_id = f"{base}/Microsoft.Insights/components/appi-{name}"
         resources: list[tuple[str, str, dict[str, Any]]] = [
@@ -964,11 +1080,7 @@ class FakeAzure:
                 {
                     "provisioningState": "Succeeded",
                     "oidcIssuerProfile": {"issuerURL": "https://oidc"},
-                    "agentPoolProfiles": [
-                        {"name": "system", "count": 3, "minCount": 3, "maxCount": 6}
-                        if profile == "production"
-                        else {"name": "system", "count": 1}
-                    ],
+                    "agentPoolProfiles": [pool],
                 },
             ),
             ("Microsoft.DBforPostgreSQL/flexibleServers", f"psql-{name}-x1", {}),
@@ -984,15 +1096,12 @@ class FakeAzure:
             ),
             ("Microsoft.OperationalInsights/workspaces", f"log-{name}", {}),
         ]
-        if profile == "production":
+        if redis:
             resources.append(("Microsoft.Cache/redisEnterprise", f"redis-{name}-x1", {}))
         for kind, resource, properties in resources:
             resource_id = f"{base}/{kind}/{resource}"
-            extra = (
-                {"ai-gateway-app-insights": insights_id, "ai-gateway-profile": profile}
-                if kind == AKS_CLUSTER_TYPE
-                else {}
-            )
+            cluster = kind == AKS_CLUSTER_TYPE
+            extra = {"ai-gateway-app-insights": insights_id, **cluster_tags} if cluster else {}
             self.resources[resource_id.casefold()] = {
                 "id": resource_id,
                 "name": resource,
@@ -1000,6 +1109,7 @@ class FakeAzure:
                 "location": location,
                 "tags": {**tags, **extra},
                 "properties": properties,
+                **({"sku": {"name": "Base", "tier": tier}} if cluster else {}),
             }
         return {
             "clusterId": cluster_id,
@@ -1008,9 +1118,7 @@ class FakeAzure:
             "principalId": f"{name}-mi",
             "appInsightsId": insights_id,
             "postgresHost": f"psql-{name}-x1.postgres.database.azure.com",
-            "redisHost": f"redis-{name}-x1.{location}.redis.azure.net"
-            if profile == "production"
-            else "",
+            "redisHost": f"redis-{name}-x1.{location}.redis.azure.net" if redis else "",
         }
 
     def finish_deployment(
@@ -1032,6 +1140,7 @@ class FakeAzure:
                 subscription=subscription,
                 location=record["parameters"]["location"],
                 profile=record["parameters"]["profile"],
+                parameters=record["parameters"],
             )
             record["properties"]["outputs"] = {
                 key: {"type": "String", "value": value} for key, value in outputs.items()
@@ -1044,6 +1153,7 @@ class FakeAzure:
             fqdn=f"{name}.example.azurecontainerapps.io",
             master_key=record["parameters"]["masterKey"],
             profile=record["parameters"]["profile"],
+            parameters=record["parameters"],
         )
 
     def _authorization(self, request: httpx.Request, caller: str, path: str) -> httpx.Response:

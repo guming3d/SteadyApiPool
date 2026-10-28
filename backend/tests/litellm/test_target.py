@@ -16,7 +16,7 @@ from pool_manager.litellm.gateway_template import LITELLM_IMAGE, aca_template
 from pool_manager.secret_store import SecretStore
 from tests.fake_azure import SUBSCRIPTION, TENANT, FakeAzure
 from tests.litellm.fake_litellm import MASTER_KEY, URL
-from tests.litellm.test_app import WRITE, _client, _settings
+from tests.litellm.test_app import PRODUCTION, TRIAL, WRITE, _client, _settings
 
 NO_TARGET = {"subscription_id": "", "resource_group": "", "gateway_name": ""}
 DEPLOYMENT = (
@@ -55,6 +55,7 @@ def _create(wizard: _Wizard, **overrides: Any) -> Any:
         "resource_group": "rg-new",
         "location": "eastus2",
         "name": "gw-new",
+        "sizing": TRIAL,
         **overrides,
     }
     return wizard.client.post("/api/litellm/target/gateways", json=body, headers=WRITE)
@@ -171,7 +172,7 @@ def test_select_refuses_what_isnt_a_gateway(wizard: _Wizard, azure: FakeAzure) -
 def test_deploying_runs_the_template_with_new_secrets(wizard: _Wizard, azure: FakeAzure) -> None:
     azure.providers[SUBSCRIPTION] = {"Microsoft.App": "NotRegistered"}
 
-    response = _create(wizard, profile="production")
+    response = _create(wizard, sizing=PRODUCTION)
 
     assert response.status_code == 200, response.text
     assert response.json()["provisioning_state"] == "Deploying"
@@ -192,6 +193,7 @@ def test_deploying_runs_the_template_with_new_secrets(wizard: _Wizard, azure: Fa
     assert parameters["postgresPassword"].isalnum()
     assert "enable_azure_ad_token_refresh: true" in parameters["litellmConfig"]
     assert "redis_host: os.environ/REDIS_HOST" in parameters["litellmConfig"]
+    assert "proxy_batch_write_at: 60" in parameters["litellmConfig"]
     assert "azuremonitor:" in parameters["collectorConfig"]
     # Selected at once; setup follows the deployment.
     assert wizard.saved()["gateway_name"] == "gw-new"

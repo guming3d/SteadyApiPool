@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "2244198913029172525"
+      "templateHash": "8102028261023563188"
     }
   },
   "parameters": {
@@ -29,7 +29,7 @@
         "production"
       ],
       "metadata": {
-        "description": "dev: one node, Free tier, no Redis. production: 3-6 nodes across zones, Standard tier, Redis."
+        "description": "A label for the gateway panel: dev for a single replica, else production."
       }
     },
     "nodeVmSize": {
@@ -43,7 +43,74 @@
       "type": "array",
       "defaultValue": [],
       "metadata": {
-        "description": "Availability zones the VM size has in this region (production only; empty for none)."
+        "description": "Availability zones the VM size has in this region (empty for none)."
+      }
+    },
+    "nodeMin": {
+      "type": "int",
+      "defaultValue": 1,
+      "minValue": 1
+    },
+    "nodeMax": {
+      "type": "int",
+      "defaultValue": 1,
+      "minValue": 1
+    },
+    "clusterTier": {
+      "type": "string",
+      "defaultValue": "Free",
+      "allowedValues": [
+        "Free",
+        "Standard"
+      ],
+      "metadata": {
+        "description": "Standard adds the uptime SLA."
+      }
+    },
+    "outboundIps": {
+      "type": "int",
+      "defaultValue": 1,
+      "minValue": 1,
+      "metadata": {
+        "description": "Outbound IPs, and the SNAT ports each node gets of them (a multiple of 8)."
+      }
+    },
+    "outboundPorts": {
+      "type": "int",
+      "defaultValue": 0,
+      "minValue": 0
+    },
+    "postgresSku": {
+      "type": "string",
+      "defaultValue": "Standard_B1ms"
+    },
+    "postgresTier": {
+      "type": "string",
+      "defaultValue": "Burstable",
+      "allowedValues": [
+        "Burstable",
+        "GeneralPurpose"
+      ]
+    },
+    "redisSku": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Azure Managed Redis SKU, e.g. Balanced_B0; empty for none (a single replica)."
+      }
+    },
+    "install": {
+      "type": "string",
+      "defaultValue": "min=1;max=1;timeout=120;pool=10",
+      "metadata": {
+        "description": "LiteLLM pods (min-max), its timeout and database pool, read by the install as a tag."
+      }
+    },
+    "sizing": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "The traffic the gateway was sized for, kept as a tag."
       }
     },
     "deployerPrincipalId": {
@@ -64,7 +131,7 @@
     }
   },
   "variables": {
-    "production": "[equals(parameters('profile'), 'production')]",
+    "withRedis": "[not(empty(parameters('redisSku')))]",
     "suffix": "[uniqueString(resourceGroup().id, parameters('name'))]",
     "gatewayTags": "[union(parameters('tags'), createObject('managed-by', 'ai-gateway-pool', 'ai-gateway', parameters('name')))]",
     "postgresName": "[take(format('psql-{0}-{1}', parameters('name'), variables('suffix')), 63)]",
@@ -139,8 +206,8 @@
       "location": "[parameters('location')]",
       "tags": "[variables('gatewayTags')]",
       "sku": {
-        "name": "[if(variables('production'), 'Standard_B2s', 'Standard_B1ms')]",
-        "tier": "Burstable"
+        "name": "[parameters('postgresSku')]",
+        "tier": "[parameters('postgresTier')]"
       },
       "properties": {
         "version": "16",
@@ -166,21 +233,21 @@
       }
     },
     {
-      "condition": "[variables('production')]",
+      "condition": "[variables('withRedis')]",
       "type": "Microsoft.Cache/redisEnterprise",
       "apiVersion": "2025-04-01",
       "name": "[variables('redisName')]",
       "location": "[parameters('location')]",
       "tags": "[variables('gatewayTags')]",
       "sku": {
-        "name": "Balanced_B0"
+        "name": "[if(variables('withRedis'), parameters('redisSku'), 'Balanced_B0')]"
       },
       "properties": {
         "minimumTlsVersion": "1.2"
       }
     },
     {
-      "condition": "[variables('production')]",
+      "condition": "[variables('withRedis')]",
       "type": "Microsoft.Cache/redisEnterprise/databases",
       "apiVersion": "2025-04-01",
       "name": "[format('{0}/{1}', variables('redisName'), 'default')]",
@@ -200,10 +267,10 @@
       "apiVersion": "2026-03-01",
       "name": "[parameters('name')]",
       "location": "[parameters('location')]",
-      "tags": "[union(variables('gatewayTags'), createObject('ai-gateway-app-insights', resourceId('Microsoft.Insights/components', format('appi-{0}', parameters('name'))), 'ai-gateway-profile', parameters('profile')))]",
+      "tags": "[union(variables('gatewayTags'), createObject('ai-gateway-app-insights', resourceId('Microsoft.Insights/components', format('appi-{0}', parameters('name'))), 'ai-gateway-profile', parameters('profile'), 'ai-gateway-postgres', parameters('postgresSku'), 'ai-gateway-redis', parameters('redisSku'), 'ai-gateway-install', parameters('install'), 'ai-gateway-sizing', parameters('sizing')))]",
       "sku": {
         "name": "Base",
-        "tier": "[if(variables('production'), 'Standard', 'Free')]"
+        "tier": "[parameters('clusterTier')]"
       },
       "identity": {
         "type": "SystemAssigned"
@@ -230,18 +297,24 @@
             "osType": "Linux",
             "osSKU": "AzureLinux",
             "vmSize": "[parameters('nodeVmSize')]",
-            "count": "[if(variables('production'), 3, 1)]",
-            "enableAutoScaling": "[variables('production')]",
-            "minCount": "[if(variables('production'), 3, null())]",
-            "maxCount": "[if(variables('production'), 6, null())]",
-            "availabilityZones": "[if(variables('production'), parameters('zones'), createArray())]"
+            "count": "[parameters('nodeMin')]",
+            "enableAutoScaling": "[greater(parameters('nodeMax'), parameters('nodeMin'))]",
+            "minCount": "[if(greater(parameters('nodeMax'), parameters('nodeMin')), parameters('nodeMin'), null())]",
+            "maxCount": "[if(greater(parameters('nodeMax'), parameters('nodeMin')), parameters('nodeMax'), null())]",
+            "availabilityZones": "[parameters('zones')]"
           }
         ],
         "networkProfile": {
           "networkPlugin": "azure",
           "networkPluginMode": "overlay",
           "loadBalancerSku": "standard",
-          "outboundType": "loadBalancer"
+          "outboundType": "loadBalancer",
+          "loadBalancerProfile": {
+            "managedOutboundIPs": {
+              "count": "[parameters('outboundIps')]"
+            },
+            "allocatedOutboundPorts": "[parameters('outboundPorts')]"
+          }
         },
         "ingressProfile": {
           "gatewayAPI": {
@@ -322,7 +395,7 @@
     },
     "redisHost": {
       "type": "string",
-      "value": "[if(variables('production'), reference(resourceId('Microsoft.Cache/redisEnterprise', variables('redisName')), '2025-04-01').hostName, '')]"
+      "value": "[if(variables('withRedis'), reference(resourceId('Microsoft.Cache/redisEnterprise', variables('redisName')), '2025-04-01').hostName, '')]"
     }
   }
 }

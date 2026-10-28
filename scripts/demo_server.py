@@ -73,7 +73,7 @@ from pool_manager.discovery import DeploymentDiscovery, MemberStore  # noqa: E40
 from pool_manager.litellm.access import LiteLLMAccessChecker  # noqa: E402
 from pool_manager.litellm.api_test import LiteLLMTester  # noqa: E402
 from pool_manager.litellm.benchmark import BenchmarkRunner  # noqa: E402
-from pool_manager.litellm.cost import LiteLLMCost  # noqa: E402
+from pool_manager.litellm.cost import LiteLLMCost, PlanPrices  # noqa: E402
 from pool_manager.litellm.gateway import GatewayConnection  # noqa: E402
 from pool_manager.litellm.metrics import LiteLLMMonitor  # noqa: E402
 from pool_manager.litellm.service import LiteLLMService  # noqa: E402
@@ -558,7 +558,10 @@ def _wire(
         get_apim_monitor: ApimMonitor(settings, arm, apim),
         get_litellm_service: litellm,
         get_litellm_targets: LiteLLMTargets(
-            chooser, gateway_transport=azure.litellm.transport(), secrets=secrets
+            chooser,
+            gateway_transport=azure.litellm.transport(),
+            secrets=secrets,
+            prices=PlanPrices(settings, transport=azure.transport()),
         ),
         get_litellm_cost: LiteLLMCost(settings, litellm, transport=azure.transport()),
         get_litellm_tester: LiteLLMTester(settings, litellm, transport=azure.litellm.transport()),

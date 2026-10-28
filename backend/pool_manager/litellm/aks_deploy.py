@@ -47,6 +47,7 @@ from .gateway_deploy import (
 from .gateway_template import (
     AKS_COMMAND,
     AksInstall,
+    InstallSize,
     aks_bootstrap,
     aks_fqdn,
     aks_parameters,
@@ -54,7 +55,7 @@ from .gateway_template import (
     aks_template,
     context_zip,
 )
-from .models import GatewayCreate, GatewayDeployStatus
+from .models import GatewayCreate, GatewayDeployStatus, GatewayPlan
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +112,7 @@ class AksDeployer:
 
     # -- before anything is created -------------------------------------------------------
 
-    def preflight(self, arm: ArmClient, body: GatewayCreate) -> list[str]:
+    def preflight(self, arm: ArmClient, body: GatewayCreate, found: GatewayPlan) -> list[str]:
         """Read-only checks for what an AKS deployment needs; returns the VM size's zones."""
         subscription = f"/subscriptions/{segment(body.subscription_id)}"
         try:
@@ -128,7 +129,7 @@ class AksDeployer:
                     "(it becomes the gateway's HTTPS address)",
                 )
             # The node size, its zones and the vCPU quota, with everything else it creates.
-            zones = self._base.require_capacity(arm, body).zones
+            zones = self._base.require_capacity(arm, body, found).zones
             scope = group_path(body.subscription_id, body.resource_group)
             if arm.get_arm_json(scope, api_version="2021-04-01") is None:
                 scope = subscription
@@ -158,12 +159,15 @@ class AksDeployer:
         if not deployer:
             raise ServiceError(401, "Sign in again: your account's object ID isn't known")
         cluster = cluster_path(body.subscription_id, body.resource_group, body.name)
+        found = self._base.plan(body)
         try:
             self._base.check(
                 arm, body, existing=cluster, existing_api=CONTAINER_SERVICE_API_VERSION
             )
-            zones = self.preflight(arm, body)
-            created = self._base.provision(arm, body, actor, providers=AKS_PROVIDERS)
+            zones = self.preflight(arm, body, found)
+            created = self._base.provision(
+                arm, body, actor, providers=AKS_PROVIDERS, redis=found.redis_sku is not None
+            )
             secrets = aks_secrets()
             # Kept before Azure sees anything, so a gateway never runs on keys the app lost.
             self._secrets.put(_pending_key(cluster), json.dumps(secrets))
@@ -175,7 +179,8 @@ class AksDeployer:
                     parameters=aks_parameters(
                         name=body.name,
                         location=body.location,
-                        profile=body.profile,
+                        sizing=body.sizing,
+                        plan=found,
                         deployer=deployer,
                         zones=zones,
                         postgres_password=secrets["postgres_password"],
@@ -190,10 +195,11 @@ class AksDeployer:
         except ArmError as error:
             raise arm_failure(error, "deploy this gateway") from error
         logger.info(
-            "%s started deploying gateway %s on AKS (%s) in %s",
+            "%s started deploying gateway %s on AKS (%d-%d pods) in %s",
             actor,
             body.name,
-            body.profile,
+            found.min_replicas,
+            found.max_replicas,
             body.resource_group,
         )
         return f"https://{aks_fqdn(body.name, body.location)}"
@@ -323,7 +329,8 @@ class AksDeployer:
     ) -> str:
         """Starts the install with Run Command; returns the command's ID."""
         found = arm.get_arm_json(cluster, api_version=CONTAINER_SERVICE_API_VERSION) or {}
-        profile = str((found.get("tags") or {}).get("ai-gateway-profile") or "dev")
+        tags = found.get("tags") or {}
+        size = InstallSize.parse(tags.get("ai-gateway-install"), tags.get("ai-gateway-profile"))
         insights = (
             arm.get_arm_json(str(outputs["appInsightsId"]), api_version=INSIGHTS_API_VERSION) or {}
         )
@@ -345,7 +352,7 @@ class AksDeployer:
         email = str(claims.get("upn") or claims.get("email") or "")
         install = AksInstall(
             name=name,
-            profile="production" if profile == "production" else "dev",
+            size=size,
             fqdn=str(outputs["fqdn"]),
             identity_client_id=str(outputs["identityClientId"]),
             postgres_host=str(outputs["postgresHost"]),

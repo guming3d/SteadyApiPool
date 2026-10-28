@@ -43,6 +43,11 @@ class ModelCheckRequest(StrictModel):
     members: list[str] = Field(min_length=1, max_length=30)
 
 
+# Where a member's rate limits come from: the deployment's own ``rateLimits``, or its
+# capacity at the older chat models' 1,000 TPM and 6 RPM a unit (newer models differ).
+QuotaSource = Literal["rate_limits", "capacity"]
+
+
 class MemberModel(StrictModel):
     backend_id: str
     # ARM ID of the Foundry deployment the member points at; ``None`` when it points elsewhere.
@@ -52,6 +57,13 @@ class MemberModel(StrictModel):
     model_version: str | None
     # Why a Foundry deployment's model could not be read. Such a member fails the check.
     problem: str | None
+    # The deployment's type (GlobalStandard, ...), capacity units and the rate limits Azure
+    # enforces on it, per minute; None when it can't be read (e.g. provisioned throughput).
+    deployment_type: str | None = None
+    capacity: int | None = None
+    tpm: int | None = None
+    rpm: int | None = None
+    quota_source: QuotaSource | None = None
 
 
 class ModelCheck(StrictModel):
@@ -60,6 +72,10 @@ class ModelCheck(StrictModel):
     model_names: list[str]
     ok: bool
     message: str | None
+    # What the pool's Foundry deployments allow together (each deployment once): failover and
+    # weighted pools alike spread over them. None when no member's limits could be read.
+    total_tpm: int | None = None
+    total_rpm: int | None = None
 
 
 # LiteLLM only. ``aca``: a Container App (created here or not); ``external``: any other LiteLLM

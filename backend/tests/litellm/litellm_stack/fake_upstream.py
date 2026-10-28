@@ -1,9 +1,11 @@
 """A stand-in Azure OpenAI deployment for the LiteLLM integration stack (stdlib only).
 
 It answers ``POST /openai/deployments/<name>/chat/completions`` and ``POST /openai/responses``
-like Azure OpenAI does. ``POST /control`` with ``{"status": 429}`` (or 500, or 200) switches
-what it answers, and ``GET /stats`` returns how many calls it has served, so a test can make
-one region fail and watch the gateway move to another.
+like Azure OpenAI does. A chat request with ``max_tokens`` gets that many output tokens, streamed
+as server-sent events when it asks for ``stream`` (calibrate.py measures the gateway with them).
+``POST /control`` with ``{"status": 429}`` (or 500, or 200) switches what it answers, and
+``GET /stats`` returns how many calls it has served, so a test can make one region fail and
+watch the gateway move to another.
 """
 
 from __future__ import annotations
@@ -80,6 +82,9 @@ class Handler(BaseHTTPRequestHandler):
         if status != 200:
             self._send(status, {"error": {"code": str(status), "message": f"{REGION} failed"}})
             return
+        if "/responses" not in self.path and body.get("max_tokens"):
+            self._generate(body)
+            return
         usage = {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}
         if "/responses" in self.path:
             self._send(
@@ -126,6 +131,50 @@ class Handler(BaseHTTPRequestHandler):
                 "usage": usage,
             },
         )
+
+    def _generate(self, body: dict[str, Any]) -> None:
+        """``max_tokens`` tokens of output, whole or streamed one token a chunk."""
+        count = max(1, int(body["max_tokens"]))
+        prompt = sum(len(str(m.get("content") or "")) for m in body.get("messages") or []) // 4
+        usage = {
+            "prompt_tokens": prompt,
+            "completion_tokens": count,
+            "total_tokens": prompt + count,
+        }
+        base = {"id": f"chatcmpl-{REGION}", "created": int(time.time()), "model": "gpt-4o-mini"}
+        if not body.get("stream"):
+            message = {"role": "assistant", "content": "".join(f"t{i} " for i in range(count))}
+            self._send(
+                200,
+                {
+                    **base,
+                    "object": "chat.completion",
+                    "choices": [{"index": 0, "message": message, "finish_reason": "stop"}],
+                    "usage": usage,
+                },
+            )
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("x-ms-region", REGION)
+        self.end_headers()
+
+        def chunk(delta: dict[str, Any], finish: str | None = None, **extra: Any) -> bytes:
+            choice = {"index": 0, "delta": delta, "finish_reason": finish}
+            payload = {**base, "object": "chat.completion.chunk", "choices": [choice], **extra}
+            return f"data: {json.dumps(payload)}\n\n".encode()
+
+        self.wfile.write(chunk({"role": "assistant", "content": ""}))
+        # Every chunk differs: LiteLLM ends a stream that repeats the same chunk.
+        for i in range(count):
+            self.wfile.write(chunk({"content": f"t{i} "}))
+        self.wfile.write(chunk({}, "stop"))
+        if (body.get("stream_options") or {}).get("include_usage"):
+            payload = {**base, "object": "chat.completion.chunk", "choices": [], "usage": usage}
+            self.wfile.write(f"data: {json.dumps(payload)}\n\n".encode())
+        self.wfile.write(b"data: [DONE]\n\n")
+        self.wfile.flush()
+        self.close_connection = True
 
 
 if __name__ == "__main__":

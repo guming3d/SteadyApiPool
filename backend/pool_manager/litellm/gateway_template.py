@@ -10,7 +10,12 @@ they match). Every gateway gets the same config.yaml, so it behaves the same whe
   (``enable_azure_ad_token_refresh``, ``AZURE_CLIENT_ID``);
 - Responses API follow-ups stay on the deployment that answered first
   (``encrypted_content_affinity``, ``responses_api_deployment_check``);
-- with Redis (more than one replica), replicas share cooldowns.
+- with Redis (more than one replica), replicas share cooldowns;
+- spend is written to the database once a minute, and each replica keeps at most the plan's
+  pool of connections (one worker each), so the most replicas stay inside the server's.
+
+How big it is (replicas, nodes, the database, Redis, the timeout) is the sizing plan's
+(sizing.py), passed to the templates as parameters and to the AKS install as a tag.
 """
 
 from __future__ import annotations
@@ -26,8 +31,15 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
-from .models import AksBundle, AksBundleFile
+from .models import (
+    DEFAULT_TIMEOUT_SECONDS,
+    AksBundle,
+    AksBundleFile,
+    GatewayPlan,
+    GatewaySizing,
+)
 from .resources import to_yaml
+from .sizing import DB_POOL, MIN_ROUTE_SECONDS
 
 # Keep in step with tests/litellm/litellm_stack/docker-compose.yml and the Bicep default.
 LITELLM_VERSION = "1.106.4"
@@ -42,9 +54,12 @@ CERT_MANAGER_VERSION = "v1.21.3"
 LETSENCRYPT = "https://acme-v02.api.letsencrypt.org/directory"
 # The namespace and service account LiteLLM runs as (federated in litellm-aks.bicep).
 AKS_NAMESPACE = "litellm"
-AKS_NODE_SIZE = "Standard_D4ds_v5"
 # Run Command unpacks the files into its working directory and runs this.
 AKS_COMMAND = "bash bootstrap.sh"
+
+# LiteLLM's production guidance for one worker: 1 vCPU and at least 4Gi (Prisma's query engine
+# keeps memory like a high-water mark), as both requests and limits.
+AKS_POD_RESOURCES = {"cpu": "1", "memory": "4Gi"}
 
 Profile = Literal["dev", "production"]
 # Span names LiteLLM gives model calls ("chat <model group>", ...). Everything else it traces
@@ -64,7 +79,9 @@ def aks_template() -> dict[str, Any]:
     return template
 
 
-def litellm_config(*, redis: bool) -> dict[str, Any]:
+def litellm_config(
+    *, redis: bool, timeout: int = DEFAULT_TIMEOUT_SECONDS, db_pool: int = DB_POOL
+) -> dict[str, Any]:
     router: dict[str, Any] = {
         "routing_strategy": "simple-shuffle",
         "optional_pre_call_checks": [
@@ -84,12 +101,14 @@ def litellm_config(*, redis: bool) -> dict[str, Any]:
             "master_key": "os.environ/LITELLM_MASTER_KEY",
             "database_url": "os.environ/DATABASE_URL",
             "store_model_in_db": True,
+            "proxy_batch_write_at": 60,
+            "database_connection_pool_limit": db_pool,
         },
         "litellm_settings": {
             "enable_azure_ad_token_refresh": True,
             "callbacks": ["otel"],
             "num_retries": 1,
-            "request_timeout": 120,
+            "request_timeout": timeout,
         },
         "router_settings": router,
     }
@@ -135,18 +154,77 @@ def _token(length: int) -> str:
             return value
 
 
-def aca_parameters(name: str, location: str, profile: Profile) -> dict[str, Any]:
+# The tag on the Container App or cluster with the traffic it was sized for (sizing_tag).
+SIZING_TAG = "ai-gateway-sizing"
+
+
+def sizing_tag(sizing: GatewaySizing) -> str:
+    """The scenario a gateway was sized for, compact enough for a tag (256 characters)."""
+    parts = [
+        f"rpm={sizing.peak_rpm}",
+        f"in={sizing.input_tokens}",
+        f"out={sizing.output_tokens}",
+        f"timeout={sizing.timeout_seconds}",
+        f"stream={int(sizing.streaming)}",
+        f"speed={sizing.model_speed}",
+        f"headroom={sizing.headroom_percent}",
+        f"zones={int(sizing.zone_redundant)}",
+    ]
+    if sizing.response_seconds is not None:
+        parts.append(f"response={sizing.response_seconds:g}")
+    return ";".join(parts)
+
+
+def parse_sizing_tag(value: str | None) -> GatewaySizing | None:
+    """The scenario back from ``sizing_tag``; None for a gateway sized before there was one."""
+    fields = dict(part.split("=", 1) for part in (value or "").split(";") if "=" in part)
+    try:
+        return GatewaySizing.model_validate(
+            {
+                "peak_rpm": int(fields["rpm"]),
+                "input_tokens": int(fields["in"]),
+                "output_tokens": int(fields["out"]),
+                "timeout_seconds": int(fields["timeout"]),
+                "streaming": fields.get("stream", "1") == "1",
+                "model_speed": fields.get("speed", "standard"),
+                "headroom_percent": int(fields.get("headroom", "25")),
+                "zone_redundant": fields.get("zones", "1") == "1",
+                "response_seconds": float(fields["response"]) if "response" in fields else None,
+            }
+        )
+    except (KeyError, ValueError):
+        return None
+
+
+def aca_parameters(
+    name: str, location: str, sizing: GatewaySizing, plan: GatewayPlan
+) -> dict[str, Any]:
     """Deployment parameters, with new secrets: only ever used to create a gateway."""
     values = {
         "name": name,
         "location": location,
-        "profile": profile,
+        "profile": plan.profile,
+        "replicaCpu": f"{plan.replica_cpu:.2f}",
+        "replicaMemory": f"{plan.replica_memory_gib:g}Gi",
+        "minReplicas": plan.min_replicas,
+        "maxReplicas": plan.max_replicas,
+        "scaleRequests": plan.scale_rps,
+        "postgresSku": plan.postgres_sku,
+        "postgresTier": plan.postgres_tier,
+        "redisSku": plan.redis_sku or "",
+        "sizing": sizing_tag(sizing),
         "image": LITELLM_IMAGE,
         "collectorImage": COLLECTOR_IMAGE,
         "masterKey": f"sk-{_token(40)}",
         "saltKey": f"sk-{_token(40)}",
         "postgresPassword": _token(32),
-        "litellmConfig": to_yaml(litellm_config(redis=profile == "production")),
+        "litellmConfig": to_yaml(
+            litellm_config(
+                redis=plan.redis_sku is not None,
+                timeout=plan.request_timeout,
+                db_pool=plan.db_pool,
+            )
+        ),
         "collectorConfig": to_yaml(collector_config()),
         "tags": {},
     }
@@ -156,9 +234,11 @@ def aca_parameters(name: str, location: str, profile: Profile) -> dict[str, Any]
 # -- AKS: the cluster the app deploys, and the install in it ------------------------------------
 
 
-def aks_proxy_config(*, redis: bool) -> dict[str, Any]:
+def aks_proxy_config(
+    *, redis: bool, timeout: int = DEFAULT_TIMEOUT_SECONDS, db_pool: int = DB_POOL
+) -> dict[str, Any]:
     """config.yaml on AKS. LiteLLM's chart passes the master key as PROXY_MASTER_KEY."""
-    config = litellm_config(redis=redis)
+    config = litellm_config(redis=redis, timeout=timeout, db_pool=db_pool)
     config["general_settings"]["master_key"] = "os.environ/PROXY_MASTER_KEY"
     return config
 
@@ -172,21 +252,77 @@ def aks_secrets() -> dict[str, str]:
     }
 
 
+@dataclass(frozen=True)
+class InstallSize:
+    """What the install in the cluster takes from the plan: LiteLLM's pods, its timeout, its
+    database pool, and the route's timeout (a call and its retry)."""
+
+    min_replicas: int = 1
+    max_replicas: int = 1
+    timeout: int = DEFAULT_TIMEOUT_SECONDS
+    db_pool: int = DB_POOL
+    route_timeout: int = MIN_ROUTE_SECONDS
+
+    @classmethod
+    def of(cls, plan: GatewayPlan) -> InstallSize:
+        return cls(
+            min_replicas=plan.min_replicas,
+            max_replicas=plan.max_replicas,
+            timeout=plan.request_timeout,
+            db_pool=plan.db_pool,
+            route_timeout=plan.route_timeout,
+        )
+
+    def tag(self) -> str:
+        return (
+            f"min={self.min_replicas};max={self.max_replicas};timeout={self.timeout};"
+            f"pool={self.db_pool};route={self.route_timeout}"
+        )
+
+    @classmethod
+    def parse(cls, value: str | None, profile: str | None = None) -> InstallSize:
+        """From the cluster's tag; a cluster deployed before the tag gets its profile's."""
+        fields = dict(part.split("=", 1) for part in (value or "").split(";") if "=" in part)
+        try:
+            return cls(
+                min_replicas=int(fields["min"]),
+                max_replicas=int(fields["max"]),
+                timeout=int(fields["timeout"]),
+                db_pool=int(fields["pool"]),
+                route_timeout=int(fields["route"]),
+            )
+        except (KeyError, ValueError):
+            return cls(2, 10) if profile == "production" else cls()
+
+
 def aks_parameters(
     *,
     name: str,
     location: str,
-    profile: Profile,
+    sizing: GatewaySizing,
+    plan: GatewayPlan,
     deployer: str,
     zones: list[str],
     postgres_password: str,
 ) -> dict[str, Any]:
+    if plan.aks is None:
+        raise ValueError("an AKS plan is needed")
     values = {
         "name": name,
         "location": location,
-        "profile": profile,
-        "nodeVmSize": AKS_NODE_SIZE,
-        "zones": zones if profile == "production" else [],
+        "profile": plan.profile,
+        "nodeVmSize": plan.aks.node_size,
+        "zones": zones if sizing.zone_redundant else [],
+        "nodeMin": plan.aks.node_min,
+        "nodeMax": plan.aks.node_max,
+        "clusterTier": plan.aks.tier,
+        "outboundIps": plan.aks.outbound_ips,
+        "outboundPorts": plan.aks.outbound_ports,
+        "postgresSku": plan.postgres_sku,
+        "postgresTier": plan.postgres_tier,
+        "redisSku": plan.redis_sku or "",
+        "install": InstallSize.of(plan).tag(),
+        "sizing": sizing_tag(sizing),
         "deployerPrincipalId": deployer,
         "postgresPassword": postgres_password,
         "tags": {},
@@ -204,11 +340,11 @@ class AksInstall:
     """What the install in the cluster needs from the deployed Azure resources."""
 
     name: str
-    profile: Profile
     fqdn: str
     identity_client_id: str
     postgres_host: str
     app_insights_connection_string: str
+    size: InstallSize = InstallSize()
     redis_host: str = ""
     redis_password: str = ""
     # Let's Encrypt's expiry notices; optional.
@@ -216,10 +352,11 @@ class AksInstall:
 
 
 def _values(install: AksInstall) -> dict[str, Any]:
-    production = install.profile == "production"
+    size = install.size
+    redis = bool(install.redis_host)
     collector = f"http://otel-collector.{AKS_NAMESPACE}.svc:4318"
     values: dict[str, Any] = {
-        "replicaCount": 2 if production else 1,
+        "replicaCount": size.min_replicas,
         "image": {"repository": LITELLM_IMAGE.split(":")[0], "tag": f"v{LITELLM_VERSION}"},
         "masterkeySecretName": "litellm-masterkey",
         "masterkeySecretKey": "masterkey",
@@ -242,7 +379,7 @@ def _values(install: AksInstall) -> dict[str, Any]:
             "OTEL_ENDPOINT": collector,
             "OTEL_EXPORTER_OTLP_ENDPOINT": collector,
             "OTEL_SERVICE_NAME": install.name,
-            **({"REDIS_SSL": "True"} if production else {}),
+            **({"REDIS_SSL": "True"} if redis else {}),
         },
         "serviceAccount": {
             "create": True,
@@ -251,16 +388,17 @@ def _values(install: AksInstall) -> dict[str, Any]:
         },
         "podLabels": {"azure.workload.identity/use": "true"},
         "service": {"type": "ClusterIP", "port": 4000},
-        "resources": {"requests": {"cpu": "500m", "memory": "1Gi"}},
-        "proxy_config": aks_proxy_config(redis=production),
+        "resources": {"requests": AKS_POD_RESOURCES, "limits": AKS_POD_RESOURCES},
+        "proxy_config": aks_proxy_config(redis=redis, timeout=size.timeout, db_pool=size.db_pool),
     }
-    if production:
+    if size.max_replicas > size.min_replicas:
         values["autoscaling"] = {
             "enabled": True,
-            "minReplicas": 2,
-            "maxReplicas": 6,
+            "minReplicas": size.min_replicas,
+            "maxReplicas": size.max_replicas,
             "targetCPUUtilizationPercentage": 60,
         }
+    if size.min_replicas > 1:
         values["pdb"] = {"enabled": True, "minAvailable": 1}
     return values
 
@@ -391,7 +529,7 @@ def _gateway_manifests(install: AksInstall) -> list[dict[str, Any]]:
                 "rules": [
                     {
                         "backendRefs": [{"name": "litellm", "port": 4000}],
-                        "timeouts": {"request": "600s"},
+                        "timeouts": {"request": f"{install.size.route_timeout}s"},
                     }
                 ],
             },
@@ -539,6 +677,7 @@ def aks_bundle(
         },
         "podLabels": {"azure.workload.identity/use": "true"},
         "service": {"type": "LoadBalancer", "port": 4000},
+        "resources": {"requests": AKS_POD_RESOURCES, "limits": AKS_POD_RESOURCES},
         "proxy_config": {
             **aks_proxy_config(redis=False),
             # No collector on AKS by default; add OTEL_* settings to send spans somewhere.

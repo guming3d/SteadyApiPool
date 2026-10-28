@@ -3,7 +3,7 @@ import { queryOptions } from "@tanstack/react-query"
 
 import { api as sharedApi, id, json, keys as sharedKeys, queries as sharedQueries, request, scope } from "../api"
 import type { ApiTestResult, ModelCheck, TargetView } from "../types"
-import type { AksBundle, AliasView, ApiTestRequest, BackendView, BenchmarkRun, BenchmarkStart, Capabilities, CleanupConfirm, ConfigPreview, ConfigView, GatewayConnect, GatewayCreate, GatewayCreateOptions, GatewayDeleteCheck, GatewayDeployStatus, GatewayPlatform, GatewayPreflight, GatewayProfile, GatewayView, MemberBackendWrite, PoolEndpoint, PoolView, PoolWrite, RemovalConfirm, RemovalPlan, RemovalResult, ServiceCost, TargetSelect, VirtualKeySecret, VirtualKeyView } from "./types"
+import type { AksBundle, AliasView, ApiTestRequest, BackendView, BenchmarkRun, BenchmarkStart, Capabilities, CleanupConfirm, ConfigPreview, ConfigView, GatewayConnect, GatewayCreate, GatewayCreateOptions, GatewayDeleteCheck, GatewayDeployStatus, GatewayPlans, GatewayPlatform, GatewayPreflight, GatewaySizing, GatewayView, ResizeApply, ResizeCommand, ResizePlan, ResizeResult, MemberBackendWrite, PoolEndpoint, PoolView, PoolWrite, RemovalConfirm, RemovalPlan, RemovalResult, ServiceCost, TargetSelect, VirtualKeySecret, VirtualKeyView } from "./types"
 
 export type AksBundleParams = {
   subscription_id: string
@@ -58,6 +58,13 @@ export const api = {
   // Deploys billable Azure resources with the user's own rights, then selects the new gateway.
   createGateway: (body: GatewayCreate) => request<GatewayView>("/api/litellm/target/gateways", json("POST", body)),
   // Read-only: what in the region would make the deployment fail (capacity, quota, sizes).
+  resizePlan: (body: GatewaySizing) =>
+    request<ResizePlan>("/api/litellm/gateway/resize/plan", json("POST", body)),
+  resize: (body: ResizeApply) => request<ResizeResult>("/api/litellm/gateway/resize", json("POST", body)),
+  resizeCommand: (command: string) =>
+    request<ResizeCommand>(`/api/litellm/gateway/resize/${encodeURIComponent(command)}`),
+  gatewayPlans: (body: GatewaySizing) =>
+    request<GatewayPlans>("/api/litellm/target/gateways/plan", json("POST", body)),
   gatewayPreflight: (body: GatewayCreate) =>
     request<GatewayPreflight>("/api/litellm/target/gateways/preflight", json("POST", body)),
   deployStatus: (tenantId: string | null, subscriptionId: string, resourceGroup: string, name: string) =>
@@ -112,8 +119,11 @@ export const keys = {
   createOptions: (tenantId: string | null, subscriptionId: string) => ["litellm", "target", "create-options", tenantId, subscriptionId] as const,
   deployStatus: (subscriptionId: string, resourceGroup: string, name: string) =>
     ["litellm", "target", "deploy", subscriptionId, resourceGroup, name] as const,
-  preflight: (subscriptionId: string, location: string, platform: GatewayPlatform, profile: GatewayProfile) =>
-    ["litellm", "target", "preflight", subscriptionId, location, platform, profile] as const,
+  plans: (sizing: GatewaySizing | null) => ["litellm", "target", "plan", JSON.stringify(sizing)] as const,
+  resizePlan: (sizing: GatewaySizing | null) => ["litellm", "resize", JSON.stringify(sizing)] as const,
+  resizeCommand: (command: string) => ["litellm", "resize", "command", command] as const,
+  preflight: (subscriptionId: string, location: string, platform: GatewayPlatform, sizing: GatewaySizing) =>
+    ["litellm", "target", "preflight", subscriptionId, location, platform, JSON.stringify(sizing)] as const,
 }
 
 export const queries = {
@@ -172,9 +182,34 @@ export const queries = {
     refetchInterval: (query) => query.state.data?.state === "running" || query.state.data?.cleanup?.state === "running" ? 5_000 : false,
     retry: false,
   }),
+  // What resizing the gateway would change: reads the gateway as the user, changes nothing.
+  resizePlan: (sizing: GatewaySizing | null) => queryOptions({
+    queryKey: keys.resizePlan(sizing),
+    queryFn: () => api.resizePlan(sizing!),
+    enabled: sizing !== null,
+    placeholderData: (previous) => previous,
+    retry: false,
+  }),
+  // The pods' change on AKS (Run Command), followed until it ends.
+  resizeCommand: (command: string | null) => queryOptions({
+    queryKey: keys.resizeCommand(command ?? ""),
+    queryFn: () => api.resizeCommand(command!),
+    enabled: command !== null,
+    refetchInterval: (query) => query.state.data?.state === "running" || !query.state.data ? 5_000 : false,
+    retry: false,
+  }),
+  // The sizer's plans for a scenario: arithmetic only, nothing in Azure is read.
+  plans: (sizing: GatewaySizing | null) => queryOptions({
+    queryKey: keys.plans(sizing),
+    queryFn: () => api.gatewayPlans(sizing!),
+    enabled: sizing !== null,
+    staleTime: Infinity,
+    placeholderData: (previous) => previous,
+    retry: false,
+  }),
   // The region's capacity for the deployment the form describes; the name doesn't matter.
   preflight: (body: GatewayCreate) => queryOptions({
-    queryKey: keys.preflight(body.subscription_id, body.location, body.platform, body.profile),
+    queryKey: keys.preflight(body.subscription_id, body.location, body.platform, body.sizing),
     queryFn: () => api.gatewayPreflight(body),
     enabled: Boolean(body.subscription_id && body.location),
     staleTime: 5 * 60_000,

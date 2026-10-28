@@ -40,6 +40,39 @@ _FOUNDRY_HOST_SUFFIXES = (
 _DEPLOYMENTS_PATH = "/openai/deployments/"
 _CACHE_SECONDS = 300.0
 _WORKERS = 8
+# A capacity unit of the older chat models; newer ones differ, so rateLimits come first.
+_TPM_PER_UNIT = 1000
+_RPM_PER_UNIT = 6
+
+
+def deployment_quota(body: Mapping[str, Any]) -> dict[str, Any]:
+    """A deployment's type, capacity and per-minute limits, from its ARM resource."""
+    sku = body.get("sku") or {}
+    capacity = sku.get("capacity")
+    values: dict[str, Any] = {
+        "deployment_type": str(sku.get("name") or "") or None,
+        "capacity": capacity if isinstance(capacity, int) else None,
+    }
+    limits = {
+        str(item.get("key")): float(item.get("count") or 0)
+        * 60
+        / float(item.get("renewalPeriod") or 60)
+        for item in (body.get("properties") or {}).get("rateLimits") or []
+        if isinstance(item, Mapping) and item.get("renewalPeriod")
+    }
+    if "token" in limits or "request" in limits:
+        values |= {
+            "tpm": round(limits["token"]) if "token" in limits else None,
+            "rpm": round(limits["request"]) if "request" in limits else None,
+            "quota_source": "rate_limits",
+        }
+    elif values["capacity"] and not str(values["deployment_type"] or "").startswith("Provisioned"):
+        values |= {
+            "tpm": values["capacity"] * _TPM_PER_UNIT,
+            "rpm": values["capacity"] * _RPM_PER_UNIT,
+            "quota_source": "capacity",
+        }
+    return values
 
 
 def deployment_target(url: str | None) -> tuple[str, str] | None:
@@ -165,6 +198,7 @@ class FoundryModelCheck:
             deployment_id=deployment_id,
             model_name=name,
             model_version=str(model.get("version") or "") or None,
+            **deployment_quota(body),
         )
 
     def check(self, members: list[tuple[str, str | None]]) -> ModelCheck:
@@ -187,9 +221,19 @@ class FoundryModelCheck:
         elif len(groups) > 1:
             found = ", ".join(f"{name} ({', '.join(ids)})" for name, ids in groups.values())
             message = f"pool members must serve the same Foundry model; found {found}"
+        # Each deployment counts once, however many members point at it.
+        deployments = {
+            member.deployment_id.casefold(): member
+            for member in resolved
+            if member.deployment_id and (member.tpm is not None or member.rpm is not None)
+        }
+        tpms = [member.tpm for member in deployments.values() if member.tpm is not None]
+        rpms = [member.rpm for member in deployments.values() if member.rpm is not None]
         return ModelCheck(
             members=resolved,
             model_names=[name for name, _ in groups.values()],
             ok=message is None,
             message=message,
+            total_tpm=sum(tpms) if tpms else None,
+            total_rpm=sum(rpms) if rpms else None,
         )

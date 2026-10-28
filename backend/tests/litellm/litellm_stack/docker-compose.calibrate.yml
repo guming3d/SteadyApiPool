@@ -1,0 +1,15 @@
+# Overlay for calibrate.py: LiteLLM as this app deploys it (one worker; the size of a Container
+# Apps replica; the config gateway_template.litellm_config writes, spend batched, OpenTelemetry
+# on), so the CPU each call costs can be measured. Spans go to region-b, which answers anything.
+#   python tests/litellm/litellm_stack/calibrate.py
+services:
+  litellm:
+    volumes: ["./config.calibrate.yaml:/app/config.yaml:ro"]
+    cpus: 2
+    mem_limit: 4g
+    environment:
+      LITELLM_OTEL_V2: "true"
+      OTEL_EXPORTER: otlp_http
+      OTEL_ENDPOINT: http://region-b:8080
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://region-b:8080
+      OTEL_SERVICE_NAME: calibrate

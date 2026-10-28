@@ -9,8 +9,9 @@
 //   User-assigned identity: what LiteLLM calls Foundry deployments as, federated with the
 //                litellm/litellm service account; the setup wizard grants it Cognitive Services
 //                OpenAI User on member accounts
-//   Postgres Flexible Server: LiteLLM's model table, virtual keys and spend
-//   Azure Managed Redis (production profile): cooldowns shared between replicas
+//   Postgres Flexible Server: LiteLLM's model table, virtual keys and spend (Burstable only for a
+//                single replica: it runs out of CPU credits under sustained load)
+//   Azure Managed Redis (more than one replica): cooldowns shared between replicas
 //   Log Analytics + Application Insights: the gateway's OpenTelemetry spans
 //
 // Compiled to backend/pool_manager/litellm/templates/litellm-aks.json by
@@ -25,15 +26,45 @@ param name string
 
 param location string = resourceGroup().location
 
+// The sizes come from the app's sizing plan (backend/pool_manager/litellm/sizing.py); the
+// defaults are its smallest gateway.
 @allowed([ 'dev', 'production' ])
-@description('dev: one node, Free tier, no Redis. production: 3-6 nodes across zones, Standard tier, Redis.')
+@description('A label for the gateway panel: dev for a single replica, else production.')
 param profile string = 'dev'
 
 @description('VM size of the cluster nodes.')
 param nodeVmSize string = 'Standard_D4ds_v5'
 
-@description('Availability zones the VM size has in this region (production only; empty for none).')
+@description('Availability zones the VM size has in this region (empty for none).')
 param zones array = []
+
+@minValue(1)
+param nodeMin int = 1
+@minValue(1)
+param nodeMax int = 1
+
+@allowed([ 'Free', 'Standard' ])
+@description('Standard adds the uptime SLA.')
+param clusterTier string = 'Free'
+
+@description('Outbound IPs, and the SNAT ports each node gets of them (a multiple of 8).')
+@minValue(1)
+param outboundIps int = 1
+@minValue(0)
+param outboundPorts int = 0
+
+param postgresSku string = 'Standard_B1ms'
+@allowed([ 'Burstable', 'GeneralPurpose' ])
+param postgresTier string = 'Burstable'
+
+@description('Azure Managed Redis SKU, e.g. Balanced_B0; empty for none (a single replica).')
+param redisSku string = ''
+
+@description('LiteLLM pods (min-max), its timeout and database pool, read by the install as a tag.')
+param install string = 'min=1;max=1;timeout=120;pool=10'
+
+@description('The traffic the gateway was sized for, kept as a tag.')
+param sizing string = ''
 
 @description('Object ID of the user deploying it: granted Azure Kubernetes Service RBAC Cluster Admin on the cluster.')
 param deployerPrincipalId string
@@ -44,7 +75,7 @@ param postgresPassword string
 
 param tags object = {}
 
-var production = profile == 'production'
+var withRedis = !empty(redisSku)
 var suffix = uniqueString(resourceGroup().id, name)
 var gatewayTags = union(tags, { 'managed-by': 'ai-gateway-pool', 'ai-gateway': name })
 var postgresName = take('psql-${name}-${suffix}', 63)
@@ -85,8 +116,8 @@ resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = {
   location: location
   tags: gatewayTags
   sku: {
-    name: production ? 'Standard_B2s' : 'Standard_B1ms'
-    tier: 'Burstable'
+    name: postgresSku
+    tier: postgresTier
   }
   properties: {
     version: '16'
@@ -111,15 +142,15 @@ resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = {
   }
 }
 
-resource redis 'Microsoft.Cache/redisEnterprise@2025-04-01' = if (production) {
+resource redis 'Microsoft.Cache/redisEnterprise@2025-04-01' = if (withRedis) {
   name: redisName
   location: location
   tags: gatewayTags
-  sku: { name: 'Balanced_B0' }
+  sku: { name: withRedis ? redisSku : 'Balanced_B0' }
   properties: { minimumTlsVersion: '1.2' }
 }
 
-resource redisDatabase 'Microsoft.Cache/redisEnterprise/databases@2025-04-01' = if (production) {
+resource redisDatabase 'Microsoft.Cache/redisEnterprise/databases@2025-04-01' = if (withRedis) {
   parent: redis
   name: 'default'
   properties: {
@@ -140,8 +171,12 @@ resource cluster 'Microsoft.ContainerService/managedClusters@2026-03-01' = {
   tags: union(gatewayTags, {
     'ai-gateway-app-insights': insights.id
     'ai-gateway-profile': profile
+    'ai-gateway-postgres': postgresSku
+    'ai-gateway-redis': redisSku
+    'ai-gateway-install': install
+    'ai-gateway-sizing': sizing
   })
-  sku: { name: 'Base', tier: production ? 'Standard' : 'Free' }
+  sku: { name: 'Base', tier: clusterTier }
   identity: { type: 'SystemAssigned' }
   properties: {
     dnsPrefix: name
@@ -156,11 +191,11 @@ resource cluster 'Microsoft.ContainerService/managedClusters@2026-03-01' = {
         osType: 'Linux'
         osSKU: 'AzureLinux'
         vmSize: nodeVmSize
-        count: production ? 3 : 1
-        enableAutoScaling: production
-        minCount: production ? 3 : null
-        maxCount: production ? 6 : null
-        availabilityZones: production ? zones : []
+        count: nodeMin
+        enableAutoScaling: nodeMax > nodeMin
+        minCount: nodeMax > nodeMin ? nodeMin : null
+        maxCount: nodeMax > nodeMin ? nodeMax : null
+        availabilityZones: zones
       }
     ]
     networkProfile: {
@@ -168,6 +203,12 @@ resource cluster 'Microsoft.ContainerService/managedClusters@2026-03-01' = {
       networkPluginMode: 'overlay'
       loadBalancerSku: 'standard'
       outboundType: 'loadBalancer'
+      // Every connection to a Foundry endpoint holds a SNAT port. By default a node gets 1,024 of
+      // one IP's 64,000; the plan shares the IPs' ports among the most nodes there can be.
+      loadBalancerProfile: {
+        managedOutboundIPs: { count: outboundIps }
+        allocatedOutboundPorts: outboundPorts
+      }
     }
     ingressProfile: {
       gatewayAPI: { installation: 'Standard' }
@@ -210,4 +251,4 @@ output identityClientId string = identity.properties.clientId
 output principalId string = identity.properties.principalId
 output appInsightsId string = insights.id
 output postgresHost string = postgres.properties.fullyQualifiedDomainName
-output redisHost string = production ? redis!.properties.hostName : ''
+output redisHost string = withRedis ? redis!.properties.hostName : ''

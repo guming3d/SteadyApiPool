@@ -5,10 +5,10 @@ for this subscription in the region, no quota left, a size the region doesn't of
 leave the others behind, billed. ``CapacityCheck.problems`` reads, without changing anything:
 
 - that the region offers every resource type the template creates (the providers' locations);
-- PostgreSQL Flexible Server: the region's restrictions, the server version, the Burstable size
-  the profile uses, and the subscription's vCore quota for that family;
+- PostgreSQL Flexible Server: the region's restrictions, the server version, the size the
+  sizing plan picked, and the subscription's vCore quota for that size's family;
 - Container Apps: room for one more managed environment in the region;
-- AKS: the node size (and its zones) and the vCPU quota for the nodes.
+- AKS: the plan's node size (and its zones) and the vCPU quota for the most nodes it runs.
 
 Every problem is reported at once, so the user can pick another region in one go. A check that
 can't be read (no permission, a provider that doesn't answer) is skipped: the deployment's own
@@ -24,8 +24,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..arm import ArmClient, ArmError, segment
-from .gateway_template import AKS_NODE_SIZE
-from .models import GatewayPlatform, GatewayProfile
+from .models import GatewayPlan
+from .sizing import postgres_size
 
 logger = logging.getLogger(__name__)
 
@@ -36,16 +36,8 @@ POSTGRES_VERSION = "16"
 CONTAINER_APPS_API_VERSION = "2025-01-01"
 COMPUTE_API_VERSION = "2024-07-01"
 SKUS_API_VERSION = "2021-07-01"
-# The Burstable sizes the templates use, their vCores, and the family their quota counts in.
-POSTGRES_SKUS: dict[GatewayProfile, tuple[str, int]] = {
-    "dev": ("Standard_B1ms", 1),
-    "production": ("Standard_B2s", 2),
-}
-POSTGRES_EDITION = "Burstable"
-POSTGRES_FAMILY = "standardBSFamily"
-# The AKS node size's quota family, and vCPUs per node (Standard_D4ds_v5).
+# The quota family of the AKS node sizes the plans use (Standard_D*ds_v5).
 VM_FAMILY = "standardDDSv5Family"
-VCPUS_PER_NODE = 4
 # Offered instead when the chosen region can't take the gateway.
 ALTERNATIVE_REGIONS = (
     "eastus2",
@@ -73,17 +65,17 @@ _LABELS = {
 }
 
 
-def resource_types(platform: GatewayPlatform, profile: GatewayProfile) -> list[str]:
-    """The resource types the template creates for this platform and profile."""
+def resource_types(plan: GatewayPlan) -> list[str]:
+    """The resource types the template creates for this plan."""
     types = [
         "Microsoft.OperationalInsights/workspaces",
         "Microsoft.Insights/components",
         "Microsoft.ManagedIdentity/userAssignedIdentities",
         "Microsoft.DBforPostgreSQL/flexibleServers",
     ]
-    if profile == "production":
+    if plan.redis_sku:
         types.append("Microsoft.Cache/redisEnterprise")
-    if platform == "aks":
+    if plan.platform == "aks":
         types.append("Microsoft.ContainerService/managedClusters")
     else:
         types += ["Microsoft.App/managedEnvironments", "Microsoft.App/containerApps"]
@@ -108,26 +100,27 @@ class CapacityCheck:
         arm: ArmClient,
         subscription_id: str,
         location: str,
-        platform: GatewayPlatform,
-        profile: GatewayProfile,
+        plan: GatewayPlan,
         *,
         providers: Mapping[str, Mapping[str, Any] | None] | None = None,
     ) -> CapacityReport:
         """Everything in ``location`` that would make the deployment fail; empty if none."""
         subscription = f"/subscriptions/{segment(subscription_id)}"
-        types = resource_types(platform, profile)
+        types = resource_types(plan)
         if providers is None:
             providers = self.providers(arm, subscription_id, types)
         report = CapacityReport()
         report.problems += self._offered(types, providers, location)
         checks: list[Callable[[], list[str]]] = [
-            lambda: self._postgres(arm, subscription, location, profile),
+            lambda: self._postgres(arm, subscription, location, plan.postgres_sku),
         ]
-        if platform == "aks":
-            nodes = 3 if profile == "production" else 1
+        if plan.aks is not None:
+            aks = plan.aks
 
             def nodes_fit() -> list[str]:
-                zones, problems = self._nodes(arm, subscription, location, nodes)
+                zones, problems = self._nodes(
+                    arm, subscription, location, aks.node_size, aks.node_max * aks.node_vcpus
+                )
                 report.zones = zones
                 return problems
 
@@ -162,18 +155,17 @@ class CapacityCheck:
         self,
         arm: ArmClient,
         subscription_id: str,
-        platform: GatewayPlatform,
-        profile: GatewayProfile,
+        plan: GatewayPlan,
         exclude: str,
     ) -> list[str]:
         """Regions, of a few common ones, where the same checks find nothing in the way."""
-        providers = self.providers(arm, subscription_id, resource_types(platform, profile))
+        providers = self.providers(arm, subscription_id, resource_types(plan))
         candidates = [r for r in ALTERNATIVE_REGIONS if r != _region(exclude)]
         with ThreadPoolExecutor(max_workers=len(candidates)) as pool:
             reports = list(
                 pool.map(
                     lambda region: self.problems(
-                        arm, subscription_id, region, platform, profile, providers=providers
+                        arm, subscription_id, region, plan, providers=providers
                     ),
                     candidates,
                 )
@@ -211,11 +203,9 @@ class CapacityCheck:
                 problems.append(f"Azure doesn't offer {_LABELS.get(kind, kind)} in {location}.")
         return problems
 
-    def _postgres(
-        self, arm: ArmClient, subscription: str, location: str, profile: GatewayProfile
-    ) -> list[str]:
+    def _postgres(self, arm: ArmClient, subscription: str, location: str, sku: str) -> list[str]:
         base = f"{subscription}/providers/Microsoft.DBforPostgreSQL/locations/{segment(location)}"
-        sku, vcores = POSTGRES_SKUS[profile]
+        size = postgres_size(sku)
         try:
             found = arm.get_arm_json(f"{base}/capabilities", api_version=POSTGRES_API_VERSION)
             usages = arm.get_arm_json(
@@ -243,21 +233,23 @@ class CapacityCheck:
             return problems
         editions = capability.get("supportedServerEditions") or []
         if editions:
-            burstable = next(
-                (e for e in editions if str(e.get("name")).casefold() == POSTGRES_EDITION.lower()),
+            edition = next(
+                (e for e in editions if str(e.get("name")).casefold() == size.edition.casefold()),
                 None,
             )
-            offered = {
-                str(s.get("name")) for s in (burstable or {}).get("supportedServerSkus") or []
-            }
-            if sku not in offered:
+            offered = {str(s.get("name")) for s in (edition or {}).get("supportedServerSkus") or []}
+            if size.sku not in offered:
                 problems.append(
-                    f"PostgreSQL Flexible Server has no {POSTGRES_EDITION} {sku} in {location}."
+                    f"PostgreSQL Flexible Server has no {size.edition_label} {size.sku} in "
+                    f"{location}."
                 )
         problems += _quota(
             (usages or {}).get("value") or [],
-            {POSTGRES_FAMILY: "PostgreSQL Burstable vCores", "cores": "PostgreSQL vCores"},
-            vcores,
+            {
+                size.family: f"PostgreSQL {size.edition_label} vCores",
+                "cores": "PostgreSQL vCores",
+            },
+            size.vcores,
             location,
         )
         return problems
@@ -279,9 +271,9 @@ class CapacityCheck:
         )
 
     def _nodes(
-        self, arm: ArmClient, subscription: str, location: str, nodes: int
+        self, arm: ArmClient, subscription: str, location: str, node_size: str, vcpus: int
     ) -> tuple[list[str], list[str]]:
-        """The node size's usable zones, and what keeps the nodes from fitting."""
+        """The node size's usable zones, and what keeps ``vcpus`` of it from fitting."""
         try:
             skus = list(
                 arm.list_arm(
@@ -301,13 +293,12 @@ class CapacityCheck:
             (
                 item
                 for item in skus
-                if item.get("resourceType") == "virtualMachines"
-                and item.get("name") == AKS_NODE_SIZE
+                if item.get("resourceType") == "virtualMachines" and item.get("name") == node_size
             ),
             None,
         )
         if sku is None:
-            return [], [f"The AKS node size {AKS_NODE_SIZE} isn't offered in {location}."]
+            return [], [f"The AKS node size {node_size} isn't offered in {location}."]
         restrictions = sku.get("restrictions") or []
         if any(
             item.get("type") == "Location"
@@ -315,8 +306,7 @@ class CapacityCheck:
             for item in restrictions
         ):
             return [], [
-                f"The AKS node size {AKS_NODE_SIZE} isn't available to this subscription in "
-                f"{location}."
+                f"The AKS node size {node_size} isn't available to this subscription in {location}."
             ]
         info = (sku.get("locationInfo") or [{}])[0]
         blocked = {
@@ -329,7 +319,7 @@ class CapacityCheck:
         problems = _quota(
             (usages or {}).get("value") or [],
             {VM_FAMILY: "DDSv5 vCPUs", "cores": "Total regional vCPUs"},
-            nodes * VCPUS_PER_NODE,
+            vcpus,
             location,
         )
         return zones, problems

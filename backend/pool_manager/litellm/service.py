@@ -13,14 +13,16 @@ from collections.abc import Mapping
 from threading import Lock
 from typing import Any
 
-from ..arm import ArmClient
+from ..arm import ArmClient, ArmError
 from ..config import Settings
 from ..discovery import KnownMember
 from ..errors import ServiceError
 from ..model_check import FoundryModelCheck
 from ..models import ModelCheck, is_valid_resource_id
+from .aks_deploy import CONTAINER_SERVICE_API_VERSION
 from .client import LiteLLMClient, LiteLLMError
-from .gateway import GatewayConnection, GatewayUnavailable
+from .gateway import GatewayConnection, GatewayInfo, GatewayUnavailable
+from .gateway_template import SIZING_TAG, parse_sizing_tag
 from .models import (
     AliasView,
     BackendView,
@@ -161,9 +163,23 @@ class LiteLLMService:
             gateway_principal_id=info.principal_id,
             gateway_url=info.url,
             litellm_version=self.gateway.version(),
+            sized_for=parse_sizing_tag(self._gateway_tags(info).get(SIZING_TAG)),
             app_insights_id=info.app_insights_id,
             discovery_subscriptions=self._settings.discovery_subscription_list,
         )
+
+    def _gateway_tags(self, info: GatewayInfo) -> Mapping[str, Any]:
+        """The Container App's tags, or for AKS the cluster's (read with the operator)."""
+        if not self._settings.gateway_cluster_id:
+            return info.tags
+        try:
+            cluster = self.arm.get_arm_json(
+                self._settings.gateway_cluster_id, api_version=CONTAINER_SERVICE_API_VERSION
+            )
+        except ArmError as error:
+            logger.info("Cannot read the gateway's cluster tags: %s", error.message)
+            return {}
+        return (cluster or {}).get("tags") or {}
 
     def foundry_accounts(self) -> list[str]:
         """Foundry accounts behind members the gateway calls with its managed identity; that

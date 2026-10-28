@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "12044474409231423010"
+      "templateHash": "606940341119541896"
     }
   },
   "parameters": {
@@ -29,7 +29,62 @@
         "production"
       ],
       "metadata": {
-        "description": "dev: one replica, no Redis. production: 2-5 replicas sharing cooldowns through Redis."
+        "description": "A label for the gateway panel: dev for a single replica, else production."
+      }
+    },
+    "replicaCpu": {
+      "type": "string",
+      "defaultValue": "1.0",
+      "metadata": {
+        "description": "The LiteLLM container: vCPUs and memory (the collector sidecar adds 0.25 vCPU, 0.5Gi)."
+      }
+    },
+    "replicaMemory": {
+      "type": "string",
+      "defaultValue": "2Gi"
+    },
+    "minReplicas": {
+      "type": "int",
+      "defaultValue": 1,
+      "minValue": 1
+    },
+    "maxReplicas": {
+      "type": "int",
+      "defaultValue": 1,
+      "minValue": 1
+    },
+    "scaleRequests": {
+      "type": "int",
+      "defaultValue": 50,
+      "minValue": 1,
+      "metadata": {
+        "description": "Requests a second per replica before Container Apps adds one."
+      }
+    },
+    "postgresSku": {
+      "type": "string",
+      "defaultValue": "Standard_B1ms"
+    },
+    "postgresTier": {
+      "type": "string",
+      "defaultValue": "Burstable",
+      "allowedValues": [
+        "Burstable",
+        "GeneralPurpose"
+      ]
+    },
+    "redisSku": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Azure Managed Redis SKU, e.g. Balanced_B0; empty for none (a single replica)."
+      }
+    },
+    "sizing": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "The traffic the gateway was sized for, kept as a tag."
       }
     },
     "image": {
@@ -79,7 +134,7 @@
     }
   },
   "variables": {
-    "production": "[equals(parameters('profile'), 'production')]",
+    "withRedis": "[not(empty(parameters('redisSku')))]",
     "suffix": "[uniqueString(resourceGroup().id, parameters('name'))]",
     "gatewayTags": "[union(parameters('tags'), createObject('managed-by', 'ai-gateway-pool', 'ai-gateway', parameters('name')))]",
     "postgresName": "[take(format('psql-{0}-{1}', parameters('name'), variables('suffix')), 63)]",
@@ -152,8 +207,8 @@
       "location": "[parameters('location')]",
       "tags": "[variables('gatewayTags')]",
       "sku": {
-        "name": "[if(variables('production'), 'Standard_B2s', 'Standard_B1ms')]",
-        "tier": "Burstable"
+        "name": "[parameters('postgresSku')]",
+        "tier": "[parameters('postgresTier')]"
       },
       "properties": {
         "version": "16",
@@ -179,21 +234,21 @@
       }
     },
     {
-      "condition": "[variables('production')]",
+      "condition": "[variables('withRedis')]",
       "type": "Microsoft.Cache/redisEnterprise",
       "apiVersion": "2025-04-01",
       "name": "[variables('redisName')]",
       "location": "[parameters('location')]",
       "tags": "[variables('gatewayTags')]",
       "sku": {
-        "name": "Balanced_B0"
+        "name": "[if(variables('withRedis'), parameters('redisSku'), 'Balanced_B0')]"
       },
       "properties": {
         "minimumTlsVersion": "1.2"
       }
     },
     {
-      "condition": "[variables('production')]",
+      "condition": "[variables('withRedis')]",
       "type": "Microsoft.Cache/redisEnterprise/databases",
       "apiVersion": "2025-04-01",
       "name": "[format('{0}/{1}', variables('redisName'), 'default')]",
@@ -215,6 +270,12 @@
       "location": "[parameters('location')]",
       "tags": "[variables('gatewayTags')]",
       "properties": {
+        "workloadProfiles": [
+          {
+            "name": "Consumption",
+            "workloadProfileType": "Consumption"
+          }
+        ],
         "appLogsConfiguration": {
           "destination": "log-analytics",
           "logAnalyticsConfiguration": {
@@ -232,7 +293,7 @@
       "apiVersion": "2025-01-01",
       "name": "[parameters('name')]",
       "location": "[parameters('location')]",
-      "tags": "[union(variables('gatewayTags'), createObject('ai-gateway-app-insights', resourceId('Microsoft.Insights/components', format('appi-{0}', parameters('name'))), 'ai-gateway-profile', parameters('profile')))]",
+      "tags": "[union(variables('gatewayTags'), createObject('ai-gateway-app-insights', resourceId('Microsoft.Insights/components', format('appi-{0}', parameters('name'))), 'ai-gateway-profile', parameters('profile'), 'ai-gateway-postgres', parameters('postgresSku'), 'ai-gateway-redis', parameters('redisSku'), 'ai-gateway-sizing', parameters('sizing')))]",
       "identity": {
         "type": "UserAssigned",
         "userAssignedIdentities": {
@@ -241,6 +302,7 @@
       },
       "properties": {
         "environmentId": "[resourceId('Microsoft.App/managedEnvironments', format('cae-{0}', parameters('name')))]",
+        "workloadProfileName": "Consumption",
         "configuration": {
           "activeRevisionsMode": "Single",
           "ingress": {
@@ -249,7 +311,7 @@
             "transport": "auto",
             "allowInsecure": false
           },
-          "secrets": "[concat(createArray(createObject('name', 'litellm-master-key', 'value', parameters('masterKey')), createObject('name', 'litellm-salt-key', 'value', parameters('saltKey')), createObject('name', 'database-url', 'value', format('postgresql://litellm:{0}@{1}:5432/litellm?sslmode=require', parameters('postgresPassword'), reference(resourceId('Microsoft.DBforPostgreSQL/flexibleServers', variables('postgresName')), '2024-08-01').fullyQualifiedDomainName)), createObject('name', 'litellm-config', 'value', parameters('litellmConfig')), createObject('name', 'otel-config', 'value', parameters('collectorConfig')), createObject('name', 'appinsights-connection-string', 'value', reference(resourceId('Microsoft.Insights/components', format('appi-{0}', parameters('name'))), '2020-02-02').ConnectionString)), if(variables('production'), createArray(createObject('name', 'redis-password', 'value', listKeys(resourceId('Microsoft.Cache/redisEnterprise/databases', variables('redisName'), 'default'), '2025-04-01').primaryKey)), createArray()))]"
+          "secrets": "[concat(createArray(createObject('name', 'litellm-master-key', 'value', parameters('masterKey')), createObject('name', 'litellm-salt-key', 'value', parameters('saltKey')), createObject('name', 'database-url', 'value', format('postgresql://litellm:{0}@{1}:5432/litellm?sslmode=require', parameters('postgresPassword'), reference(resourceId('Microsoft.DBforPostgreSQL/flexibleServers', variables('postgresName')), '2024-08-01').fullyQualifiedDomainName)), createObject('name', 'litellm-config', 'value', parameters('litellmConfig')), createObject('name', 'otel-config', 'value', parameters('collectorConfig')), createObject('name', 'appinsights-connection-string', 'value', reference(resourceId('Microsoft.Insights/components', format('appi-{0}', parameters('name'))), '2020-02-02').ConnectionString)), if(variables('withRedis'), createArray(createObject('name', 'redis-password', 'value', listKeys(resourceId('Microsoft.Cache/redisEnterprise/databases', variables('redisName'), 'default'), '2025-04-01').primaryKey)), createArray()))]"
         },
         "template": {
           "containers": [
@@ -263,10 +325,10 @@
                 "4000"
               ],
               "resources": {
-                "cpu": "[json(if(variables('production'), '1.75', '1.0'))]",
-                "memory": "[if(variables('production'), '3.5Gi', '2Gi')]"
+                "cpu": "[json(parameters('replicaCpu'))]",
+                "memory": "[parameters('replicaMemory')]"
               },
-              "env": "[concat(createArray(createObject('name', 'LITELLM_MASTER_KEY', 'secretRef', 'litellm-master-key'), createObject('name', 'LITELLM_SALT_KEY', 'secretRef', 'litellm-salt-key'), createObject('name', 'DATABASE_URL', 'secretRef', 'database-url'), createObject('name', 'STORE_MODEL_IN_DB', 'value', 'True'), createObject('name', 'AZURE_CLIENT_ID', 'value', reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('id-{0}', parameters('name'))), '2023-01-31').clientId), createObject('name', 'LITELLM_OTEL_V2', 'value', 'true'), createObject('name', 'OTEL_EXPORTER', 'value', 'otlp_http'), createObject('name', 'OTEL_ENDPOINT', 'value', 'http://127.0.0.1:4318'), createObject('name', 'OTEL_EXPORTER_OTLP_ENDPOINT', 'value', 'http://127.0.0.1:4318'), createObject('name', 'OTEL_SERVICE_NAME', 'value', parameters('name'))), if(variables('production'), createArray(createObject('name', 'REDIS_HOST', 'value', reference(resourceId('Microsoft.Cache/redisEnterprise', variables('redisName')), '2025-04-01').hostName), createObject('name', 'REDIS_PORT', 'value', '10000'), createObject('name', 'REDIS_PASSWORD', 'secretRef', 'redis-password'), createObject('name', 'REDIS_SSL', 'value', 'True')), createArray()))]",
+              "env": "[concat(createArray(createObject('name', 'LITELLM_MASTER_KEY', 'secretRef', 'litellm-master-key'), createObject('name', 'LITELLM_SALT_KEY', 'secretRef', 'litellm-salt-key'), createObject('name', 'DATABASE_URL', 'secretRef', 'database-url'), createObject('name', 'STORE_MODEL_IN_DB', 'value', 'True'), createObject('name', 'AZURE_CLIENT_ID', 'value', reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('id-{0}', parameters('name'))), '2023-01-31').clientId), createObject('name', 'LITELLM_OTEL_V2', 'value', 'true'), createObject('name', 'OTEL_EXPORTER', 'value', 'otlp_http'), createObject('name', 'OTEL_ENDPOINT', 'value', 'http://127.0.0.1:4318'), createObject('name', 'OTEL_EXPORTER_OTLP_ENDPOINT', 'value', 'http://127.0.0.1:4318'), createObject('name', 'OTEL_SERVICE_NAME', 'value', parameters('name'))), if(variables('withRedis'), createArray(createObject('name', 'REDIS_HOST', 'value', reference(resourceId('Microsoft.Cache/redisEnterprise', variables('redisName')), '2025-04-01').hostName), createObject('name', 'REDIS_PORT', 'value', '10000'), createObject('name', 'REDIS_PASSWORD', 'secretRef', 'redis-password'), createObject('name', 'REDIS_SSL', 'value', 'True')), createArray()))]",
               "volumeMounts": [
                 {
                   "volumeName": "config",
@@ -343,14 +405,14 @@
             }
           ],
           "scale": {
-            "minReplicas": "[if(variables('production'), 2, 1)]",
-            "maxReplicas": "[if(variables('production'), 5, 1)]",
+            "minReplicas": "[parameters('minReplicas')]",
+            "maxReplicas": "[parameters('maxReplicas')]",
             "rules": [
               {
                 "name": "http",
                 "http": {
                   "metadata": {
-                    "concurrentRequests": "50"
+                    "concurrentRequests": "[string(parameters('scaleRequests'))]"
                   }
                 }
               }

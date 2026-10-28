@@ -238,6 +238,9 @@ class Capabilities(StrictModel):
     # Base URL of the gateway, e.g. https://<app>.<env>.<region>.azurecontainerapps.io.
     gateway_url: str | None
     litellm_version: str | None
+    # The traffic the gateway was deployed (or last resized) for; None for one from before the
+    # sizer, or one this app didn't deploy.
+    sized_for: GatewaySizing | None = None
     # Application Insights component that receives the gateway's OpenTelemetry spans.
     app_insights_id: str | None
     discovery_subscriptions: list[str]
@@ -250,7 +253,7 @@ CostItemKind = Literal[
 
 class CostItem(StrictModel):
     kind: CostItemKind
-    # What is priced, e.g. "1.25 vCPU, 2.5 GiB x 1 replica" or "B1MS + 32 GB".
+    # What is priced, e.g. "1.25 vCPU, 2.5 GiB x 1 replica" or "B1ms + 32 GB".
     detail: str
     # Per month (730 hours): Container Apps bill less while replicas are idle, so a range.
     monthly_low: float
@@ -284,7 +287,7 @@ class ServiceCost(StrictModel):
 # double hyphen; the template derives resource names (psql-<name>-..., id-<name>) from it.
 GATEWAY_NAME_PATTERN = r"^[a-z](?:[a-z0-9]|-[a-z0-9]){1,30}$"
 
-# ``dev``: one replica and no Redis; ``production``: 2-5 replicas sharing cooldowns in Redis.
+# ``dev``: one replica and no Redis; ``production``: 2-10 replicas sharing cooldowns in Redis.
 GatewayProfile = Literal["dev", "production"]
 
 # Where a gateway the app deploys runs: Azure Container Apps, or a new AKS cluster.
@@ -325,6 +328,179 @@ class TargetSelect(StrictModel):
     gateway_name: str = Field(min_length=2, max_length=32, pattern=r"^[a-z0-9-]+$")
 
 
+# How fast the models behind the gateway answer (sizing.SPEEDS), unless the scenario gives the
+# average response time itself.
+ModelSpeed = Literal["fast", "standard", "reasoning"]
+
+
+class GatewaySizing(StrictModel):
+    """The traffic a gateway is sized for (sizing.plan): its peak, not its average."""
+
+    peak_rpm: int = Field(ge=1, le=1_000_000)
+    input_tokens: int = Field(ge=1, le=2_000_000)
+    output_tokens: int = Field(ge=1, le=200_000)
+    # The longest a call may take, retries aside: LiteLLM's request_timeout.
+    timeout_seconds: int = Field(ge=10, le=3600)
+    streaming: bool = True
+    model_speed: ModelSpeed = "standard"
+    # Overrides the speed preset: the average seconds a call takes, start to last token.
+    response_seconds: float | None = Field(default=None, gt=0, le=3600)
+    headroom_percent: int = Field(default=25, ge=0, le=200)
+    # One more replica than the peak needs, at least two, and zones for AKS nodes.
+    zone_redundant: bool = True
+    kubernetes_team: bool = False
+    self_hosted_models: bool = False
+    private_network: bool = False
+
+
+# What the plan says about itself; the UI words each code (litellm/messages.ts, plan*).
+PlanNoteCode = Literal[
+    "platform_simple",
+    "platform_team",
+    "platform_gpu",
+    "platform_timeout",
+    "platform_scale",
+    "platform_chosen",
+    "private_aks",
+    "private_manual",
+    "call_exceeds_timeout",
+    "single_replica",
+    "redis_buffer",
+    "foundry_quota",
+    "outbound_capped",
+    "pool_lowered",
+    "aca_timeout",
+    "aca_replicas",
+    "aks_too_big",
+    "database_too_small",
+]
+
+
+class PlanNote(StrictModel):
+    code: PlanNoteCode
+    values: dict[str, float | str] = Field(default_factory=dict)
+
+
+class AksPlan(StrictModel):
+    node_size: str
+    node_vcpus: int
+    pods_per_node: int
+    node_min: int
+    node_max: int
+    # Standard (uptime SLA) when zone redundant, else Free.
+    tier: Literal["Free", "Standard"]
+    outbound_ips: int
+    # SNAT ports each node gets, and what it would need with every call slowed to the timeout.
+    outbound_ports: int
+    ports_needed: int
+
+
+class GatewayPlan(StrictModel):
+    """What sizing.plan derives from a GatewaySizing for one platform, with its arithmetic."""
+
+    platform: GatewayPlatform
+    # Kept as a label (tags, the gateway panel): "dev" for a single replica, else "production".
+    profile: GatewayProfile
+    rps: float
+    tpm: int
+    call_seconds: float
+    in_flight: int
+    # Calls in flight if every call ran to the timeout (Foundry slowed down).
+    in_flight_slow: int
+    cpu_ms: float
+    # What one replica serves at the target CPU, and how many calls it holds at most.
+    replica_rps: float
+    replica_in_flight: int
+    bound_by: Literal["cpu", "in_flight"]
+    peak_replicas: int
+    min_replicas: int
+    max_replicas: int
+    # Container Apps' HTTP rule: requests a second per replica before it adds one.
+    scale_rps: int
+    replica_cpu: float
+    replica_memory_gib: float
+    bandwidth_mbps: float
+    postgres_sku: str
+    postgres_tier: Literal["Burstable", "GeneralPurpose"]
+    postgres_connections: int
+    postgres_limit: int
+    db_pool: int
+    redis_sku: str | None
+    aks: AksPlan | None
+    request_timeout: int
+    route_timeout: int
+    reasons: list[PlanNote]
+    warnings: list[PlanNote]
+    # Anything here keeps the plan from being deployed on this platform.
+    problems: list[PlanNote]
+
+
+class GatewayPlans(StrictModel):
+    recommended: GatewayPlatform
+    aca: GatewayPlan
+    aks: GatewayPlan
+
+
+# What resizing a gateway touches, one item each (resize.py).
+ResizeItem = Literal[
+    "replicas",
+    "scale_rule",
+    "replica_size",
+    "nodes",
+    "pods",
+    "database",
+    "node_size",
+    "outbound",
+    "tier",
+    "redis",
+    "timeout",
+]
+# apply: the app changes it; optional: only when asked (the database restarts); manual: the app
+# leaves it to the user (``command`` says how, when there is one).
+ResizeAction = Literal["apply", "optional", "manual"]
+
+
+class ResizeChange(StrictModel):
+    item: ResizeItem
+    current: str
+    proposed: str
+    action: ResizeAction
+    command: str | None = None
+
+
+class ResizePlan(StrictModel):
+    """What resizing the gateway for a scenario would change, read without changing anything."""
+
+    platform: GatewayPlatform
+    plan: GatewayPlan
+    # Only what differs from the gateway as it is now.
+    changes: list[ResizeChange]
+    # The gateway as it was read; applying refuses a gateway that has changed since.
+    etag: str
+    # The scenario it was sized for before, if any.
+    sized_for: GatewaySizing | None
+    problems: list[str]
+
+
+class ResizeApply(StrictModel):
+    sizing: GatewaySizing
+    etag: str = Field(min_length=1, max_length=128)
+    # Also resize the database: the server restarts.
+    database: bool = False
+
+
+class ResizeResult(StrictModel):
+    applied: list[ResizeItem]
+    # AKS: the Run Command changing LiteLLM's pods, followed by ``GET .../resize/{command}``.
+    command_id: str | None
+
+
+class ResizeCommand(StrictModel):
+    state: Literal["running", "succeeded", "failed"]
+    exit_code: int | None
+    log_tail: str | None
+
+
 class GatewayCreate(StrictModel):
     tenant_id: str | None = Field(default=None, pattern=GUID_PATTERN)
     subscription_id: str = Field(pattern=GUID_PATTERN)
@@ -332,7 +508,7 @@ class GatewayCreate(StrictModel):
     resource_group: str = Field(pattern=RESOURCE_GROUP_PATTERN)
     location: str = Field(pattern=r"^[a-z0-9]{2,40}$")
     name: str = Field(max_length=32, pattern=GATEWAY_NAME_PATTERN)
-    profile: GatewayProfile = "dev"
+    sizing: GatewaySizing
     platform: GatewayPlatform = "aca"
     # When a resource fails: stop the deployment and delete what it created (cleanup.py).
     cleanup_on_failure: bool = True
@@ -342,6 +518,9 @@ class GatewayPreflight(StrictModel):
     """What would keep a deployment there from succeeding, read before anything is created."""
 
     location: str
+    # What would be deployed, and its retail price in the region (None when prices are down).
+    plan: GatewayPlan
+    list_price: ListPrice | None
     problems: list[str]
     # Common regions where nothing is in the way; only looked up when there are problems.
     open_regions: list[str]

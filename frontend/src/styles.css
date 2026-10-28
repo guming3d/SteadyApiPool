@@ -626,6 +626,15 @@ td > b + .tag { margin: 0 0 0 8px; font-size: 11px; }
 .choice-card header .tag { margin: 0; font-size: 11px; }
 .choice-card p { margin: 0; font-size: 12px; }
 .choice-card ul { display: grid; gap: 3px; margin: 0; padding-left: 18px; font-size: 12px; }
+.sizer-more summary, .sizer-steps summary { width: max-content; color: var(--brand); font-weight: 500; font-size: 12px; cursor: pointer; }
+.sizer-more[open] > .form-grid { margin-top: 10px; }
+.sizer-summary { font-size: 13px; }
+.choice-card .sizer-warnings { padding-left: 0; list-style: none; color: var(--muted-foreground); }
+.sizer-warnings li { display: grid; grid-template-columns: 12px minmax(0, 1fr); gap: 6px; align-items: start; }
+.sizer-warnings li > svg { margin-top: 2px; }
+.sizer-steps { justify-self: stretch; }
+.sizer-steps ol { display: grid; gap: 4px; margin: 8px 0 0; padding-left: 20px; font-size: 12px; overflow-wrap: anywhere; }
+.gateway-form > p.sizer-estimate { font-size: 11px; }
 .deploy-steps { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; font-size: 12px; }
 .deploy-steps li { display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: 8px; align-items: start; }
 .deploy-steps li > svg { margin-top: 2px; color: var(--muted-foreground); }
@@ -813,6 +822,15 @@ td > b + .tag { margin: 0 0 0 8px; font-size: 11px; }
 .service-action > div { min-width: 0; display: grid; gap: 2px; font-size: 13px; }
 .service-action .muted { font-size: 12px; }
 .service-action[data-tone="danger"] { border-color: color-mix(in oklab, var(--destructive) 30%, var(--border)); }
+.resize-dialog { display: grid; gap: 12px; min-width: 0; }
+.resize-dialog .callout > div { flex: 1; display: grid; gap: 4px; }
+.resize-dialog .callout ul { margin: 0 0 4px; padding-left: 18px; }
+.resize-changes { width: 100%; border-collapse: collapse; font-size: 13px; }
+.resize-changes th, .resize-changes td { padding: 6px 8px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+.resize-changes th { color: var(--muted-foreground); font-weight: 500; font-size: 12px; }
+.resize-manual { display: grid; gap: 8px; font-size: 13px; }
+.resize-manual > div { display: grid; gap: 4px; min-width: 0; }
+.resize-log { max-height: 180px; overflow: auto; margin: 6px 0 0; padding: 8px; border-radius: var(--radius); background: var(--muted); font-size: 11px; white-space: pre-wrap; }
 
 /* Product tour: a spotlight on one element, dimming the rest, and a card beside it. */
 .tour-button { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; background: var(--card); color: var(--brand); font: 500 12px/1.4 var(--font-sans); cursor: pointer; }

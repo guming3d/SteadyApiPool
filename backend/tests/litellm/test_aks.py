@@ -20,6 +20,7 @@ from pool_manager.litellm.aks_deploy import AKS_SERVER_SCOPE
 from pool_manager.litellm.gateway_template import (
     AKS_COMMAND,
     AksInstall,
+    InstallSize,
     aks_bootstrap,
     aks_bundle,
     aks_secrets,
@@ -27,7 +28,7 @@ from pool_manager.litellm.gateway_template import (
 )
 from pool_manager.secret_store import SecretStore
 from tests.fake_azure import SUBSCRIPTION, TENANT, FakeAzure
-from tests.litellm.test_app import WRITE, _client, _settings
+from tests.litellm.test_app import PRODUCTION, TRIAL, WRITE, _client, _settings
 
 NO_TARGET = {"subscription_id": "", "resource_group": "", "gateway_name": ""}
 DEPLOYMENT = (
@@ -92,6 +93,7 @@ class _Wizard:
             "location": "swedencentral",
             "name": "gw-aks",
             "platform": "aks",
+            "sizing": TRIAL,
             **overrides,
         }
         return self.client.post("/api/litellm/target/gateways", json=body, headers=WRITE)
@@ -163,7 +165,7 @@ def test_deploying_on_aks_runs_the_template_and_selects_it(
 def test_a_production_cluster_uses_the_zones_of_its_node_size(
     wizard: _Wizard, azure: FakeAzure
 ) -> None:
-    assert wizard.create(profile="production").status_code == 200
+    assert wizard.create(sizing=PRODUCTION).status_code == 200
 
     assert azure.arm_deployments[DEPLOYMENT.casefold()]["parameters"]["zones"] == ["1", "2", "3"]
 
@@ -394,7 +396,7 @@ def test_deleting_the_current_aks_gateway_forgets_it(azure: FakeAzure, tmp_path:
 def _install(profile: str = "dev") -> AksInstall:
     return AksInstall(
         name="gw-aks",
-        profile="production" if profile == "production" else "dev",
+        size=InstallSize(2, 10) if profile == "production" else InstallSize(),
         fqdn="gw-aks.swedencentral.cloudapp.azure.com",
         identity_client_id="client-id",
         postgres_host="psql.postgres.database.azure.com",
@@ -423,6 +425,17 @@ def test_the_install_reads_secrets_from_files_and_never_prints_them() -> None:
     if bash:
         result = subprocess.run([bash, "-n"], input=script, text=True, capture_output=True)
         assert result.returncode == 0, result.stderr
+
+
+def test_production_pods_get_litellms_recommended_size() -> None:
+    values = aks_bootstrap(_install("production"), aks_secrets())["values.yaml"]
+
+    # 1 vCPU and 4Gi for LiteLLM's one worker, as both requests and limits.
+    assert values.count('cpu: "1"') == 2 and values.count('memory: "4Gi"') == 2
+    assert "maxReplicas: 10" in values
+    # Spend is written once a minute; ten pods at ten connections fit the server.
+    assert "proxy_batch_write_at: 60" in values
+    assert "database_connection_pool_limit: 10" in values
 
 
 def test_the_bundle_for_an_existing_cluster_uses_the_charts_master_key() -> None:

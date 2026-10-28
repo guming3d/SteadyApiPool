@@ -16,9 +16,24 @@ export type MemberModel = {
   model_version: string | null
   /** Why a Foundry deployment's model could not be read; such a member fails the check. */
   problem: string | null
+  /** The deployment's type, capacity units, and the per-minute limits Azure enforces on it. */
+  deployment_type: string | null
+  capacity: number | null
+  tpm: number | null
+  rpm: number | null
+  /** rate_limits: Azure's own; capacity: estimated at an older chat model's 1,000 TPM, 6 RPM a unit. */
+  quota_source: "rate_limits" | "capacity" | null
 }
 
-export type ModelCheck = { members: MemberModel[]; model_names: string[]; ok: boolean; message: string | null }
+export type ModelCheck = {
+  members: MemberModel[]
+  model_names: string[]
+  ok: boolean
+  message: string | null
+  /** What the pool's deployments allow together, each deployment once; null if none could be read. */
+  total_tpm: number | null
+  total_rpm: number | null
+}
 
 /** LiteLLM: a Container App, or any other LiteLLM proxy connected by URL (e.g. on AKS). */
 export type GatewayKind = "aca" | "external"

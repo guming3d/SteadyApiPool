@@ -36,6 +36,8 @@ import { ChecklistBadge, checklistItems, GlossaryDialog, ModelCheckNotice, PoolC
 import { PoolMonitor } from "../components/pool-monitor"
 import { RemovePoolDialog } from "./removal-dialog"
 import { RoutingPreview } from "./routing-preview"
+import { PoolQuotaNotice } from "../components/pool-quota"
+import { sizedFor } from "../pool-quota"
 import { Button, ErrorText, Field, FieldHelp } from "../components/ui"
 
 function draftFromPool(pool: PoolView | null): PoolWrite {
@@ -358,6 +360,7 @@ export function PoolEditor({ poolId, initial, addMembers, created, onCreated, on
     />}
     {!validMembers && !readOnly && <div className="state warning"><CircleAlert size={14} />{t.needMembers}</div>}
     <ModelCheckNotice check={modelResult} loading={draft.members.length > 0 && modelCheck.isFetching && !modelResult} />
+    <PoolQuotaNotice product="litellm" check={modelResult} sized={sizedFor(capabilities.data?.sized_for)} />
   </>
 
   const settingsPanel = <PoolBreakerSettings

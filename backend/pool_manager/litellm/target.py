@@ -40,6 +40,7 @@ from .access import GATEWAY_ACTIONS
 from .aks_deploy import CONTAINER_SERVICE_API_VERSION, AksDeployer, cluster_path
 from .cleanup import GatewayCleanup, delete_resources, tagged_resources
 from .client import LiteLLMClient, LiteLLMError
+from .cost import PlanPrices
 from .gateway import MANAGED_TAG, MANAGED_TAG_VALUE, container_app_info
 from .gateway_deploy import (
     DEPLOYMENTS_API_VERSION,
@@ -57,11 +58,15 @@ from .models import (
     GatewayDelete,
     GatewayDeleteCheck,
     GatewayDeployStatus,
+    GatewayPlans,
     GatewayPreflight,
     GatewayProfile,
+    GatewaySizing,
     GatewayView,
     TargetSelect,
 )
+from .sizing import plan as sizing_plan
+from .sizing import plans as sizing_plans
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +97,7 @@ class LiteLLMTargets:
         gateway_transport: httpx.BaseTransport | None = None,
         secrets: SecretStore | None = None,
         cleanup: GatewayCleanup | None = None,
+        prices: PlanPrices | None = None,
     ) -> None:
         self._targets = targets
         self._settings = targets.settings
@@ -104,6 +110,8 @@ class LiteLLMTargets:
         )
         # Process-wide in the app (deps.py), so a cleanup outlives a switch of gateway.
         self._cleanup = cleanup or GatewayCleanup(sleep=targets.sleep)
+        # Retail prices for a plan in the chosen region (the public API, no token).
+        self._prices = prices or PlanPrices(targets.settings)
 
     # -- reads -------------------------------------------------------------------------
 
@@ -226,10 +234,24 @@ class LiteLLMTargets:
             unregistered_providers=unregistered,
         )
 
-    def preflight(self, body: GatewayCreate) -> GatewayPreflight:
-        """What would keep a deployment there from succeeding, before anything is created."""
+    def plans(self, sizing: GatewaySizing) -> GatewayPlans:
+        """The plan for each platform, and which one fits the scenario best; nothing is read."""
         self._targets.require_local()
-        return self._deployer.preflight(self._targets.arm(body.tenant_id), body)
+        return sizing_plans(sizing)
+
+    def preflight(self, body: GatewayCreate) -> GatewayPreflight:
+        """What the deployment would create there and cost, and what would keep it from
+        succeeding, before anything is created."""
+        self._targets.require_local()
+        found = sizing_plan(body.sizing, body.platform)
+        problems, regions = self._deployer.preflight(self._targets.arm(body.tenant_id), body, found)
+        return GatewayPreflight(
+            location=body.location,
+            plan=found,
+            list_price=self._prices.price(found, body.location),
+            problems=problems,
+            open_regions=regions,
+        )
 
     # -- changes -----------------------------------------------------------------------
 
@@ -355,7 +377,7 @@ class LiteLLMTargets:
             resource_group=body.resource_group,
             location=body.location,
             url=None,
-            profile=body.profile,
+            profile=sizing_plan(body.sizing, body.platform).profile,
             provisioning_state="Deploying",
             managed=True,
             can_manage=True,
@@ -385,7 +407,7 @@ class LiteLLMTargets:
             resource_group=body.resource_group,
             location=body.location,
             url=url,
-            profile=body.profile,
+            profile=sizing_plan(body.sizing, body.platform).profile,
             provisioning_state="Deploying",
             managed=True,
             can_manage=True,

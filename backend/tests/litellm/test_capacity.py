@@ -14,7 +14,7 @@ from pool_manager.arm import ArmClient
 from pool_manager.config import Settings
 from pool_manager.litellm.cleanup import GatewayCleanup
 from tests.fake_azure import SUBSCRIPTION, TENANT, FakeAzure, FakeCredential
-from tests.litellm.test_app import WRITE, _settings
+from tests.litellm.test_app import PRODUCTION, TRIAL, WRITE, _settings
 from tests.litellm.test_target import DEPLOYMENT, NO_TARGET, _create, _Wizard
 
 GROUP = f"/subscriptions/{SUBSCRIPTION}/resourceGroups/rg-new"
@@ -49,6 +49,7 @@ def _preflight(wizard: _Wizard, **overrides: Any) -> dict[str, Any]:
         "resource_group": "rg-new",
         "location": "eastus2",
         "name": "gw-new",
+        "sizing": TRIAL,
         **overrides,
     }
     response = wizard.client.post(
@@ -65,16 +66,16 @@ def _preflight(wizard: _Wizard, **overrides: Any) -> dict[str, Any]:
 def test_every_problem_in_the_region_is_reported_before_anything_is_created(
     wizard: _Wizard, azure: FakeAzure
 ) -> None:
-    azure.postgres_skus["eastus2"] = ["Standard_B1ms"]  # No B2s for production.
+    azure.postgres_skus["eastus2"] = ["Standard_B1ms"]  # No D2ds_v5 for production.
     azure.environments_free["eastus2"] = 0
     azure.offered["Microsoft.Cache/redisEnterprise"] = ["Sweden Central"]
 
-    response = _create(wizard, profile="production")
+    response = _create(wizard, sizing=PRODUCTION)
 
     assert response.status_code == 409, response.text
     detail = response.json()["detail"]
     assert "can't be deployed in eastus2, so nothing was created" in detail
-    assert "no Burstable Standard_B2s in eastus2" in detail
+    assert "no General Purpose Standard_D2ds_v5 in eastus2" in detail
     assert "Container Apps environments has 0 free" in detail
     assert "Azure doesn't offer Azure Managed Redis in eastus2" in detail
     # The regions where all of it fits are offered.
@@ -87,13 +88,13 @@ def test_postgres_quota_is_checked(wizard: _Wizard, azure: FakeAzure) -> None:
     azure.postgres_vcores_free["eastus2"] = 1
 
     dev = _preflight(wizard)
-    production = _preflight(wizard, profile="production")
+    production = _preflight(wizard, sizing=PRODUCTION)
 
     assert dev["problems"] == []
     assert dev["open_regions"] == []  # Only looked up when something is in the way.
     assert production["problems"] == [
-        "Not enough quota in eastus2: PostgreSQL Burstable vCores has 1 free, the gateway needs "
-        "2. Request more in the portal (Quotas) or choose another region."
+        "Not enough quota in eastus2: PostgreSQL General Purpose vCores has 1 free, the gateway "
+        "needs 2. Request more in the portal (Quotas) or choose another region."
     ]
     assert "swedencentral" in production["open_regions"]
 
@@ -115,7 +116,7 @@ def test_an_aks_preflight_checks_the_nodes(wizard: _Wizard, azure: FakeAzure) ->
     azure.vcpus_free = 8
 
     dev = _preflight(wizard, platform="aks")
-    production = _preflight(wizard, platform="aks", profile="production")
+    production = _preflight(wizard, platform="aks", sizing=PRODUCTION)
 
     assert dev["problems"] == []
     assert production["problems"][0].startswith(
