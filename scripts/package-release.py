@@ -30,7 +30,8 @@ CONTENTS = [
         "scripts",
         ["start-local.ps1", "start-local.sh", "start-local.cmd", "doctor.py", "benchmark.py"],
     ),
-    (".", ["README.md", "README.zh-CN.md", "LICENSE"]),
+    # The guides the README links to, and its screenshots.
+    (".", ["README.md", "README.zh-CN.md", "LICENSE", "docs"]),
 ]
 SKIP_DIRS = {"__pycache__", ".venv", ".pytest_cache", ".mypy_cache", ".ruff_cache", "tests"}
 SKIP_FILES = re.compile(r"(\.py[cod]$|^\.env$|^\.pool-manager.*\.(json|bin)$|\.log$)")
