@@ -98,12 +98,18 @@
 
 | 资源 | 说明 |
 | --- | --- |
-| 容器应用 `<name>` | LiteLLM `v1.106.4`（固定映像 `ghcr.io/berriai/litellm:v1.106.4`），端口 4000，通过外部 HTTPS 入口公开，另有一个 OpenTelemetry Collector 边车容器把模型调用的跟踪发送到 Application Insights。副本数、副本大小（只有一个副本时为 1 vCPU、2 GiB，否则为 2 vCPU、4 GiB，即 LiteLLM 对单个工作进程的建议）和缩放规则都来自规模计算。入口会结束 240 秒没有输出的请求。主密钥、盐密钥、数据库 URL 和 `config.yaml` 都是容器应用机密 |
+| 容器应用 `<name>` | LiteLLM `v1.106.4`（固定映像 `ghcr.io/berriai/litellm:v1.106.4`），端口 4000，通过外部 HTTPS 入口公开，另有一个 OpenTelemetry Collector 边车容器把模型调用的跟踪发送到 Application Insights。副本数、副本大小（只有一个副本时为 1 vCPU、2 GiB，否则为 2 vCPU、4 GiB，即 LiteLLM 对单个工作进程的建议）和缩放规则都来自规模计算：每个副本同时进行的调用超过峰值时它容纳的数量，或 CPU 超过其工作进程一个核心的 60%（2 vCPU 副本及其边车容器分配的 27%）时添加副本。入口会结束 240 秒没有输出的请求。主密钥、盐密钥、数据库 URL 和 `config.yaml` 都是容器应用机密 |
 | 容器应用环境 `cae-<name>` | 工作负载配置文件环境，LiteLLM 运行在其消耗配置文件上；日志发送到 Log Analytics。之后可以添加带高级入口的专用配置文件（空闲超时最长 30 分钟，而不是 240 秒），它至少需要两个专用节点 |
 | 用户分配的托管标识 `id-<name>` | LiteLLM 调用 Foundry 时使用的身份（`AZURE_CLIENT_ID`）；设置向导会在API节点帐户上为它分配 *Cognitive Services OpenAI User*。它没有其他角色 |
-| Azure Database for PostgreSQL 灵活服务器 | LiteLLM 的模型表、虚拟密钥和花费记录。只有一个副本时为可突发 B1ms，否则为规模所需连接数对应的常规用途规格（D2ds_v5 起）：可突发层在持续负载下会耗尽 CPU 额度。32 GB。LiteLLM 每分钟写入一次花费，每个副本最多保持 10 个连接。公共网络访问，仅允许 Azure 服务 |
+| Azure Database for PostgreSQL 灵活服务器 | LiteLLM 的模型表、虚拟密钥和花费记录。只有一个副本时为可突发 B1ms，否则为规模所需连接数对应的常规用途规格（D2ds_v5 起）：可突发层在持续负载下会耗尽 CPU 额度。32 GB。LiteLLM 每分钟写入一次花费（达到 LiteLLM 的阈值时通过 Redis 写入），每个副本最多保持 10 个连接。公共网络访问，仅允许 Azure 服务 |
 | Azure 托管 Redis（多于一个副本时） | 按峰值从 Balanced B0 到 B5，让各副本共享冷却状态 |
 | Log Analytics 工作区 `log-<name>`、Application Insights `appi-<name>` | 容器日志，以及指标监控选项卡所用的跟踪 |
+
+LiteLLM 按其[生产环境清单](https://docs.litellm.ai/docs/proxy/prod)运行：每个副本一个工作进程，每分钟写入一次花费
+（每秒 1,000 个请求或 10 个副本起通过 Redis 写入，即 `use_redis_transaction_buffer`），失败的调用不写入花费表
+（`disable_error_logs`：它们在日志和指标监控选项卡读取的跟踪中），以 `ERROR` 级别输出 JSON 日志并设置
+`LITELLM_MODE=PRODUCTION`，并把 `trusted_proxy_ranges` 设为专用地址范围，使它对管理界面登录失败次数的限制按入口后面
+每个客户端自己的地址计算。AKS 上的网关也是如此。
 
 网关的机密由应用在部署时生成一次，之后应用从不轮换：盐密钥用于加密 LiteLLM 保存的API节点密钥，因此不能更改。
 这也是为什么已存在的网关绝不会被重新部署覆盖。
@@ -139,7 +145,7 @@
 | 资源 | 说明 |
 | --- | --- |
 | AKS 群集 `<名称>` | Microsoft Entra ID 与 Azure RBAC（无本地帐户），OIDC 颁发者和工作负载标识，Azure CNI 覆盖网络，Azure Linux 节点。节点大小和自动缩放范围、层（区域冗余时为标准层）、出站 IP 以及每个节点的 SNAT 端口都来自规模计算：每个对 Foundry 的并发调用都占用一个端口，默认每个节点 1,024 个。入口使用托管 Gateway API 和应用程序路由的 Istio 实现（托管 NGINX 入口已停用）。补丁版本和节点映像自动升级 |
-| 群集中的 `litellm` 命名空间 | LiteLLM 的 Helm 图表（固定为 `1.106.4`，使用工作负载标识，每个 Pod 1 vCPU、4 GiB，数量按规模计算，按 CPU 伸缩）、把模型调用跟踪发送到 Application Insights 的 OpenTelemetry Collector，以及位于公共 IP 上、DNS 名称为 `<名称>.<区域>.cloudapp.azure.com` 的网关。cert-manager（位于 `cert-manager`）获取并续订 Let's Encrypt 证书。纯 HTTP 只会重定向到 HTTPS |
+| 群集中的 `litellm` 命名空间 | LiteLLM 的 Helm 图表（固定为 `1.106.4`，使用工作负载标识，每个 Pod 1 vCPU、4 GiB，数量按规模计算，CPU 超过 60% 时伸缩）、把模型调用跟踪发送到 Application Insights 的 OpenTelemetry Collector，以及位于公共 IP 上、DNS 名称为 `<名称>.<区域>.cloudapp.azure.com` 的网关。cert-manager（位于 `cert-manager`）获取并续订 Let's Encrypt 证书。纯 HTTP 只会重定向到 HTTPS |
 | 用户分配的托管标识 `id-<名称>` | 与 LiteLLM 的服务帐户联合；LiteLLM 以它的身份调用 Foundry。设置向导会在API节点帐户上为它授予 *Cognitive Services OpenAI User* |
 | PostgreSQL、Redis（多于一个 Pod 时）、Log Analytics、Application Insights | 与容器应用相同 |
 | 角色分配 | 你在该群集上的 *Azure Kubernetes 服务 RBAC 群集管理员* |

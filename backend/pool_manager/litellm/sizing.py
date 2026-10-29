@@ -51,6 +51,9 @@ CPU_MS_PER_STREAMED_TOKEN_PER_1K_INPUT = 0.11
 # One worker per replica (LiteLLM's guidance on Kubernetes): one core at most, kept at 70 %.
 WORKER_CORES = 1.0
 TARGET_CPU = 0.7
+# LiteLLM's autoscaling target, a share of the worker's core: lower than the sizing target, so a
+# new replica (minutes to start) arrives before the others saturate.
+AUTOSCALE_CPU_PERCENT = 60
 # Memory a call in flight holds: its bodies (about 4 bytes a token) several times over (the
 # request, its parsed form, the upstream request, the response, logging).
 BYTES_PER_TOKEN = 4
@@ -132,6 +135,18 @@ REDIS_LARGEST = "Balanced_B5"
 # Past this, LiteLLM recommends routing spend writes through Redis (use_redis_transaction_buffer).
 REDIS_BUFFER_RPS = 1000
 REDIS_BUFFER_REPLICAS = 10
+
+
+def redis_buffer(rps: float, max_replicas: int) -> bool:
+    """Whether LiteLLM's guidance writes spend through Redis at this size."""
+    return rps >= REDIS_BUFFER_RPS or max_replicas >= REDIS_BUFFER_REPLICAS
+
+
+def aca_cpu_percent(replica_cpu: float) -> int:
+    """Container Apps' CPU rule: the share of a replica's allocation (LiteLLM and the collector)
+    at which its one worker uses AUTOSCALE_CPU_PERCENT of a core. A worker can't use more than a
+    core, so a rule at 60 % of 2.25 vCPU would never fire."""
+    return max(1, round(AUTOSCALE_CPU_PERCENT * WORKER_CORES / (replica_cpu + SIDECAR[0])))
 
 
 def describe(note: PlanNote) -> str:
@@ -376,6 +391,7 @@ def _plan(sizing: GatewaySizing, platform: GatewayPlatform) -> GatewayPlan:
     if pool < 2:
         problems.append(PlanNote(code="database_too_small", values={"replicas": maximum}))
     redis = _redis(rps, maximum)
+    buffer = redis is not None and redis_buffer(rps, maximum)
 
     if seconds > sizing.timeout_seconds:
         warnings.append(
@@ -386,7 +402,7 @@ def _plan(sizing: GatewaySizing, platform: GatewayPlatform) -> GatewayPlan:
         )
     if maximum == 1:
         warnings.append(PlanNote(code="single_replica"))
-    if rps >= REDIS_BUFFER_RPS or maximum >= REDIS_BUFFER_REPLICAS:
+    if buffer:
         warnings.append(PlanNote(code="redis_buffer"))
     warnings.append(PlanNote(code="foundry_quota", values={"tpm": tpm, "rpm": sizing.peak_rpm}))
 
@@ -434,7 +450,10 @@ def _plan(sizing: GatewaySizing, platform: GatewayPlatform) -> GatewayPlan:
         peak_replicas=peak,
         min_replicas=minimum,
         max_replicas=maximum,
-        scale_rps=max(1, math.floor(rps / peak)),
+        # ACA wants ceil(in flight / this) replicas: the peak's, or fewer when CPU bounds it
+        # (the CPU rule covers that).
+        scale_concurrency=max(1, math.ceil(in_flight / peak)),
+        scale_cpu_percent=AUTOSCALE_CPU_PERCENT if platform == "aks" else aca_cpu_percent(cpu),
         replica_cpu=cpu,
         replica_memory_gib=memory,
         bandwidth_mbps=round(bandwidth, 2),
@@ -444,6 +463,7 @@ def _plan(sizing: GatewaySizing, platform: GatewayPlatform) -> GatewayPlan:
         postgres_limit=database.connections,
         db_pool=max(pool, 1),
         redis_sku=redis,
+        redis_buffer=buffer,
         aks=aks,
         request_timeout=sizing.timeout_seconds,
         route_timeout=max(MIN_ROUTE_SECONDS, sizing.timeout_seconds * (RETRIES + 1) + 60),

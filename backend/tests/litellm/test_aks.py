@@ -447,6 +447,9 @@ def test_production_pods_get_litellms_recommended_size() -> None:
     # Spend is written once a minute; ten pods at ten connections fit the server.
     assert "proxy_batch_write_at: 60" in values
     assert "database_connection_pool_limit: 10" in values
+    # LiteLLM's production environment, instead of the chart's INFO logs.
+    assert "LITELLM_MODE: PRODUCTION" in values and "LITELLM_LOG: ERROR" in values
+    assert "targetCPUUtilizationPercentage: 60" in values
 
 
 def test_the_bundle_for_an_existing_cluster_uses_the_charts_master_key() -> None:
@@ -461,3 +464,8 @@ def test_the_bundle_for_an_existing_cluster_uses_the_charts_master_key() -> None
 
     values = next(file.content for file in bundle.files if file.path == "values.yaml")
     assert "os.environ/PROXY_MASTER_KEY" in values
+    # One replica: more need Redis and a General Purpose database, which the script doesn't make.
+    assert "replicaCount: 1" in values
+    assert "LITELLM_MODE: PRODUCTION" in values
+    readme = next(file.content for file in bundle.files if file.path == "README.md")
+    assert "Redis" in readme and "General Purpose" in readme

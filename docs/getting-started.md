@@ -100,7 +100,7 @@ No gateway yet? Click **Deploy a gateway**. The app first sizes it for your traf
   [A LiteLLM gateway on AKS](features.md#a-litellm-gateway-on-aks).
 - **Use my own cluster (files)** is for a cluster you already have: it asks for the cluster, its
   resource group and a namespace, and generates a `values.yaml`, a `deploy.sh` and a `README.md`
-  (Helm chart, workload identity, PostgreSQL Flexible Server). The cluster needs the OIDC issuer
+  (Helm chart, workload identity, PostgreSQL Flexible Server, one replica; the README says what more replicas need). The cluster needs the OIDC issuer
   and workload identity enabled. Run the script, for example in Azure Cloud Shell, then click
   **Deployed, connect it**. The script exposes LiteLLM on plain HTTP on a public IP, and
   **Connect** accepts only HTTPS URLs (plain HTTP only for localhost, so the master key never
@@ -133,8 +133,8 @@ numbers:
 | Requests and tokens | Requests a second = RPM ÷ 60. Tokens a minute = RPM × (input + output): the Foundry quota your pools need together |
 | Calls in flight | Requests a second × the time a call takes (the first token, then the output at the model's speed); and the same with every call slowed to the timeout |
 | One replica | Gateway CPU per call (a fixed cost, the bodies, each streamed token) against one LiteLLM worker at 70 % of a core; and how many calls its memory holds |
-| Replicas | The peak's, plus the headroom, plus one for a zone (at least two). Container Apps adds replicas at the peak's requests a second per replica; AKS at 60 % CPU |
-| Database and Redis | The smallest PostgreSQL whose connections cover replicas × 10 × 2 (an update doubles them): General Purpose, Burstable only for a single replica. Redis whenever there is more than one replica |
+| Replicas | The peak's, plus the headroom, plus one for a zone (at least two). Container Apps adds a replica past the calls in flight each holds at the peak, or past 60 % of its worker's core; AKS at 60 % CPU |
+| Database and Redis | The smallest PostgreSQL whose connections cover replicas × 10 × 2 (an update doubles them): General Purpose, Burstable only for a single replica. Redis whenever there is more than one replica, and spend through Redis from 1,000 requests a second or 10 replicas |
 | AKS | The node size and range for the pods (2 a D4ds_v5, 5 a D8ds_v5, 12 a D16ds_v5), at least three nodes across zones, and outbound IPs with enough SNAT ports per node for every call slowed to the timeout |
 
 It recommends **Container Apps** unless the traffic rules it out. Its ingress ends a request that

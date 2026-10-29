@@ -26,7 +26,7 @@ import logging
 import math
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -58,7 +58,15 @@ from .models import (
     ResizePlan,
     ResizeResult,
 )
-from .sizing import SIDECAR, node_family, node_in_family, node_pods, plan, postgres_size
+from .sizing import (
+    AUTOSCALE_CPU_PERCENT,
+    SIDECAR,
+    node_family,
+    node_in_family,
+    node_pods,
+    plan,
+    postgres_size,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +93,8 @@ class Current:
     max_replicas: int
     postgres_sku: str
     redis_sku: str | None
-    scale_rps: int | None = None
+    scale_concurrency: int | None = None
+    scale_cpu: int | None = None
     cpu: float | None = None
     memory: float | None = None
     pool: dict[str, Any] = field(default_factory=dict)
@@ -114,15 +123,34 @@ def _litellm_container(template: Mapping[str, Any]) -> dict[str, Any]:
     return dict(found)
 
 
+def _int(value: object) -> int | None:
+    try:
+        return int(str(value))
+    except ValueError:
+        return None
+
+
 def _http_rule(scale: Mapping[str, Any]) -> int | None:
     for rule in scale.get("rules") or []:
         value = ((rule.get("http") or {}).get("metadata") or {}).get("concurrentRequests")
         if value is not None:
-            try:
-                return int(value)
-            except ValueError:
-                return None
+            return _int(value)
     return None
+
+
+def _is_cpu_rule(rule: Mapping[str, Any]) -> bool:
+    return str((rule.get("custom") or {}).get("type") or "").casefold() == "cpu"
+
+
+def _cpu_rule(scale: Mapping[str, Any]) -> int | None:
+    for rule in scale.get("rules") or []:
+        if _is_cpu_rule(rule):
+            return _int(((rule.get("custom") or {}).get("metadata") or {}).get("value"))
+    return None
+
+
+def _scale_rules(concurrency: int | None, cpu: int | None) -> str:
+    return f"{concurrency or '-'} / {f'{cpu} %' if cpu else '-'}"
 
 
 def pods_per_node(node_size: str) -> int:
@@ -143,7 +171,7 @@ def _etag(current: Current) -> str:
     """A hash of what a resize reads and changes."""
     state = {
         "replicas": [current.min_replicas, current.max_replicas],
-        "scale": current.scale_rps,
+        "scale": [current.scale_concurrency, current.scale_cpu],
         "size": [current.cpu, current.memory],
         "postgres": current.postgres_sku,
         "pool": [current.node_min, current.node_max, current.node_size],
@@ -205,7 +233,8 @@ class GatewayResizer:
             tags=tags,
             min_replicas=low,
             max_replicas=int(scale.get("maxReplicas") or low),
-            scale_rps=_http_rule(scale),
+            scale_concurrency=_http_rule(scale),
+            scale_cpu=_cpu_rule(scale),
             cpu=float(resources["cpu"]) if resources.get("cpu") is not None else None,
             memory=_memory(resources.get("memory")),
             postgres_sku=postgres,
@@ -280,7 +309,12 @@ class GatewayResizer:
             change(
                 "replicas", _range(current.min_replicas, current.max_replicas), replicas, "apply"
             )
-            change("scale_rule", str(current.scale_rps or "-"), str(found.scale_rps), "apply")
+            change(
+                "scale_rule",
+                _scale_rules(current.scale_concurrency, current.scale_cpu),
+                _scale_rules(found.scale_concurrency, found.scale_cpu_percent),
+                "apply",
+            )
             change(
                 "replica_size",
                 f"{current.cpu:g} vCPU, {current.memory:g} GiB"
@@ -380,7 +414,10 @@ class GatewayResizer:
                 if "nodes" in items:
                     self._node_pool(arm, current, found, body.sizing)
                     applied.append("nodes")
-                tags[INSTALL_TAG] = InstallSize.of(found).tag()
+                # The pods' range and the rest from the plan; spend through Redis as installed,
+                # since a resize leaves LiteLLM's config as it is.
+                installed = InstallSize.parse(current.tags.get(INSTALL_TAG))
+                tags[INSTALL_TAG] = replace(InstallSize.of(found), buffer=installed.buffer).tag()
                 arm.request(
                     "PATCH",
                     arm.arm_url(current.resource_id),
@@ -408,9 +445,18 @@ class GatewayResizer:
         scale = template.setdefault("scale", {})
         scale["minReplicas"] = found.min_replicas
         scale["maxReplicas"] = found.max_replicas
-        rules = [rule for rule in scale.get("rules") or [] if "http" not in rule]
+        rules = [
+            rule
+            for rule in scale.get("rules") or []
+            if "http" not in rule and not _is_cpu_rule(rule)
+        ]
+        cpu = {"type": "Utilization", "value": str(found.scale_cpu_percent)}
         scale["rules"] = [
-            {"name": "http", "http": {"metadata": {"concurrentRequests": str(found.scale_rps)}}},
+            {
+                "name": "http",
+                "http": {"metadata": {"concurrentRequests": str(found.scale_concurrency)}},
+            },
+            {"name": "cpu", "custom": {"type": "cpu", "metadata": cpu}},
             *rules,
         ]
         for container in template.get("containers") or []:
@@ -459,7 +505,7 @@ class GatewayResizer:
             "autoscaling.enabled": str(autoscale).lower(),
             "autoscaling.minReplicas": found.min_replicas,
             "autoscaling.maxReplicas": found.max_replicas,
-            "autoscaling.targetCPUUtilizationPercentage": 60,
+            "autoscaling.targetCPUUtilizationPercentage": AUTOSCALE_CPU_PERCENT,
             "pdb.enabled": str(found.min_replicas > 1).lower(),
             "pdb.minAvailable": 1,
         }

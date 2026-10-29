@@ -105,12 +105,20 @@ compiled into `backend/pool_manager/litellm/templates/litellm-aca.json`). Everyt
 
 | Resource | Notes |
 | --- | --- |
-| Container App `<name>` | LiteLLM `v1.106.4` (pinned image `ghcr.io/berriai/litellm:v1.106.4`) on port 4000 behind external HTTPS ingress, plus an OpenTelemetry Collector sidecar that sends model-call spans to Application Insights. Its replicas, their size (1 vCPU and 2 GiB for a single replica, else 2 vCPU and 4 GiB, LiteLLM's guidance for one worker) and its scale rule come from the plan. The ingress ends a request that sends nothing for 240 seconds. The master key, salt key, database URL and `config.yaml` are Container App secrets |
+| Container App `<name>` | LiteLLM `v1.106.4` (pinned image `ghcr.io/berriai/litellm:v1.106.4`) on port 4000 behind external HTTPS ingress, plus an OpenTelemetry Collector sidecar that sends model-call spans to Application Insights. Its replicas, their size (1 vCPU and 2 GiB for a single replica, else 2 vCPU and 4 GiB, LiteLLM's guidance for one worker) and its scale rules come from the plan: a replica is added past the calls in flight each holds at the peak, or past 60 % of its one worker's core (27 % of a 2 vCPU replica and its sidecar). The ingress ends a request that sends nothing for 240 seconds. The master key, salt key, database URL and `config.yaml` are Container App secrets |
 | Container Apps environment `cae-<name>` | Workload profiles environment with LiteLLM on its Consumption profile; logs to Log Analytics. You can add a dedicated profile with premium ingress later (idle timeout up to 30 minutes instead of 240 seconds); it needs at least two dedicated nodes |
 | User-assigned identity `id-<name>` | What LiteLLM calls Foundry as (`AZURE_CLIENT_ID`); the setup wizard grants it *Cognitive Services OpenAI User* on member accounts. It has no other role |
-| Azure Database for PostgreSQL Flexible Server | LiteLLM's model table, virtual keys and spend. Burstable B1ms for a single replica, else the General Purpose size (D2ds_v5 and up) the plan's connections need: Burstable runs out of CPU credits under sustained load. 32 GB. LiteLLM writes spend once a minute and keeps at most 10 connections per replica. Public network access, limited to Azure services |
+| Azure Database for PostgreSQL Flexible Server | LiteLLM's model table, virtual keys and spend. Burstable B1ms for a single replica, else the General Purpose size (D2ds_v5 and up) the plan's connections need: Burstable runs out of CPU credits under sustained load. 32 GB. LiteLLM writes spend once a minute (through Redis at LiteLLM's threshold) and keeps at most 10 connections per replica. Public network access, limited to Azure services |
 | Azure Managed Redis (more than one replica) | Balanced B0 to B5 by the peak, so replicas share cooldowns |
 | Log Analytics workspace `log-<name>`, Application Insights `appi-<name>` | Container logs, and the traces behind the Metrics tab |
+
+LiteLLM runs with the settings of its [production checklist](https://docs.litellm.ai/docs/proxy/prod):
+one worker per replica, spend written once a minute (through Redis, `use_redis_transaction_buffer`,
+from 1,000 requests a second or 10 replicas), failed calls kept out of the spend table
+(`disable_error_logs`: they are in the logs and in the spans the Monitor tab reads), JSON logs at
+`ERROR` with `LITELLM_MODE=PRODUCTION`, and `trusted_proxy_ranges` set to the private address
+ranges, so its limit on failed Admin UI sign-ins counts each client's own address behind the
+ingress. A gateway on AKS gets the same.
 
 The gateway's secrets are generated once by the app when it deploys and are never rotated by it:
 the salt key encrypts the member keys LiteLLM stores, so it must not change. That is also why a
@@ -162,7 +170,7 @@ Apps gateway's.
 | Resource | Notes |
 | --- | --- |
 | AKS cluster `<name>` | Entra ID with Azure RBAC and no local accounts, OIDC issuer and workload identity, Azure CNI overlay, Azure Linux nodes. Their size and autoscaler range, the tier (Standard with zone redundancy), and the outbound IPs and SNAT ports per node come from the plan: every concurrent call to Foundry holds a port, and the default is 1,024 a node. The managed Gateway API with application routing's Istio implementation is the ingress (the managed NGINX ingress is retired). Patch versions and node images upgrade automatically |
-| In the cluster, namespace `litellm` | LiteLLM's Helm chart (pinned `1.106.4`) with workload identity, 1 vCPU and 4 GiB per pod, as many as the plan says (scaled on CPU), an OpenTelemetry Collector sending model-call spans to Application Insights, and a Gateway on a public IP whose DNS name is `<name>.<region>.cloudapp.azure.com`. cert-manager (in `cert-manager`) gets its Let's Encrypt certificate and renews it. Plain HTTP only redirects to HTTPS |
+| In the cluster, namespace `litellm` | LiteLLM's Helm chart (pinned `1.106.4`) with workload identity, 1 vCPU and 4 GiB per pod, as many as the plan says (scaled at 60 % CPU), an OpenTelemetry Collector sending model-call spans to Application Insights, and a Gateway on a public IP whose DNS name is `<name>.<region>.cloudapp.azure.com`. cert-manager (in `cert-manager`) gets its Let's Encrypt certificate and renews it. Plain HTTP only redirects to HTTPS |
 | User-assigned identity `id-<name>` | Federated with LiteLLM's service account; what LiteLLM calls Foundry as. The setup wizard grants it *Cognitive Services OpenAI User* on member accounts |
 | PostgreSQL, Redis (more than one pod), Log Analytics, Application Insights | As for Container Apps |
 | Role assignment | *Azure Kubernetes Service RBAC Cluster Admin* for you, on the cluster |

@@ -102,7 +102,7 @@ export function planSteps(plan: GatewayPlan, sizing: GatewaySizing, locale: stri
       { key: "planStepOutbound", values: { ips: n(plan.aks.outbound_ips), ports: n(plan.aks.outbound_ports), needed: n(plan.aks.ports_needed) } },
     )
   } else {
-    steps.push({ key: "planStepScaleAca", values: { rps: n(plan.scale_rps) } })
+    steps.push({ key: "planStepScaleAca", values: { concurrency: n(plan.scale_concurrency), cpu: n(plan.scale_cpu_percent) } })
   }
   steps.push(
     {

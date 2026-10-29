@@ -416,8 +416,10 @@ class GatewayPlan(StrictModel):
     peak_replicas: int
     min_replicas: int
     max_replicas: int
-    # Container Apps' HTTP rule: requests a second per replica before it adds one.
-    scale_rps: int
+    # Container Apps' rules: calls in flight per replica (the HTTP rule), and the CPU use of the
+    # replica's allocation that is 60 % of its one worker's core (LiteLLM's autoscaling target).
+    scale_concurrency: int
+    scale_cpu_percent: int
     replica_cpu: float
     replica_memory_gib: float
     bandwidth_mbps: float
@@ -427,6 +429,8 @@ class GatewayPlan(StrictModel):
     postgres_limit: int
     db_pool: int
     redis_sku: str | None
+    # Spend written through Redis (use_redis_transaction_buffer), at LiteLLM's threshold.
+    redis_buffer: bool
     aks: AksPlan | None
     request_timeout: int
     route_timeout: int

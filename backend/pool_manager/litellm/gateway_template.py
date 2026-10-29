@@ -12,7 +12,11 @@ they match). Every gateway gets the same config.yaml, so it behaves the same whe
   (``encrypted_content_affinity``, ``responses_api_deployment_check``);
 - with Redis (more than one replica), replicas share cooldowns;
 - spend is written to the database once a minute, and each replica keeps at most the plan's
-  pool of connections (one worker each), so the most replicas stay inside the server's.
+  pool of connections (one worker each), so the most replicas stay inside the server's; past
+  LiteLLM's threshold (``sizing.redis_buffer``) spend goes through Redis;
+- the rest of LiteLLM's production checklist (docs.litellm.ai/docs/proxy/prod): failed calls go
+  to the logs, not the spend table; JSON logs at ERROR; no .env loading (``PRODUCTION_ENV``); and
+  the ingress in front is trusted for the client's address (``TRUSTED_PROXY_RANGES``).
 
 How big it is (replicas, nodes, the database, Redis, the timeout) is the sizing plan's
 (sizing.py), passed to the templates as parameters and to the AKS install as a tag.
@@ -39,7 +43,7 @@ from .models import (
     GatewaySizing,
 )
 from .resources import to_yaml
-from .sizing import DB_POOL, MIN_ROUTE_SECONDS
+from .sizing import AUTOSCALE_CPU_PERCENT, DB_POOL, MIN_ROUTE_SECONDS
 
 # Keep in step with tests/litellm/litellm_stack/docker-compose.yml and the Bicep default.
 LITELLM_VERSION = "1.106.4"
@@ -60,6 +64,20 @@ AKS_COMMAND = "bash bootstrap.sh"
 # LiteLLM's production guidance for one worker: 1 vCPU and at least 4Gi (Prisma's query engine
 # keeps memory like a high-water mark), as both requests and limits.
 AKS_POD_RESOURCES = {"cpu": "1", "memory": "4Gi"}
+# LiteLLM's production environment (litellm-aca.bicep sets the same): no .env loading, errors
+# only. On AKS it replaces the chart's logLevel (INFO).
+PRODUCTION_ENV = {"LITELLM_MODE": "PRODUCTION", "LITELLM_LOG": "ERROR"}
+# The proxies whose X-Forwarded-For LiteLLM believes, for its per-address limit on failed Admin
+# UI sign-ins: Container Apps' Envoy and AKS's Istio gateway, both on private addresses. A replica
+# is reachable only through them, so trusting every private range lets no client forge its
+# address (LiteLLM takes the right-most hop outside these).
+TRUSTED_PROXY_RANGES = [
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+    "100.64.0.0/10",
+    "fc00::/7",
+]
 
 Profile = Literal["dev", "production"]
 # Span names LiteLLM gives model calls ("chat <model group>", ...). Everything else it traces
@@ -80,7 +98,11 @@ def aks_template() -> dict[str, Any]:
 
 
 def litellm_config(
-    *, redis: bool, timeout: int = DEFAULT_TIMEOUT_SECONDS, db_pool: int = DB_POOL
+    *,
+    redis: bool,
+    timeout: int = DEFAULT_TIMEOUT_SECONDS,
+    db_pool: int = DB_POOL,
+    buffer: bool = False,
 ) -> dict[str, Any]:
     router: dict[str, Any] = {
         "routing_strategy": "simple-shuffle",
@@ -95,23 +117,32 @@ def litellm_config(
             redis_port="os.environ/REDIS_PORT",
             redis_password="os.environ/REDIS_PASSWORD",
         )
+    general: dict[str, Any] = {
+        "master_key": "os.environ/LITELLM_MASTER_KEY",
+        "database_url": "os.environ/DATABASE_URL",
+        "store_model_in_db": True,
+        # How often each replica reloads the models this app writes (default 30 s), so a
+        # saved pool reaches every replica within seconds (service.SETTLE_SECONDS).
+        "proxy_config_reload_interval_seconds": 5,
+        "proxy_batch_write_at": 60,
+        "database_connection_pool_limit": db_pool,
+        # Failovers make provider errors routine; they belong in the logs and the spans the
+        # Monitor tab reads, not in the spend table.
+        "disable_error_logs": True,
+        "trusted_proxy_ranges": TRUSTED_PROXY_RANGES,
+    }
+    if redis and buffer:
+        # Through the REDIS_* environment, like the router's.
+        general["use_redis_transaction_buffer"] = True
     return {
         "model_list": [],
-        "general_settings": {
-            "master_key": "os.environ/LITELLM_MASTER_KEY",
-            "database_url": "os.environ/DATABASE_URL",
-            "store_model_in_db": True,
-            # How often each replica reloads the models this app writes (default 30 s), so a
-            # saved pool reaches every replica within seconds (service.SETTLE_SECONDS).
-            "proxy_config_reload_interval_seconds": 5,
-            "proxy_batch_write_at": 60,
-            "database_connection_pool_limit": db_pool,
-        },
+        "general_settings": general,
         "litellm_settings": {
             "enable_azure_ad_token_refresh": True,
             "callbacks": ["otel"],
             "num_retries": 1,
             "request_timeout": timeout,
+            "json_logs": True,
         },
         "router_settings": router,
     }
@@ -211,7 +242,8 @@ def aca_parameters(
         "replicaMemory": f"{plan.replica_memory_gib:g}Gi",
         "minReplicas": plan.min_replicas,
         "maxReplicas": plan.max_replicas,
-        "scaleRequests": plan.scale_rps,
+        "scaleConcurrency": plan.scale_concurrency,
+        "scaleCpuPercent": plan.scale_cpu_percent,
         "postgresSku": plan.postgres_sku,
         "postgresTier": plan.postgres_tier,
         "redisSku": plan.redis_sku or "",
@@ -226,6 +258,7 @@ def aca_parameters(
                 redis=plan.redis_sku is not None,
                 timeout=plan.request_timeout,
                 db_pool=plan.db_pool,
+                buffer=plan.redis_buffer,
             )
         ),
         "collectorConfig": to_yaml(collector_config()),
@@ -238,10 +271,14 @@ def aca_parameters(
 
 
 def aks_proxy_config(
-    *, redis: bool, timeout: int = DEFAULT_TIMEOUT_SECONDS, db_pool: int = DB_POOL
+    *,
+    redis: bool,
+    timeout: int = DEFAULT_TIMEOUT_SECONDS,
+    db_pool: int = DB_POOL,
+    buffer: bool = False,
 ) -> dict[str, Any]:
     """config.yaml on AKS. LiteLLM's chart passes the master key as PROXY_MASTER_KEY."""
-    config = litellm_config(redis=redis, timeout=timeout, db_pool=db_pool)
+    config = litellm_config(redis=redis, timeout=timeout, db_pool=db_pool, buffer=buffer)
     config["general_settings"]["master_key"] = "os.environ/PROXY_MASTER_KEY"
     return config
 
@@ -258,13 +295,15 @@ def aks_secrets() -> dict[str, str]:
 @dataclass(frozen=True)
 class InstallSize:
     """What the install in the cluster takes from the plan: LiteLLM's pods, its timeout, its
-    database pool, and the route's timeout (a call and its retry)."""
+    database pool, the route's timeout (a call and its retry), and whether spend goes through
+    Redis."""
 
     min_replicas: int = 1
     max_replicas: int = 1
     timeout: int = DEFAULT_TIMEOUT_SECONDS
     db_pool: int = DB_POOL
     route_timeout: int = MIN_ROUTE_SECONDS
+    buffer: bool = False
 
     @classmethod
     def of(cls, plan: GatewayPlan) -> InstallSize:
@@ -274,12 +313,13 @@ class InstallSize:
             timeout=plan.request_timeout,
             db_pool=plan.db_pool,
             route_timeout=plan.route_timeout,
+            buffer=plan.redis_buffer,
         )
 
     def tag(self) -> str:
         return (
             f"min={self.min_replicas};max={self.max_replicas};timeout={self.timeout};"
-            f"pool={self.db_pool};route={self.route_timeout}"
+            f"pool={self.db_pool};route={self.route_timeout};buffer={int(self.buffer)}"
         )
 
     @classmethod
@@ -293,6 +333,8 @@ class InstallSize:
                 timeout=int(fields["timeout"]),
                 db_pool=int(fields["pool"]),
                 route_timeout=int(fields["route"]),
+                # Not in the tags of clusters deployed before it.
+                buffer=fields.get("buffer") == "1",
             )
         except (KeyError, ValueError):
             return cls(2, 10) if profile == "production" else cls()
@@ -382,6 +424,7 @@ def _values(install: AksInstall) -> dict[str, Any]:
             "OTEL_ENDPOINT": collector,
             "OTEL_EXPORTER_OTLP_ENDPOINT": collector,
             "OTEL_SERVICE_NAME": install.name,
+            **PRODUCTION_ENV,
             **({"REDIS_SSL": "True"} if redis else {}),
         },
         "serviceAccount": {
@@ -392,14 +435,16 @@ def _values(install: AksInstall) -> dict[str, Any]:
         "podLabels": {"azure.workload.identity/use": "true"},
         "service": {"type": "ClusterIP", "port": 4000},
         "resources": {"requests": AKS_POD_RESOURCES, "limits": AKS_POD_RESOURCES},
-        "proxy_config": aks_proxy_config(redis=redis, timeout=size.timeout, db_pool=size.db_pool),
+        "proxy_config": aks_proxy_config(
+            redis=redis, timeout=size.timeout, db_pool=size.db_pool, buffer=size.buffer
+        ),
     }
     if size.max_replicas > size.min_replicas:
         values["autoscaling"] = {
             "enabled": True,
             "minReplicas": size.min_replicas,
             "maxReplicas": size.max_replicas,
-            "targetCPUUtilizationPercentage": 60,
+            "targetCPUUtilizationPercentage": AUTOSCALE_CPU_PERCENT,
         }
     if size.min_replicas > 1:
         values["pdb"] = {"enabled": True, "minAvailable": 1}
@@ -659,8 +704,10 @@ def aks_bundle(
     """
     identity = f"id-{name}"
     postgres = f"psql-{name}"
+    # One replica: more need Redis (shared cooldowns, one owner for LiteLLM's background jobs)
+    # and a General Purpose database, which this script doesn't create (see the README).
     values = {
-        "replicaCount": 2,
+        "replicaCount": 1,
         "image": {"repository": LITELLM_IMAGE.split(":")[0], "tag": f"v{LITELLM_VERSION}"},
         "masterkeySecretName": "litellm-masterkey",
         "masterkeySecretKey": "masterkey",
@@ -673,7 +720,7 @@ def aks_bundle(
             "secret": {"name": "litellm-db", "usernameKey": "username", "passwordKey": "password"},
         },
         "environmentSecrets": ["litellm-env"],
-        "envVars": {"STORE_MODEL_IN_DB": "True"},
+        "envVars": {"STORE_MODEL_IN_DB": "True", **PRODUCTION_ENV},
         "serviceAccount": {
             "create": True,
             "annotations": {"azure.workload.identity/client-id": "${IDENTITY_CLIENT_ID}"},
@@ -776,7 +823,13 @@ or to localhost. To try it from the machine running the app, keep
 `http://localhost:4000` (clients then reach the gateway through that tunnel only). For real
 traffic, put HTTPS in front (e.g. application routing's Gateway API with a certificate) and
 connect to its HTTPS URL. Or let the app deploy a new AKS cluster, which sets this up for you.
-For more than one replica, add Redis so replicas share cooldowns (router_settings.redis_host).
+
+The gateway runs one replica. For more, LiteLLM's production guidance needs Redis, so replicas
+share cooldowns and its background jobs run once (`router_settings.redis_host`, `redis_port`,
+`redis_password`, from the `litellm-env` secret), and a General Purpose Postgres instead of
+Burstable B1ms, which runs out of CPU credits under sustained load. Then raise `replicaCount`, or
+turn on `autoscaling` at `targetCPUUtilizationPercentage: {AUTOSCALE_CPU_PERCENT}`, and keep
+`maxReplicas` x 10 database connections inside what the server allows.
 """
     return AksBundle(
         name=name,

@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "606940341119541896"
+      "templateHash": "12749400762410343413"
     }
   },
   "parameters": {
@@ -53,12 +53,21 @@
       "defaultValue": 1,
       "minValue": 1
     },
-    "scaleRequests": {
+    "scaleConcurrency": {
       "type": "int",
       "defaultValue": 50,
       "minValue": 1,
       "metadata": {
-        "description": "Requests a second per replica before Container Apps adds one."
+        "description": "Calls in flight per replica before Container Apps adds one."
+      }
+    },
+    "scaleCpuPercent": {
+      "type": "int",
+      "defaultValue": 48,
+      "minValue": 1,
+      "maxValue": 100,
+      "metadata": {
+        "description": "CPU use of a replica (percent of its allocation) before Container Apps adds one: 60 % of its one worker."
       }
     },
     "postgresSku": {
@@ -328,7 +337,7 @@
                 "cpu": "[json(parameters('replicaCpu'))]",
                 "memory": "[parameters('replicaMemory')]"
               },
-              "env": "[concat(createArray(createObject('name', 'LITELLM_MASTER_KEY', 'secretRef', 'litellm-master-key'), createObject('name', 'LITELLM_SALT_KEY', 'secretRef', 'litellm-salt-key'), createObject('name', 'DATABASE_URL', 'secretRef', 'database-url'), createObject('name', 'STORE_MODEL_IN_DB', 'value', 'True'), createObject('name', 'AZURE_CLIENT_ID', 'value', reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('id-{0}', parameters('name'))), '2023-01-31').clientId), createObject('name', 'LITELLM_OTEL_V2', 'value', 'true'), createObject('name', 'OTEL_EXPORTER', 'value', 'otlp_http'), createObject('name', 'OTEL_ENDPOINT', 'value', 'http://127.0.0.1:4318'), createObject('name', 'OTEL_EXPORTER_OTLP_ENDPOINT', 'value', 'http://127.0.0.1:4318'), createObject('name', 'OTEL_SERVICE_NAME', 'value', parameters('name'))), if(variables('withRedis'), createArray(createObject('name', 'REDIS_HOST', 'value', reference(resourceId('Microsoft.Cache/redisEnterprise', variables('redisName')), '2025-04-01').hostName), createObject('name', 'REDIS_PORT', 'value', '10000'), createObject('name', 'REDIS_PASSWORD', 'secretRef', 'redis-password'), createObject('name', 'REDIS_SSL', 'value', 'True')), createArray()))]",
+              "env": "[concat(createArray(createObject('name', 'LITELLM_MASTER_KEY', 'secretRef', 'litellm-master-key'), createObject('name', 'LITELLM_SALT_KEY', 'secretRef', 'litellm-salt-key'), createObject('name', 'DATABASE_URL', 'secretRef', 'database-url'), createObject('name', 'STORE_MODEL_IN_DB', 'value', 'True'), createObject('name', 'AZURE_CLIENT_ID', 'value', reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('id-{0}', parameters('name'))), '2023-01-31').clientId), createObject('name', 'LITELLM_OTEL_V2', 'value', 'true'), createObject('name', 'OTEL_EXPORTER', 'value', 'otlp_http'), createObject('name', 'OTEL_ENDPOINT', 'value', 'http://127.0.0.1:4318'), createObject('name', 'OTEL_EXPORTER_OTLP_ENDPOINT', 'value', 'http://127.0.0.1:4318'), createObject('name', 'OTEL_SERVICE_NAME', 'value', parameters('name')), createObject('name', 'LITELLM_MODE', 'value', 'PRODUCTION'), createObject('name', 'LITELLM_LOG', 'value', 'ERROR')), if(variables('withRedis'), createArray(createObject('name', 'REDIS_HOST', 'value', reference(resourceId('Microsoft.Cache/redisEnterprise', variables('redisName')), '2025-04-01').hostName), createObject('name', 'REDIS_PORT', 'value', '10000'), createObject('name', 'REDIS_PASSWORD', 'secretRef', 'redis-password'), createObject('name', 'REDIS_SSL', 'value', 'True')), createArray()))]",
               "volumeMounts": [
                 {
                   "volumeName": "config",
@@ -412,7 +421,17 @@
                 "name": "http",
                 "http": {
                   "metadata": {
-                    "concurrentRequests": "[string(parameters('scaleRequests'))]"
+                    "concurrentRequests": "[string(parameters('scaleConcurrency'))]"
+                  }
+                }
+              },
+              {
+                "name": "cpu",
+                "custom": {
+                  "type": "cpu",
+                  "metadata": {
+                    "type": "Utilization",
+                    "value": "[string(parameters('scaleCpuPercent'))]"
                   }
                 }
               }

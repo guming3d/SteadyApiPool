@@ -229,7 +229,8 @@ export type GatewayPlan = {
   peak_replicas: number
   min_replicas: number
   max_replicas: number
-  scale_rps: number
+  scale_concurrency: number
+  scale_cpu_percent: number
   replica_cpu: number
   replica_memory_gib: number
   bandwidth_mbps: number
@@ -239,6 +240,7 @@ export type GatewayPlan = {
   postgres_limit: number
   db_pool: number
   redis_sku: string | null
+  redis_buffer: boolean
   aks: AksPlan | null
   request_timeout: number
   route_timeout: number

@@ -41,9 +41,14 @@ param minReplicas int = 1
 @minValue(1)
 param maxReplicas int = 1
 
-@description('Requests a second per replica before Container Apps adds one.')
+@description('Calls in flight per replica before Container Apps adds one.')
 @minValue(1)
-param scaleRequests int = 50
+param scaleConcurrency int = 50
+
+@description('CPU use of a replica (percent of its allocation) before Container Apps adds one: 60 % of its one worker.')
+@minValue(1)
+@maxValue(100)
+param scaleCpuPercent int = 48
 
 param postgresSku string = 'Standard_B1ms'
 @allowed([ 'Burstable', 'GeneralPurpose' ])
@@ -207,6 +212,9 @@ var baseEnv = [
   { name: 'OTEL_ENDPOINT', value: 'http://127.0.0.1:4318' }
   { name: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: 'http://127.0.0.1:4318' }
   { name: 'OTEL_SERVICE_NAME', value: name }
+  // LiteLLM's production settings (gateway_template.PRODUCTION_ENV): no .env loading, errors only.
+  { name: 'LITELLM_MODE', value: 'PRODUCTION' }
+  { name: 'LITELLM_LOG', value: 'ERROR' }
 ]
 var redisEnv = withRedis ? [
   { name: 'REDIS_HOST', value: redis!.properties.hostName }
@@ -296,10 +304,15 @@ resource gateway 'Microsoft.App/containerApps@2025-01-01' = {
       scale: {
         minReplicas: minReplicas
         maxReplicas: maxReplicas
+        // Whichever asks for more replicas: the calls a replica holds, or LiteLLM's CPU target.
         rules: [
           {
             name: 'http'
-            http: { metadata: { concurrentRequests: string(scaleRequests) } }
+            http: { metadata: { concurrentRequests: string(scaleConcurrency) } }
+          }
+          {
+            name: 'cpu'
+            custom: { type: 'cpu', metadata: { type: 'Utilization', value: string(scaleCpuPercent) } }
           }
         ]
       }

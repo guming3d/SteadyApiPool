@@ -12,6 +12,7 @@ import pytest
 from pool_manager.app import app
 from pool_manager.litellm import sizing
 from pool_manager.litellm.gateway_template import (
+    TRUSTED_PROXY_RANGES,
     InstallSize,
     aca_parameters,
     aks_parameters,
@@ -52,10 +53,12 @@ def test_the_worked_example() -> None:
     assert (found.bound_by, found.peak_replicas) == ("cpu", 4)
     # 25 % headroom and one replica for a zone: 3.89 x 1.25 -> 5, +1.
     assert (found.min_replicas, found.max_replicas) == (2, 6)
-    assert found.scale_rps == 25
+    # Container Apps adds a replica past the calls each holds at the peak (954 over 4), or past
+    # 60 % of its one worker's core: 27 % of LiteLLM's 2 vCPU and the collector's 0.25.
+    assert (found.scale_concurrency, found.scale_cpu_percent) == (239, 27)
     # 6 replicas x 10 connections x 2 while a revision rolls over.
     assert (found.postgres_sku, found.postgres_connections) == ("Standard_D2ds_v5", 120)
-    assert found.redis_sku == "Balanced_B0"
+    assert found.redis_sku == "Balanced_B0" and not found.redis_buffer
     assert found.bandwidth_mbps == pytest.approx(16.0)
     assert _codes(found.reasons) == ["platform_simple"]
     assert _codes(found.warnings) == ["foundry_quota"]
@@ -83,6 +86,8 @@ def test_a_trial_is_one_small_replica_without_redis() -> None:
     assert (found.postgres_sku, found.postgres_tier) == ("Standard_B1ms", "Burstable")
     assert found.redis_sku is None
     assert "single_replica" in _codes(found.warnings)
+    # 60 % of a core is 48 % of 1 vCPU and the collector's 0.25 (one replica: it never scales).
+    assert found.scale_cpu_percent == 48
 
 
 def test_zone_redundancy_keeps_two_replicas_and_one_spare() -> None:
@@ -254,7 +259,8 @@ def test_the_plan_becomes_the_templates_parameters() -> None:
         key: item["value"] for key, item in aca_parameters("gw", "eastus2", sizing, found).items()
     }
 
-    assert (values["minReplicas"], values["maxReplicas"], values["scaleRequests"]) == (2, 6, 25)
+    assert (values["minReplicas"], values["maxReplicas"]) == (2, 6)
+    assert (values["scaleConcurrency"], values["scaleCpuPercent"]) == (239, 27)
     assert (values["replicaCpu"], values["replicaMemory"]) == ("2.00", "4Gi")
     assert (values["postgresSku"], values["postgresTier"]) == ("Standard_D2ds_v5", "GeneralPurpose")
     assert values["redisSku"] == "Balanced_B0"
@@ -277,6 +283,7 @@ def test_the_plan_becomes_the_templates_parameters() -> None:
     assert (values["nodeMin"], values["nodeMax"], values["clusterTier"]) == (3, 3, "Standard")
     assert values["zones"] == ["1", "2"]
     assert InstallSize.parse(values["install"]) == InstallSize(2, 6, 120, 10, 600)
+    assert aks.scale_cpu_percent == 60
 
 
 def test_tags_from_before_the_plan_fall_back() -> None:
@@ -284,6 +291,10 @@ def test_tags_from_before_the_plan_fall_back() -> None:
     assert parse_sizing_tag("rpm=10") is None
     assert InstallSize.parse(None, "production") == InstallSize(2, 10)
     assert InstallSize.parse("", "dev") == InstallSize()
+    # A cluster installed before spend could go through Redis.
+    old = InstallSize.parse("min=2;max=6;timeout=120;pool=10;route=600")
+    assert old == InstallSize(2, 6, 120, 10, 600) and not old.buffer
+    assert InstallSize.parse(InstallSize(2, 6, buffer=True).tag()).buffer
     assert len(sizing_tag(_sizing(response_seconds=12.5))) <= 256
 
 
@@ -291,6 +302,37 @@ def test_the_config_follows_the_plan() -> None:
     config = litellm_config(redis=False, timeout=300, db_pool=4)
     assert config["litellm_settings"]["request_timeout"] == 300
     assert config["general_settings"]["database_connection_pool_limit"] == 4
+
+
+def test_the_config_follows_litellms_production_checklist() -> None:
+    config = litellm_config(redis=True)
+    general, settings = config["general_settings"], config["litellm_settings"]
+
+    assert general["proxy_batch_write_at"] == 60
+    # Failed calls go to the logs and spans, not the spend table.
+    assert general["disable_error_logs"] is True
+    assert general["trusted_proxy_ranges"] == TRUSTED_PROXY_RANGES
+    assert settings["json_logs"] is True
+    assert config["router_settings"]["routing_strategy"] == "simple-shuffle"
+    # Spend goes through Redis only at LiteLLM's threshold, and only with Redis.
+    assert "use_redis_transaction_buffer" not in general
+    assert "use_redis_transaction_buffer" not in litellm_config(redis=False, buffer=True)
+    buffered = litellm_config(redis=True, buffer=True)["general_settings"]
+    assert buffered["use_redis_transaction_buffer"] is True
+
+
+def test_spend_goes_through_redis_at_litellms_threshold() -> None:
+    sizing = _sizing(peak_rpm=60_000)
+    found = plan(sizing, "aks")
+
+    assert found.redis_sku and found.redis_buffer
+    assert "redis_buffer" in _codes(found.warnings)
+    aca = plan(sizing, "aca")
+    values = {
+        key: item["value"] for key, item in aca_parameters("gw", "eastus2", sizing, aca).items()
+    }
+    assert "use_redis_transaction_buffer: true" in values["litellmConfig"]
+    assert InstallSize.of(found).buffer
 
 
 # -- through the app -------------------------------------------------------------------------

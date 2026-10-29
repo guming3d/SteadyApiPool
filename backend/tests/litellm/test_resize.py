@@ -119,7 +119,9 @@ def test_container_apps_get_the_new_replicas_and_size() -> None:
     assert (method, path) == ("PATCH", APP)
     template = body["properties"]["template"]
     assert (template["scale"]["minReplicas"], template["scale"]["maxReplicas"]) == (2, 6)
-    assert template["scale"]["rules"][0]["http"]["metadata"]["concurrentRequests"] == "25"
+    http, cpu = template["scale"]["rules"]
+    assert http["http"]["metadata"]["concurrentRequests"] == "239"
+    assert cpu["custom"] == {"type": "cpu", "metadata": {"type": "Utilization", "value": "27"}}
     litellm, collector = template["containers"]
     assert litellm["resources"] == {"cpu": 2.0, "memory": "4Gi"}
     assert collector["resources"] == {"cpu": 0.25, "memory": "0.5Gi"}
