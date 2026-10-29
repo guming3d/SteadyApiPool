@@ -119,7 +119,22 @@ each.
 
 The same calls straight to one gpt-6-luna deployment (125 requests and 125,000 tokens a minute,
 Central US) and through each gateway's pool of four gpt-6-luna deployments (Central US first,
-then East US 2, East US 2 DataZone and Sweden Central DataZone), each from its gateway's VM:
+then East US 2, East US 2 DataZone and Sweden Central DataZone), each from its gateway's VM.
+
+The loads are low because of the model's quota. On gpt-6-luna a quota unit allows 1 request and
+1,000 tokens a minute; the first deployment has 125 units and the pool's four have 450 together,
+all of the test subscription's gpt-6-luna quota. Whichever limit a call reaches first applies: 125
+short answers a minute, but only about 3.5 agent loop steps, whose prompts fill the token limit.
+The prompts were the same text as in the stand-in tests, which size it at four characters a
+token; gpt-6-luna's tokenizer counts fewer, so the real calls were smaller than the shapes' names
+say:
+
+| Shape | Prompt tokens | Answer tokens |
+|---|---|---|
+| Short answer | 359 | 84–87 |
+| Chat | 1,414 | 415–434 |
+| Agent loop step | 35,158 | 281–350 |
+
 
 | Load | Straight to one deployment | APIM Basic v2 | APIM Standard v2 | LiteLLM on Container Apps | LiteLLM on AKS |
 |---|---|---|---|---|---|
