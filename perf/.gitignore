@@ -1,0 +1,6 @@
+.relay-token
+rig.json
+results/
+rig-*.json
+plans/targets-*.json
+plans/smoke*.json

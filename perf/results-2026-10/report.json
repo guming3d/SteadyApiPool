@@ -1,0 +1,7496 @@
+{
+  "apim-1": {
+    "ramps": [
+      {
+        "label": "apim-basic-mock",
+        "target": "apim-basic-perf-mock",
+        "shape": "agent",
+        "max_passing_rpm": 10500,
+        "first_failure": {
+          "rpm": 11280,
+          "reason": "errors"
+        },
+        "baseline_p95_ms": 12662.1,
+        "steps": [
+          {
+            "rpm": 600,
+            "verdict": "pass",
+            "ok": 1200,
+            "started": 1200,
+            "errors": {},
+            "latency_ms": {
+              "p50": 12667.8,
+              "p90": 12671.9,
+              "p95": 12674.3,
+              "p99": 12683.1,
+              "max": 12698.5
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "mock-a": 1200
+            },
+            "prompt_tokens": 50000,
+            "completion_tokens": 400,
+            "client_cpu": {
+              "avg": 0.2,
+              "max": 3.2
+            }
+          },
+          {
+            "rpm": 1500,
+            "verdict": "pass",
+            "ok": 3000,
+            "started": 3000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 12666.0,
+              "p90": 12670.7,
+              "p95": 12674.3,
+              "p99": 12683.7,
+              "max": 12719.1
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "mock-a": 3000
+            },
+            "prompt_tokens": 50000,
+            "completion_tokens": 400,
+            "client_cpu": {
+              "avg": 0.6,
+              "max": 9.8
+            }
+          },
+          {
+            "rpm": 3000,
+            "verdict": "pass",
+            "ok": 6000,
+            "started": 6000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 12665.4,
+              "p90": 12669.8,
+              "p95": 12673.2,
+              "p99": 12683.5,
+              "max": 12782.6
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "mock-a": 6000
+            },
+            "prompt_tokens": 50000,
+            "completion_tokens": 400,
+            "client_cpu": {
+              "avg": 1.2,
+              "max": 23.1
+            }
+          },
+          {
+            "rpm": 6000,
+            "verdict": "pass",
+            "ok": 12000,
+            "started": 12000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 12664.9,
+              "p90": 12672.7,
+              "p95": 12680.6,
+              "p99": 12748.0,
+              "max": 12900.4
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "mock-a": 12000
+            },
+            "prompt_tokens": 50000,
+            "completion_tokens": 400,
+            "client_cpu": {
+              "avg": 1.7,
+              "max": 66.7
+            }
+          },
+          {
+            "rpm": 9000,
+            "verdict": "pass",
+            "ok": 17981,
+            "started": 18000,
+            "errors": {
+              "5xx": 19
+            },
+            "latency_ms": {
+              "p50": 12665.0,
+              "p90": 12688.2,
+              "p95": 12751.1,
+              "p99": 13085.2,
+              "max": 13336.8
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "mock-a": 17981
+            },
+            "prompt_tokens": 50000,
+            "completion_tokens": 400,
+            "client_cpu": {
+              "avg": 5.6,
+              "max": 100.0
+            }
+          },
+          {
+            "rpm": 10500,
+            "verdict": "pass",
+            "ok": 20883,
+            "started": 21000,
+            "errors": {
+              "5xx": 117
+            },
+            "latency_ms": {
+              "p50": 12665.8,
+              "p90": 12770.0,
+              "p95": 12899.3,
+              "p99": 13329.8,
+              "max": 13580.7
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "mock-a": 20883
+            },
+            "prompt_tokens": 50000,
+            "completion_tokens": 400,
+            "client_cpu": {
+              "avg": 5.5,
+              "max": 87.5
+            }
+          },
+          {
+            "rpm": 11280,
+            "verdict": "errors",
+            "ok": 22273,
+            "started": 22560,
+            "errors": {
+              "5xx": 287
+            },
+            "latency_ms": {
+              "p50": 12669.9,
+              "p90": 12890.5,
+              "p95": 13220.7,
+              "p99": 13838.3,
+              "max": 14661.9
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "mock-a": 22273
+            },
+            "prompt_tokens": 50000,
+            "completion_tokens": 400,
+            "client_cpu": {
+              "avg": 3.3,
+              "max": 100.0
+            }
+          },
+          {
+            "rpm": 12000,
+            "verdict": "errors",
+            "ok": 23602,
+            "started": 24000,
+            "errors": {
+              "5xx": 398
+            },
+            "latency_ms": {
+              "p50": 12668.8,
+              "p90": 12814.3,
+              "p95": 12960.4,
+              "p99": 13169.8,
+              "max": 14047.8
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "mock-a": 23602
+            },
+            "prompt_tokens": 50000,
+            "completion_tokens": 400,
+            "client_cpu": {
+              "avg": 2.8,
+              "max": 87.5
+            }
+          }
+        ],
+        "baseline": {
+          "latency_ms": {
+            "p50": 12658.7,
+            "p90": 12661.8,
+            "p95": 12662.1,
+            "p99": 12673.0,
+            "max": 12673.0
+          },
+          "ttft_ms": {
+            "p50": null,
+            "p95": null,
+            "p99": null
+          }
+        }
+      },
+      {
+        "label": "apim-basic-mock",
+        "target": "apim-basic-perf-mock",
+        "shape": "chat",
+        "max_passing_rpm": 4500,
+        "first_failure": {
+          "rpm": 5280,
+          "reason": "latency"
+        },
+        "baseline_p95_ms": 9520.3,
+        "steps": [
+          {
+            "rpm": 600,
+            "verdict": "pass",
+            "ok": 1199,
+            "started": 1200,
+            "errors": {
+              "5xx": 1
+            },
+            "latency_ms": {
+              "p50": 9527.7,
+              "p90": 9554.8,
+              "p95": 9571.1,
+              "p99": 9614.5,
+              "max": 9777.6
+            },
+            "ttft_ms": {
+              "p50": 1211.0,
+              "p95": 1255.6,
+              "p99": 1304.5
+            },
+            "members": {
+              "mock-a": 757,
+              "mock-b": 442
+            },
+            "prompt_tokens": 2000,
+            "completion_tokens": 500,
+            "client_cpu": {
+              "avg": 1.3,
+              "max": 3.3
+            }
+          },
+          {
+            "rpm": 1500,
+            "verdict": "pass",
+            "ok": 3000,
+            "started": 3000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 9694.4,
+              "p90": 10171.3,
+              "p95": 10641.9,
+              "p99": 11496.5,
+              "max": 12133.0
+            },
+            "ttft_ms": {
+              "p50": 1374.7,
+              "p95": 2305.6,
+              "p99": 3165.8
+            },
+            "members": {
+              "mock-a": 3000
+            },
+            "prompt_tokens": 2000,
+            "completion_tokens": 500,
+            "client_cpu": {
+              "avg": 3.2,
+              "max": 16.7
+            }
+          },
+          {
+            "rpm": 3000,
+            "verdict": "pass",
+            "ok": 6000,
+            "started": 6000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 10591.3,
+              "p90": 11363.3,
+              "p95": 11574.5,
+              "p99": 11970.6,
+              "max": 13123.3
+            },
+            "ttft_ms": {
+              "p50": 2248.4,
+              "p95": 3218.5,
+              "p99": 3622.7
+            },
+            "members": {
+              "mock-a": 6000
+            },
+            "prompt_tokens": 2000,
+            "completion_tokens": 500,
+            "client_cpu": {
+              "avg": 8.6,
+              "max": 100.0
+            }
+          },
+          {
+            "rpm": 4500,
+            "verdict": "pass",
+            "ok": 9000,
+            "started": 9000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 10835.1,
+              "p90": 11564.9,
+              "p95": 11792.6,
+              "p99": 12260.2,
+              "max": 14423.7
+            },
+            "ttft_ms": {
+              "p50": 2462.9,
+              "p95": 3383.2,
+              "p99": 3877.5
+            },
+            "members": {
+              "mock-a": 9000
+            },
+            "prompt_tokens": 2000,
+            "completion_tokens": 500,
+            "client_cpu": {
+              "avg": 6.0,
+              "max": 100.0
+            }
+          },
+          {
+            "rpm": 5280,
+            "verdict": "latency",
+            "ok": 10560,
+            "started": 10560,
+            "errors": {},
+            "latency_ms": {
+              "p50": 11236.9,
+              "p90": 12923.0,
+              "p95": 13686.1,
+              "p99": 16337.7,
+              "max": 18088.4
+            },
+            "ttft_ms": {
+              "p50": 2822.5,
+              "p95": 5132.9,
+              "p99": 7251.8
+            },
+            "members": {
+              "mock-a": 10560
+            },
+            "prompt_tokens": 2000,
+            "completion_tokens": 500,
+            "client_cpu": {
+              "avg": 6.0,
+              "max": 100.0
+            }
+          },
+          {
+            "rpm": 6000,
+            "verdict": "latency",
+            "ok": 12000,
+            "started": 12000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 11699.5,
+              "p90": 13545.2,
+              "p95": 14052.1,
+              "p99": 14922.8,
+              "max": 16558.0
+            },
+            "ttft_ms": {
+              "p50": 3227.5,
+              "p95": 5444.7,
+              "p99": 6318.6
+            },
+            "members": {
+              "mock-a": 12000
+            },
+            "prompt_tokens": 2000,
+            "completion_tokens": 500,
+            "client_cpu": {
+              "avg": 6.5,
+              "max": 100.0
+            }
+          }
+        ],
+        "baseline": {
+          "latency_ms": {
+            "p50": 9519.5,
+            "p90": 9520.0,
+            "p95": 9520.3,
+            "p99": 9521.5,
+            "max": 9521.5
+          },
+          "ttft_ms": {
+            "p50": 1202.8,
+            "p95": 1203.6,
+            "p99": 1204.6
+          }
+        }
+      },
+      {
+        "label": "apim-basic-mock",
+        "target": "apim-basic-perf-mock",
+        "shape": "rag",
+        "max_passing_rpm": 2640,
+        "first_failure": {
+          "rpm": 3000,
+          "reason": "latency"
+        },
+        "baseline_p95_ms": 6790.6,
+        "steps": [
+          {
+            "rpm": 600,
+            "verdict": "pass",
+            "ok": 1199,
+            "started": 1200,
+            "errors": {
+              "5xx": 1
+            },
+            "latency_ms": {
+              "p50": 6794.4,
+              "p90": 6803.1,
+              "p95": 6810.3,
+              "p99": 6821.2,
+              "max": 6841.5
+            },
+            "ttft_ms": {
+              "p50": 1811.0,
+              "p95": 1825.9,
+              "p99": 1837.7
+            },
+            "members": {
+              "mock-a": 714,
+              "mock-b": 485
+            },
+            "prompt_tokens": 8000,
+            "completion_tokens": 300,
+            "client_cpu": {
+              "avg": 0.9,
+              "max": 3.1
+            }
+          },
+          {
+            "rpm": 1500,
+            "verdict": "pass",
+            "ok": 3000,
+            "started": 3000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 6801.6,
+              "p90": 6863.2,
+              "p95": 6886.8,
+              "p99": 6945.5,
+              "max": 7168.4
+            },
+            "ttft_ms": {
+              "p50": 1816.6,
+              "p95": 1903.0,
+              "p99": 1968.9
+            },
+            "members": {
+              "mock-a": 3000
+            },
+            "prompt_tokens": 8000,
+            "completion_tokens": 300,
+            "client_cpu": {
+              "avg": 2.2,
+              "max": 12.5
+            }
+          },
+          {
+            "rpm": 2280,
+            "verdict": "pass",
+            "ok": 4560,
+            "started": 4560,
+            "errors": {},
+            "latency_ms": {
+              "p50": 6911.8,
+              "p90": 7122.9,
+              "p95": 7301.7,
+              "p99": 7725.3,
+              "max": 8057.4
+            },
+            "ttft_ms": {
+              "p50": 1924.8,
+              "p95": 2301.4,
+              "p99": 2716.9
+            },
+            "members": {
+              "mock-a": 4560
+            },
+            "prompt_tokens": 8000,
+            "completion_tokens": 300,
+            "client_cpu": {
+              "avg": 4.7,
+              "max": 100.0
+            }
+          },
+          {
+            "rpm": 2640,
+            "verdict": "pass",
+            "ok": 5280,
+            "started": 5280,
+            "errors": {},
+            "latency_ms": {
+              "p50": 7280.5,
+              "p90": 8023.5,
+              "p95": 8238.4,
+              "p99": 8657.0,
+              "max": 10415.9
+            },
+            "ttft_ms": {
+              "p50": 2287.5,
+              "p95": 3234.1,
+              "p99": 3638.7
+            },
+            "members": {
+              "mock-a": 5280
+            },
+            "prompt_tokens": 8000,
+            "completion_tokens": 300,
+            "client_cpu": {
+              "avg": 6.7,
+              "max": 100.0
+            }
+          },
+          {
+            "rpm": 3000,
+            "verdict": "latency",
+            "ok": 6000,
+            "started": 6000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 7563.9,
+              "p90": 8288.0,
+              "p95": 8536.4,
+              "p99": 9094.4,
+              "max": 9685.0
+            },
+            "ttft_ms": {
+              "p50": 2564.3,
+              "p95": 3511.3,
+              "p99": 4082.9
+            },
+            "members": {
+              "mock-a": 6000
+            },
+            "prompt_tokens": 8000,
+            "completion_tokens": 300,
+            "client_cpu": {
+              "avg": 7.6,
+              "max": 100.0
+            }
+          }
+        ],
+        "baseline": {
+          "latency_ms": {
+            "p50": 6787.8,
+            "p90": 6789.6,
+            "p95": 6790.6,
+            "p99": 6795.9,
+            "max": 6795.9
+          },
+          "ttft_ms": {
+            "p50": 1804.5,
+            "p95": 1808.1,
+            "p99": 1812.3
+          }
+        }
+      },
+      {
+        "label": "apim-basic-mock",
+        "target": "apim-basic-perf-mock",
+        "shape": "short",
+        "max_passing_rpm": 22500,
+        "first_failure": null,
+        "baseline_p95_ms": 2705.4,
+        "steps": [
+          {
+            "rpm": 600,
+            "verdict": "pass",
+            "ok": 1200,
+            "started": 1200,
+            "errors": {},
+            "latency_ms": {
+              "p50": 2709.6,
+              "p90": 2711.7,
+              "p95": 2714.5,
+              "p99": 2721.2,
+              "max": 2760.5
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "mock-a": 1200
+            },
+            "prompt_tokens": 500,
+            "completion_tokens": 100,
+            "client_cpu": {
+              "avg": 0.2,
+              "max": 3.1
+            }
+          },
+          {
+            "rpm": 1500,
+            "verdict": "pass",
+            "ok": 3000,
+            "started": 3000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 2709.3,
+              "p90": 2711.6,
+              "p95": 2714.1,
+              "p99": 2721.9,
+              "max": 2755.3
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "mock-a": 3000
+            },
+            "prompt_tokens": 500,
+            "completion_tokens": 100,
+            "client_cpu": {
+              "avg": 0.5,
+              "max": 7.7
+            }
+          },
+          {
+            "rpm": 3000,
+            "verdict": "pass",
+            "ok": 6000,
+            "started": 6000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 2708.8,
+              "p90": 2711.1,
+              "p95": 2713.8,
+              "p99": 2721.8,
+              "max": 2757.2
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "mock-a": 6000
+            },
+            "prompt_tokens": 500,
+            "completion_tokens": 100,
+            "client_cpu": {
+              "avg": 1.0,
+              "max": 16.7
+            }
+          },
+          {
+            "rpm": 6000,
+            "verdict": "pass",
+            "ok": 12000,
+            "started": 12000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 2708.1,
+              "p90": 2710.6,
+              "p95": 2714.0,
+              "p99": 2723.7,
+              "max": 2769.5
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "mock-a": 12000
+            },
+            "prompt_tokens": 500,
+            "completion_tokens": 100,
+            "client_cpu": {
+              "avg": 2.1,
+              "max": 40.0
+            }
+          },
+          {
+            "rpm": 9000,
+            "verdict": "pass",
+            "ok": 18000,
+            "started": 18000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 2707.8,
+              "p90": 2712.6,
+              "p95": 2718.1,
+              "p99": 2740.3,
+              "max": 3047.1
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "mock-a": 18000
+            },
+            "prompt_tokens": 500,
+            "completion_tokens": 100,
+            "client_cpu": {
+              "avg": 3.9,
+              "max": 66.7
+            }
+          },
+          {
+            "rpm": 12000,
+            "verdict": "pass",
+            "ok": 24000,
+            "started": 24000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 2707.7,
+              "p90": 2714.5,
+              "p95": 2723.2,
+              "p99": 2764.3,
+              "max": 2979.8
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "mock-a": 24000
+            },
+            "prompt_tokens": 500,
+            "completion_tokens": 100,
+            "client_cpu": {
+              "avg": 4.4,
+              "max": 87.5
+            }
+          },
+          {
+            "rpm": 15000,
+            "verdict": "pass",
+            "ok": 30000,
+            "started": 30000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 2707.6,
+              "p90": 2716.6,
+              "p95": 2728.7,
+              "p99": 2797.9,
+              "max": 2971.1
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "mock-a": 30000
+            },
+            "prompt_tokens": 500,
+            "completion_tokens": 100,
+            "client_cpu": {
+              "avg": 5.4,
+              "max": 100.0
+            }
+          },
+          {
+            "rpm": 22500,
+            "verdict": "pass",
+            "ok": 45000,
+            "started": 45000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 2707.8,
+              "p90": 2731.5,
+              "p95": 2764.1,
+              "p99": 2929.6,
+              "max": 3199.9
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "mock-a": 45000
+            },
+            "prompt_tokens": 500,
+            "completion_tokens": 100,
+            "client_cpu": {
+              "avg": 4.1,
+              "max": 85.0
+            }
+          }
+        ],
+        "baseline": {
+          "latency_ms": {
+            "p50": 2703.3,
+            "p90": 2704.8,
+            "p95": 2705.4,
+            "p99": 2713.4,
+            "max": 2713.4
+          },
+          "ttft_ms": {
+            "p50": null,
+            "p95": null,
+            "p99": null
+          }
+        }
+      },
+      {
+        "label": "apim-std-mock",
+        "target": "apim-std-perf-mock",
+        "shape": "agent",
+        "max_passing_rpm": 16860,
+        "first_failure": {
+          "rpm": 18720,
+          "reason": "errors"
+        },
+        "baseline_p95_ms": 12662.1,
+        "steps": [
+          {
+            "rpm": 600,
+            "verdict": "pass",
+            "ok": 1200,
+            "started": 1200,
+            "errors": {},
+            "latency_ms": {
+              "p50": 12667.5,
+              "p90": 12672.5,
+              "p95": 12675.8,
+              "p99": 12691.8,
+              "max": 12791.1
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "mock-a": 1200
+            },
+            "prompt_tokens": 50000,
+            "completion_tokens": 400,
+            "client_cpu": {
+              "avg": 0.3,
+              "max": 4.1
+            }
+          },
+          {
+            "rpm": 1500,
+            "verdict": "pass",
+            "ok": 3000,
+            "started": 3000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 12666.8,
+              "p90": 12671.8,
+              "p95": 12675.3,
+              "p99": 12684.0,
+              "max": 12699.4
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "mock-a": 3000
+            },
+            "prompt_tokens": 50000,
+            "completion_tokens": 400,
+            "client_cpu": {
+              "avg": 0.6,
+              "max": 9.4
+            }
+          },
+          {
+            "rpm": 3000,
+            "verdict": "pass",
+            "ok": 6000,
+            "started": 6000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 12665.1,
+              "p90": 12670.1,
+              "p95": 12674.2,
+              "p99": 12685.3,
+              "max": 12742.5
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "mock-a": 6000
+            },
+            "prompt_tokens": 50000,
+            "completion_tokens": 400,
+            "client_cpu": {
+              "avg": 1.2,
+              "max": 21.7
+            }
+          },
+          {
+            "rpm": 6000,
+            "verdict": "pass",
+            "ok": 12000,
+            "started": 12000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 12664.7,
+              "p90": 12669.6,
+              "p95": 12674.2,
+              "p99": 12687.5,
+              "max": 12764.6
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "mock-a": 12000
+            },
+            "prompt_tokens": 50000,
+            "completion_tokens": 400,
+            "client_cpu": {
+              "avg": 2.9,
+              "max": 66.7
+            }
+          },
+          {
+            "rpm": 9000,
+            "verdict": "pass",
+            "ok": 18000,
+            "started": 18000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 12664.7,
+              "p90": 12670.8,
+              "p95": 12677.3,
+              "p99": 12722.1,
+              "max": 13333.9
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "mock-a": 18000
+            },
+            "prompt_tokens": 50000,
+            "completion_tokens": 400,
+            "client_cpu": {
+              "avg": 4.8,
+              "max": 85.7
+            }
+          },
+          {
+            "rpm": 12000,
+            "verdict": "pass",
+            "ok": 24000,
+            "started": 24000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 12664.6,
+              "p90": 12674.6,
+              "p95": 12683.3,
+              "p99": 12731.0,
+              "max": 13157.5
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "mock-a": 24000
+            },
+            "prompt_tokens": 50000,
+            "completion_tokens": 400,
+            "client_cpu": {
+              "avg": 2.6,
+              "max": 80.0
+            }
+          },
+          {
+            "rpm": 15000,
+            "verdict": "pass",
+            "ok": 30000,
+            "started": 30000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 12664.8,
+              "p90": 12676.2,
+              "p95": 12686.8,
+              "p99": 12770.0,
+              "max": 12990.1
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "mock-a": 30000
+            },
+            "prompt_tokens": 50000,
+            "completion_tokens": 400,
+            "client_cpu": {
+              "avg": 5.5,
+              "max": 95.0
+            }
+          },
+          {
+            "rpm": 16860,
+            "verdict": "pass",
+            "ok": 33720,
+            "started": 33720,
+            "errors": {},
+            "latency_ms": {
+              "p50": 12666.8,
+              "p90": 12720.1,
+              "p95": 12807.8,
+              "p99": 13565.2,
+              "max": 14187.4
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "mock-a": 33720
+            },
+            "prompt_tokens": 50000,
+            "completion_tokens": 400,
+            "client_cpu": {
+              "avg": 4.6,
+              "max": 90.0
+            }
+          },
+          {
+            "rpm": 18720,
+            "verdict": "errors",
+            "ok": 28012,
+            "started": 37440,
+            "errors": {
+              "5xx": 9426,
+              "timeout": 2
+            },
+            "latency_ms": {
+              "p50": 12730.7,
+              "p90": 13639.9,
+              "p95": 15198.8,
+              "p99": 18334.6,
+              "max": 19620.3
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "mock-a": 25008,
+              "mock-b": 2958,
+              "mock-c": 46
+            },
+            "prompt_tokens": 50000,
+            "completion_tokens": 400,
+            "client_cpu": {
+              "avg": 1.9,
+              "max": 66.7
+            }
+          },
+          {
+            "rpm": 22500,
+            "verdict": "errors",
+            "ok": 40407,
+            "started": 45000,
+            "errors": {
+              "5xx": 4593
+            },
+            "latency_ms": {
+              "p50": 12670.5,
+              "p90": 12870.1,
+              "p95": 13115.9,
+              "p99": 14402.1,
+              "max": 15458.2
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "mock-a": 37387,
+              "mock-b": 2997,
+              "mock-c": 23
+            },
+            "prompt_tokens": 50000,
+            "completion_tokens": 400,
+            "client_cpu": {
+              "avg": 4.4,
+              "max": 70.6
+            }
+          }
+        ],
+        "baseline": {
+          "latency_ms": {
+            "p50": 12658.7,
+            "p90": 12661.8,
+            "p95": 12662.1,
+            "p99": 12673.0,
+            "max": 12673.0
+          },
+          "ttft_ms": {
+            "p50": null,
+            "p95": null,
+            "p99": null
+          }
+        }
+      },
+      {
+        "label": "apim-std-mock",
+        "target": "apim-std-perf-mock",
+        "shape": "chat",
+        "max_passing_rpm": 12000,
+        "first_failure": {
+          "rpm": 12720,
+          "reason": "latency"
+        },
+        "baseline_p95_ms": 9520.3,
+        "steps": [
+          {
+            "rpm": 600,
+            "verdict": "pass",
+            "ok": 1200,
+            "started": 1200,
+            "errors": {},
+            "latency_ms": {
+              "p50": 9524.9,
+              "p90": 9529.0,
+              "p95": 9532.6,
+              "p99": 9548.6,
+              "max": 9610.4
+            },
+            "ttft_ms": {
+              "p50": 1208.0,
+              "p95": 1216.4,
+              "p99": 1235.8
+            },
+            "members": {
+              "mock-a": 1200
+            },
+            "prompt_tokens": 2000,
+            "completion_tokens": 500,
+            "client_cpu": {
+              "avg": 1.4,
+              "max": 3.7
+            }
+          },
+          {
+            "rpm": 1500,
+            "verdict": "pass",
+            "ok": 3000,
+            "started": 3000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 9525.5,
+              "p90": 9544.9,
+              "p95": 9561.8,
+              "p99": 9639.7,
+              "max": 9778.0
+            },
+            "ttft_ms": {
+              "p50": 1208.4,
+              "p95": 1246.7,
+              "p99": 1325.2
+            },
+            "members": {
+              "mock-a": 3000
+            },
+            "prompt_tokens": 2000,
+            "completion_tokens": 500,
+            "client_cpu": {
+              "avg": 3.6,
+              "max": 10.0
+            }
+          },
+          {
+            "rpm": 3000,
+            "verdict": "pass",
+            "ok": 6000,
+            "started": 6000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 9610.8,
+              "p90": 9898.0,
+              "p95": 10041.1,
+              "p99": 10447.2,
+              "max": 10854.9
+            },
+            "ttft_ms": {
+              "p50": 1291.2,
+              "p95": 1719.6,
+              "p99": 2120.2
+            },
+            "members": {
+              "mock-a": 6000
+            },
+            "prompt_tokens": 2000,
+            "completion_tokens": 500,
+            "client_cpu": {
+              "avg": 7.2,
+              "max": 50.0
+            }
+          },
+          {
+            "rpm": 6000,
+            "verdict": "pass",
+            "ok": 12000,
+            "started": 12000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 10023.6,
+              "p90": 10895.2,
+              "p95": 11164.2,
+              "p99": 11678.4,
+              "max": 12689.9
+            },
+            "ttft_ms": {
+              "p50": 1698.7,
+              "p95": 2818.8,
+              "p99": 3356.6
+            },
+            "members": {
+              "mock-a": 12000
+            },
+            "prompt_tokens": 2000,
+            "completion_tokens": 500,
+            "client_cpu": {
+              "avg": 9.7,
+              "max": 66.7
+            }
+          },
+          {
+            "rpm": 9000,
+            "verdict": "pass",
+            "ok": 18000,
+            "started": 18000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 10366.8,
+              "p90": 11004.9,
+              "p95": 11220.3,
+              "p99": 11601.8,
+              "max": 14789.7
+            },
+            "ttft_ms": {
+              "p50": 2018.0,
+              "p95": 2831.8,
+              "p99": 3195.3
+            },
+            "members": {
+              "mock-a": 18000
+            },
+            "prompt_tokens": 2000,
+            "completion_tokens": 500,
+            "client_cpu": {
+              "avg": 8.9,
+              "max": 60.0
+            }
+          },
+          {
+            "rpm": 12000,
+            "verdict": "pass",
+            "ok": 24000,
+            "started": 24000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 10527.6,
+              "p90": 11281.1,
+              "p95": 11578.9,
+              "p99": 12241.2,
+              "max": 13264.5
+            },
+            "ttft_ms": {
+              "p50": 2166.8,
+              "p95": 3169.3,
+              "p99": 3804.0
+            },
+            "members": {
+              "mock-a": 24000
+            },
+            "prompt_tokens": 2000,
+            "completion_tokens": 500,
+            "client_cpu": {
+              "avg": 9.4,
+              "max": 86.7
+            }
+          },
+          {
+            "rpm": 12720,
+            "verdict": "latency",
+            "ok": 25440,
+            "started": 25440,
+            "errors": {},
+            "latency_ms": {
+              "p50": 10677.4,
+              "p90": 12218.7,
+              "p95": 12770.2,
+              "p99": 14158.2,
+              "max": 16920.2
+            },
+            "ttft_ms": {
+              "p50": 2288.8,
+              "p95": 4331.3,
+              "p99": 5416.8
+            },
+            "members": {
+              "mock-a": 25440
+            },
+            "prompt_tokens": 2000,
+            "completion_tokens": 500,
+            "client_cpu": {
+              "avg": 8.9,
+              "max": 77.8
+            }
+          },
+          {
+            "rpm": 13500,
+            "verdict": "latency",
+            "ok": 27000,
+            "started": 27000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 10868.2,
+              "p90": 12712.1,
+              "p95": 13295.4,
+              "p99": 14456.3,
+              "max": 16125.7
+            },
+            "ttft_ms": {
+              "p50": 2467.6,
+              "p95": 4671.2,
+              "p99": 6044.6
+            },
+            "members": {
+              "mock-a": 27000
+            },
+            "prompt_tokens": 2000,
+            "completion_tokens": 500,
+            "client_cpu": {
+              "avg": 8.2,
+              "max": 57.1
+            }
+          },
+          {
+            "rpm": 15000,
+            "verdict": "latency",
+            "ok": 30000,
+            "started": 30000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 10829.7,
+              "p90": 12670.1,
+              "p95": 13482.5,
+              "p99": 15726.6,
+              "max": 19468.3
+            },
+            "ttft_ms": {
+              "p50": 2425.6,
+              "p95": 5032.6,
+              "p99": 6711.3
+            },
+            "members": {
+              "mock-a": 30000
+            },
+            "prompt_tokens": 2000,
+            "completion_tokens": 500,
+            "client_cpu": {
+              "avg": 9.5,
+              "max": 60.0
+            }
+          }
+        ],
+        "baseline": {
+          "latency_ms": {
+            "p50": 9519.5,
+            "p90": 9520.0,
+            "p95": 9520.3,
+            "p99": 9521.5,
+            "max": 9521.5
+          },
+          "ttft_ms": {
+            "p50": 1202.8,
+            "p95": 1203.6,
+            "p99": 1204.6
+          }
+        }
+      },
+      {
+        "label": "apim-std-mock",
+        "target": "apim-std-perf-mock",
+        "shape": "rag",
+        "max_passing_rpm": 5280,
+        "first_failure": {
+          "rpm": 6000,
+          "reason": "latency"
+        },
+        "baseline_p95_ms": 6790.6,
+        "steps": [
+          {
+            "rpm": 600,
+            "verdict": "pass",
+            "ok": 1200,
+            "started": 1200,
+            "errors": {},
+            "latency_ms": {
+              "p50": 6793.4,
+              "p90": 6797.7,
+              "p95": 6801.1,
+              "p99": 6809.9,
+              "max": 6831.6
+            },
+            "ttft_ms": {
+              "p50": 1809.9,
+              "p95": 1818.3,
+              "p99": 1827.3
+            },
+            "members": {
+              "mock-a": 1200
+            },
+            "prompt_tokens": 8000,
+            "completion_tokens": 300,
+            "client_cpu": {
+              "avg": 1.0,
+              "max": 7.3
+            }
+          },
+          {
+            "rpm": 1500,
+            "verdict": "pass",
+            "ok": 2999,
+            "started": 3000,
+            "errors": {
+              "5xx": 1
+            },
+            "latency_ms": {
+              "p50": 6793.5,
+              "p90": 6805.5,
+              "p95": 6813.7,
+              "p99": 6854.0,
+              "max": 6993.2
+            },
+            "ttft_ms": {
+              "p50": 1810.0,
+              "p95": 1829.1,
+              "p99": 1869.2
+            },
+            "members": {
+              "mock-a": 2253,
+              "mock-b": 746
+            },
+            "prompt_tokens": 8000,
+            "completion_tokens": 300,
+            "client_cpu": {
+              "avg": 2.2,
+              "max": 10.9
+            }
+          },
+          {
+            "rpm": 3000,
+            "verdict": "pass",
+            "ok": 6000,
+            "started": 6000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 6797.6,
+              "p90": 6828.8,
+              "p95": 6847.8,
+              "p99": 6895.6,
+              "max": 7108.7
+            },
+            "ttft_ms": {
+              "p50": 1813.5,
+              "p95": 1863.1,
+              "p99": 1911.9
+            },
+            "members": {
+              "mock-a": 6000
+            },
+            "prompt_tokens": 8000,
+            "completion_tokens": 300,
+            "client_cpu": {
+              "avg": 4.9,
+              "max": 23.1
+            }
+          },
+          {
+            "rpm": 4500,
+            "verdict": "pass",
+            "ok": 9000,
+            "started": 9000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 6869.6,
+              "p90": 7338.1,
+              "p95": 7533.2,
+              "p99": 7932.1,
+              "max": 8661.6
+            },
+            "ttft_ms": {
+              "p50": 1886.0,
+              "p95": 2538.5,
+              "p99": 2921.9
+            },
+            "members": {
+              "mock-a": 9000
+            },
+            "prompt_tokens": 8000,
+            "completion_tokens": 300,
+            "client_cpu": {
+              "avg": 7.8,
+              "max": 66.7
+            }
+          },
+          {
+            "rpm": 5280,
+            "verdict": "pass",
+            "ok": 10560,
+            "started": 10560,
+            "errors": {},
+            "latency_ms": {
+              "p50": 6936.1,
+              "p90": 8001.6,
+              "p95": 8347.1,
+              "p99": 8948.8,
+              "max": 9429.5
+            },
+            "ttft_ms": {
+              "p50": 1951.7,
+              "p95": 3349.5,
+              "p99": 3953.0
+            },
+            "members": {
+              "mock-a": 10560
+            },
+            "prompt_tokens": 8000,
+            "completion_tokens": 300,
+            "client_cpu": {
+              "avg": 10.3,
+              "max": 87.5
+            }
+          },
+          {
+            "rpm": 6000,
+            "verdict": "latency",
+            "ok": 12000,
+            "started": 12000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 7109.7,
+              "p90": 8384.3,
+              "p95": 8674.5,
+              "p99": 9094.8,
+              "max": 9694.3
+            },
+            "ttft_ms": {
+              "p50": 2112.4,
+              "p95": 3653.7,
+              "p99": 4063.7
+            },
+            "members": {
+              "mock-a": 12000
+            },
+            "prompt_tokens": 8000,
+            "completion_tokens": 300,
+            "client_cpu": {
+              "avg": 10.4,
+              "max": 100.0
+            }
+          }
+        ],
+        "baseline": {
+          "latency_ms": {
+            "p50": 6787.8,
+            "p90": 6789.6,
+            "p95": 6790.6,
+            "p99": 6795.9,
+            "max": 6795.9
+          },
+          "ttft_ms": {
+            "p50": 1804.5,
+            "p95": 1808.1,
+            "p99": 1812.3
+          }
+        }
+      },
+      {
+        "label": "apim-std-mock",
+        "target": "apim-std-perf-mock",
+        "shape": "short",
+        "max_passing_rpm": 22500,
+        "first_failure": null,
+        "baseline_p95_ms": 2705.4,
+        "steps": [
+          {
+            "rpm": 600,
+            "verdict": "pass",
+            "ok": 1200,
+            "started": 1200,
+            "errors": {},
+            "latency_ms": {
+              "p50": 2709.3,
+              "p90": 2714.2,
+              "p95": 2718.0,
+              "p99": 2727.7,
+              "max": 2750.6
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "mock-a": 1200
+            },
+            "prompt_tokens": 500,
+            "completion_tokens": 100,
+            "client_cpu": {
+              "avg": 0.2,
+              "max": 3.8
+            }
+          },
+          {
+            "rpm": 1500,
+            "verdict": "pass",
+            "ok": 3000,
+            "started": 3000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 2709.1,
+              "p90": 2712.1,
+              "p95": 2715.6,
+              "p99": 2723.4,
+              "max": 2737.9
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "mock-a": 3000
+            },
+            "prompt_tokens": 500,
+            "completion_tokens": 100,
+            "client_cpu": {
+              "avg": 0.5,
+              "max": 8.8
+            }
+          },
+          {
+            "rpm": 3000,
+            "verdict": "pass",
+            "ok": 6000,
+            "started": 6000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 2708.7,
+              "p90": 2711.5,
+              "p95": 2715.1,
+              "p99": 2724.6,
+              "max": 2824.3
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "mock-a": 6000
+            },
+            "prompt_tokens": 500,
+            "completion_tokens": 100,
+            "client_cpu": {
+              "avg": 1.2,
+              "max": 20.5
+            }
+          },
+          {
+            "rpm": 6000,
+            "verdict": "pass",
+            "ok": 12000,
+            "started": 12000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 2708.3,
+              "p90": 2712.0,
+              "p95": 2716.1,
+              "p99": 2726.8,
+              "max": 2923.7
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "mock-a": 12000
+            },
+            "prompt_tokens": 500,
+            "completion_tokens": 100,
+            "client_cpu": {
+              "avg": 2.0,
+              "max": 35.3
+            }
+          },
+          {
+            "rpm": 9000,
+            "verdict": "pass",
+            "ok": 18000,
+            "started": 18000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 2708.2,
+              "p90": 2711.8,
+              "p95": 2715.8,
+              "p99": 2726.5,
+              "max": 2837.4
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "mock-a": 18000
+            },
+            "prompt_tokens": 500,
+            "completion_tokens": 100,
+            "client_cpu": {
+              "avg": 3.4,
+              "max": 58.3
+            }
+          },
+          {
+            "rpm": 12000,
+            "verdict": "pass",
+            "ok": 24000,
+            "started": 24000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 2708.1,
+              "p90": 2711.9,
+              "p95": 2716.5,
+              "p99": 2729.4,
+              "max": 3005.6
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "mock-a": 24000
+            },
+            "prompt_tokens": 500,
+            "completion_tokens": 100,
+            "client_cpu": {
+              "avg": 4.8,
+              "max": 80.0
+            }
+          },
+          {
+            "rpm": 15000,
+            "verdict": "pass",
+            "ok": 30000,
+            "started": 30000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 2707.7,
+              "p90": 2712.4,
+              "p95": 2717.4,
+              "p99": 2731.7,
+              "max": 2856.4
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "mock-a": 30000
+            },
+            "prompt_tokens": 500,
+            "completion_tokens": 100,
+            "client_cpu": {
+              "avg": 4.3,
+              "max": 87.5
+            }
+          },
+          {
+            "rpm": 22500,
+            "verdict": "pass",
+            "ok": 45000,
+            "started": 45000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 2707.6,
+              "p90": 2714.7,
+              "p95": 2722.3,
+              "p99": 2747.1,
+              "max": 2889.4
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "mock-a": 45000
+            },
+            "prompt_tokens": 500,
+            "completion_tokens": 100,
+            "client_cpu": {
+              "avg": 4.0,
+              "max": 100.0
+            }
+          }
+        ],
+        "baseline": {
+          "latency_ms": {
+            "p50": 2703.3,
+            "p90": 2704.8,
+            "p95": 2705.4,
+            "p99": 2713.4,
+            "max": 2713.4
+          },
+          "ttft_ms": {
+            "p50": null,
+            "p95": null,
+            "p99": null
+          }
+        }
+      }
+    ],
+    "failovers": [
+      {
+        "name": "failover-apim-basic-mock-chat-1200",
+        "target": "apim-basic-perf-mock",
+        "rpm": 1200,
+        "phases": [
+          {
+            "phase": "healthy",
+            "from_s": 0.0,
+            "to_s": 60.0,
+            "requests": 1200,
+            "errors": {},
+            "error_rate": 0.0,
+            "p50_ms": 9548.9,
+            "p95_ms": 9635.4,
+            "members": {
+              "mock-a": 1188,
+              "mock-b": 12
+            },
+            "moved_after_s": null
+          },
+          {
+            "phase": "mock-a 429",
+            "from_s": 60.0,
+            "to_s": 180.0,
+            "requests": 2400,
+            "errors": {},
+            "error_rate": 0.0,
+            "p50_ms": 9546.3,
+            "p95_ms": 9644.6,
+            "members": {
+              "mock-b": 2400
+            },
+            "moved_after_s": 0
+          },
+          {
+            "phase": "mock-a 200",
+            "from_s": 180.0,
+            "to_s": 300.0,
+            "requests": 2400,
+            "errors": {
+              "500": 1
+            },
+            "error_rate": 0.0004,
+            "p50_ms": 9537.2,
+            "p95_ms": 9631.9,
+            "members": {
+              "mock-a": 2381,
+              "mock-b": 18
+            },
+            "moved_after_s": 0
+          },
+          {
+            "phase": "mock-a 500",
+            "from_s": 300.0,
+            "to_s": 420.0,
+            "requests": 2400,
+            "errors": {
+              "500": 2
+            },
+            "error_rate": 0.0008,
+            "p50_ms": 9536.8,
+            "p95_ms": 9630.5,
+            "members": {
+              "mock-b": 2398
+            },
+            "moved_after_s": 0
+          },
+          {
+            "phase": "mock-a 200",
+            "from_s": 420.0,
+            "to_s": 540.0,
+            "requests": 2400,
+            "errors": {
+              "500": 15
+            },
+            "error_rate": 0.0062,
+            "p50_ms": 9537.8,
+            "p95_ms": 9634.9,
+            "members": {
+              "mock-a": 1200,
+              "mock-b": 1185
+            },
+            "moved_after_s": 60
+          },
+          {
+            "phase": "mock-a hang",
+            "from_s": 540.0,
+            "to_s": 660.0,
+            "requests": 2400,
+            "errors": {
+              "500": 2384
+            },
+            "error_rate": 0.9933,
+            "p50_ms": 9543.5,
+            "p95_ms": 9587.4,
+            "members": {
+              "mock-b": 14,
+              "mock-a": 2
+            },
+            "moved_after_s": null
+          },
+          {
+            "phase": "mock-a 200",
+            "from_s": 660.0,
+            "to_s": 780.95,
+            "requests": 2400,
+            "errors": {},
+            "error_rate": 0.0,
+            "p50_ms": 9552.1,
+            "p95_ms": 9733.8,
+            "members": {
+              "mock-b": 2387,
+              "mock-a": 13
+            },
+            "moved_after_s": null
+          }
+        ]
+      },
+      {
+        "name": "failover-apim-std-mock-chat-1200",
+        "target": "apim-std-perf-mock",
+        "rpm": 1200,
+        "phases": [
+          {
+            "phase": "healthy",
+            "from_s": 0.0,
+            "to_s": 60.0,
+            "requests": 1200,
+            "errors": {},
+            "error_rate": 0.0,
+            "p50_ms": 9527.3,
+            "p95_ms": 9558.3,
+            "members": {
+              "mock-a": 1198,
+              "mock-b": 2
+            },
+            "moved_after_s": null
+          },
+          {
+            "phase": "mock-a 429",
+            "from_s": 60.0,
+            "to_s": 180.0,
+            "requests": 2400,
+            "errors": {},
+            "error_rate": 0.0,
+            "p50_ms": 9526.8,
+            "p95_ms": 9544.0,
+            "members": {
+              "mock-b": 2399,
+              "mock-a": 1
+            },
+            "moved_after_s": 0
+          },
+          {
+            "phase": "mock-a 200",
+            "from_s": 180.0,
+            "to_s": 300.0,
+            "requests": 2400,
+            "errors": {
+              "500": 2
+            },
+            "error_rate": 0.0008,
+            "p50_ms": 9526.3,
+            "p95_ms": 9548.1,
+            "members": {
+              "mock-a": 2375,
+              "mock-b": 23
+            },
+            "moved_after_s": 1
+          },
+          {
+            "phase": "mock-a 500",
+            "from_s": 300.0,
+            "to_s": 420.0,
+            "requests": 2400,
+            "errors": {
+              "500": 2
+            },
+            "error_rate": 0.0008,
+            "p50_ms": 9526.6,
+            "p95_ms": 9546.8,
+            "members": {
+              "mock-b": 2397,
+              "mock-a": 1
+            },
+            "moved_after_s": 0
+          },
+          {
+            "phase": "mock-a 200",
+            "from_s": 420.0,
+            "to_s": 540.0,
+            "requests": 2400,
+            "errors": {
+              "500": 3
+            },
+            "error_rate": 0.0012,
+            "p50_ms": 9526.3,
+            "p95_ms": 9544.4,
+            "members": {
+              "mock-b": 1200,
+              "mock-a": 1197
+            },
+            "moved_after_s": 61
+          },
+          {
+            "phase": "mock-a hang",
+            "from_s": 540.0,
+            "to_s": 660.0,
+            "requests": 2400,
+            "errors": {
+              "500": 2396
+            },
+            "error_rate": 0.9983,
+            "p50_ms": 9523.5,
+            "p95_ms": 9549.4,
+            "members": {
+              "mock-a": 2,
+              "mock-b": 2
+            },
+            "moved_after_s": 119
+          },
+          {
+            "phase": "mock-a 200",
+            "from_s": 660.0,
+            "to_s": 780.95,
+            "requests": 2400,
+            "errors": {
+              "500": 1
+            },
+            "error_rate": 0.0004,
+            "p50_ms": 9527.1,
+            "p95_ms": 9550.9,
+            "members": {
+              "mock-b": 2392,
+              "mock-a": 7
+            },
+            "moved_after_s": null
+          }
+        ]
+      }
+    ]
+  },
+  "apim-real-1": {
+    "ramps": [
+      {
+        "label": "apim-basic-perf-luna",
+        "target": "apim-basic-perf-luna",
+        "shape": "agent",
+        "max_passing_rpm": 8,
+        "first_failure": null,
+        "baseline_p95_ms": null,
+        "steps": [
+          {
+            "rpm": 2,
+            "verdict": "pass",
+            "ok": 4,
+            "started": 4,
+            "errors": {},
+            "latency_ms": {
+              "p50": 3655.7,
+              "p90": 4782.0,
+              "p95": 4782.0,
+              "p99": 4782.0,
+              "max": 4782.0
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "Central US": 4
+            },
+            "prompt_tokens": 35158,
+            "completion_tokens": 281,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 6.3
+            }
+          },
+          {
+            "rpm": 4,
+            "verdict": "pass",
+            "ok": 8,
+            "started": 8,
+            "errors": {},
+            "latency_ms": {
+              "p50": 3685.5,
+              "p90": 4263.2,
+              "p95": 4263.2,
+              "p99": 4263.2,
+              "max": 4263.2
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "Central US": 8
+            },
+            "prompt_tokens": 35158,
+            "completion_tokens": 303,
+            "client_cpu": {
+              "avg": 0.0,
+              "max": 0.4
+            }
+          },
+          {
+            "rpm": 8,
+            "verdict": "pass",
+            "ok": 16,
+            "started": 16,
+            "errors": {},
+            "latency_ms": {
+              "p50": 4484.4,
+              "p90": 5468.4,
+              "p95": 5872.3,
+              "p99": 5872.3,
+              "max": 5872.3
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "East US 2": 10,
+              "Central US": 6
+            },
+            "prompt_tokens": 35158,
+            "completion_tokens": 319,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 1.6
+            }
+          }
+        ],
+        "baseline": null
+      },
+      {
+        "label": "apim-basic-perf-luna",
+        "target": "apim-basic-perf-luna",
+        "shape": "chat",
+        "max_passing_rpm": 160,
+        "first_failure": null,
+        "baseline_p95_ms": null,
+        "steps": [
+          {
+            "rpm": 20,
+            "verdict": "pass",
+            "ok": 40,
+            "started": 40,
+            "errors": {},
+            "latency_ms": {
+              "p50": 4933.2,
+              "p90": 5836.8,
+              "p95": 6000.5,
+              "p99": 6160.7,
+              "max": 6160.7
+            },
+            "ttft_ms": {
+              "p50": 859.7,
+              "p95": 1075.2,
+              "p99": 1202.7
+            },
+            "members": {
+              "Central US": 40
+            },
+            "prompt_tokens": 1414,
+            "completion_tokens": 419,
+            "client_cpu": {
+              "avg": 0.0,
+              "max": 0.3
+            }
+          },
+          {
+            "rpm": 40,
+            "verdict": "pass",
+            "ok": 80,
+            "started": 80,
+            "errors": {},
+            "latency_ms": {
+              "p50": 5019.1,
+              "p90": 5765.3,
+              "p95": 6077.2,
+              "p99": 6488.2,
+              "max": 6488.2
+            },
+            "ttft_ms": {
+              "p50": 866.8,
+              "p95": 1185.1,
+              "p99": 1896.0
+            },
+            "members": {
+              "Central US": 80
+            },
+            "prompt_tokens": 1414,
+            "completion_tokens": 422,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 0.4
+            }
+          },
+          {
+            "rpm": 80,
+            "verdict": "pass",
+            "ok": 160,
+            "started": 160,
+            "errors": {},
+            "latency_ms": {
+              "p50": 4905.1,
+              "p90": 5589.9,
+              "p95": 5807.0,
+              "p99": 6140.4,
+              "max": 6289.0
+            },
+            "ttft_ms": {
+              "p50": 876.8,
+              "p95": 1244.2,
+              "p99": 1495.3
+            },
+            "members": {
+              "Central US": 160
+            },
+            "prompt_tokens": 1414,
+            "completion_tokens": 425,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 6.6
+            }
+          },
+          {
+            "rpm": 160,
+            "verdict": "pass",
+            "ok": 320,
+            "started": 320,
+            "errors": {},
+            "latency_ms": {
+              "p50": 5037.0,
+              "p90": 5728.4,
+              "p95": 6033.3,
+              "p99": 11463.6,
+              "max": 19168.3
+            },
+            "ttft_ms": {
+              "p50": 873.2,
+              "p95": 1284.0,
+              "p99": 2666.5
+            },
+            "members": {
+              "Central US": 239,
+              "East US 2": 81
+            },
+            "prompt_tokens": 1414,
+            "completion_tokens": 424,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 5.1
+            }
+          }
+        ],
+        "baseline": null
+      },
+      {
+        "label": "apim-basic-perf-luna",
+        "target": "apim-basic-perf-luna",
+        "shape": "short",
+        "max_passing_rpm": 360,
+        "first_failure": null,
+        "baseline_p95_ms": null,
+        "steps": [
+          {
+            "rpm": 30,
+            "verdict": "pass",
+            "ok": 60,
+            "started": 60,
+            "errors": {},
+            "latency_ms": {
+              "p50": 1650.9,
+              "p90": 1926.4,
+              "p95": 2283.2,
+              "p99": 2863.9,
+              "max": 2863.9
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "Central US": 54,
+              "East US 2": 6
+            },
+            "prompt_tokens": 359,
+            "completion_tokens": 85,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 3.9
+            }
+          },
+          {
+            "rpm": 60,
+            "verdict": "pass",
+            "ok": 120,
+            "started": 120,
+            "errors": {},
+            "latency_ms": {
+              "p50": 1612.4,
+              "p90": 1933.8,
+              "p95": 2100.6,
+              "p99": 4096.7,
+              "max": 4484.2
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "Central US": 120
+            },
+            "prompt_tokens": 359,
+            "completion_tokens": 85,
+            "client_cpu": {
+              "avg": 0.0,
+              "max": 0.3
+            }
+          },
+          {
+            "rpm": 120,
+            "verdict": "pass",
+            "ok": 240,
+            "started": 240,
+            "errors": {},
+            "latency_ms": {
+              "p50": 1645.2,
+              "p90": 2035.3,
+              "p95": 2393.2,
+              "p99": 2925.7,
+              "max": 3078.6
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "Central US": 240
+            },
+            "prompt_tokens": 359,
+            "completion_tokens": 86,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 6.5
+            }
+          },
+          {
+            "rpm": 240,
+            "verdict": "pass",
+            "ok": 480,
+            "started": 480,
+            "errors": {},
+            "latency_ms": {
+              "p50": 1596.8,
+              "p90": 2036.1,
+              "p95": 2366.5,
+              "p99": 4382.0,
+              "max": 11577.9
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "Central US": 313,
+              "East US 2": 167
+            },
+            "prompt_tokens": 359,
+            "completion_tokens": 86,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 8.6
+            }
+          },
+          {
+            "rpm": 360,
+            "verdict": "pass",
+            "ok": 720,
+            "started": 720,
+            "errors": {},
+            "latency_ms": {
+              "p50": 1601.8,
+              "p90": 2274.6,
+              "p95": 3433.1,
+              "p99": 5409.7,
+              "max": 8856.0
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "East US 2": 462,
+              "Central US": 258
+            },
+            "prompt_tokens": 359,
+            "completion_tokens": 86,
+            "client_cpu": {
+              "avg": 0.3,
+              "max": 13.3
+            }
+          }
+        ],
+        "baseline": null
+      },
+      {
+        "label": "apim-std-perf-luna",
+        "target": "apim-std-perf-luna",
+        "shape": "agent",
+        "max_passing_rpm": 8,
+        "first_failure": null,
+        "baseline_p95_ms": null,
+        "steps": [
+          {
+            "rpm": 2,
+            "verdict": "pass",
+            "ok": 4,
+            "started": 4,
+            "errors": {},
+            "latency_ms": {
+              "p50": 3843.0,
+              "p90": 4206.2,
+              "p95": 4206.2,
+              "p99": 4206.2,
+              "max": 4206.2
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "Central US": 4
+            },
+            "prompt_tokens": 35158,
+            "completion_tokens": 292,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 5.6
+            }
+          },
+          {
+            "rpm": 4,
+            "verdict": "pass",
+            "ok": 8,
+            "started": 8,
+            "errors": {},
+            "latency_ms": {
+              "p50": 4024.3,
+              "p90": 8233.9,
+              "p95": 8233.9,
+              "p99": 8233.9,
+              "max": 8233.9
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "Central US": 8
+            },
+            "prompt_tokens": 35158,
+            "completion_tokens": 306,
+            "client_cpu": {
+              "avg": 0.0,
+              "max": 0.2
+            }
+          },
+          {
+            "rpm": 8,
+            "verdict": "pass",
+            "ok": 16,
+            "started": 16,
+            "errors": {},
+            "latency_ms": {
+              "p50": 4386.9,
+              "p90": 6424.2,
+              "p95": 8273.7,
+              "p99": 8273.7,
+              "max": 8273.7
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "East US 2": 9,
+              "Central US": 7
+            },
+            "prompt_tokens": 35158,
+            "completion_tokens": 303,
+            "client_cpu": {
+              "avg": 0.0,
+              "max": 0.3
+            }
+          }
+        ],
+        "baseline": null
+      },
+      {
+        "label": "apim-std-perf-luna",
+        "target": "apim-std-perf-luna",
+        "shape": "chat",
+        "max_passing_rpm": 160,
+        "first_failure": null,
+        "baseline_p95_ms": null,
+        "steps": [
+          {
+            "rpm": 20,
+            "verdict": "pass",
+            "ok": 40,
+            "started": 40,
+            "errors": {},
+            "latency_ms": {
+              "p50": 5215.8,
+              "p90": 6000.1,
+              "p95": 6105.9,
+              "p99": 6154.8,
+              "max": 6154.8
+            },
+            "ttft_ms": {
+              "p50": 894.9,
+              "p95": 1193.8,
+              "p99": 1599.4
+            },
+            "members": {
+              "Central US": 40
+            },
+            "prompt_tokens": 1414,
+            "completion_tokens": 428,
+            "client_cpu": {
+              "avg": 0.0,
+              "max": 0.4
+            }
+          },
+          {
+            "rpm": 40,
+            "verdict": "pass",
+            "ok": 80,
+            "started": 80,
+            "errors": {},
+            "latency_ms": {
+              "p50": 4757.5,
+              "p90": 5319.7,
+              "p95": 5465.0,
+              "p99": 5969.5,
+              "max": 5969.5
+            },
+            "ttft_ms": {
+              "p50": 884.2,
+              "p95": 1154.0,
+              "p99": 1405.4
+            },
+            "members": {
+              "Central US": 80
+            },
+            "prompt_tokens": 1414,
+            "completion_tokens": 425,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 0.2
+            }
+          },
+          {
+            "rpm": 80,
+            "verdict": "pass",
+            "ok": 160,
+            "started": 160,
+            "errors": {},
+            "latency_ms": {
+              "p50": 4987.9,
+              "p90": 5736.2,
+              "p95": 5967.4,
+              "p99": 6340.6,
+              "max": 6791.2
+            },
+            "ttft_ms": {
+              "p50": 873.7,
+              "p95": 1035.6,
+              "p99": 1179.2
+            },
+            "members": {
+              "Central US": 160
+            },
+            "prompt_tokens": 1414,
+            "completion_tokens": 426,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 6.2
+            }
+          },
+          {
+            "rpm": 160,
+            "verdict": "pass",
+            "ok": 320,
+            "started": 320,
+            "errors": {},
+            "latency_ms": {
+              "p50": 4848.3,
+              "p90": 5603.1,
+              "p95": 5852.5,
+              "p99": 6235.7,
+              "max": 6412.3
+            },
+            "ttft_ms": {
+              "p50": 872.1,
+              "p95": 1183.1,
+              "p99": 1710.0
+            },
+            "members": {
+              "Central US": 239,
+              "East US 2": 81
+            },
+            "prompt_tokens": 1414,
+            "completion_tokens": 425,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 0.5
+            }
+          }
+        ],
+        "baseline": null
+      },
+      {
+        "label": "apim-std-perf-luna",
+        "target": "apim-std-perf-luna",
+        "shape": "short",
+        "max_passing_rpm": 360,
+        "first_failure": null,
+        "baseline_p95_ms": null,
+        "steps": [
+          {
+            "rpm": 30,
+            "verdict": "pass",
+            "ok": 60,
+            "started": 60,
+            "errors": {},
+            "latency_ms": {
+              "p50": 1718.9,
+              "p90": 1929.0,
+              "p95": 1981.9,
+              "p99": 2411.5,
+              "max": 2411.5
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "Central US": 60
+            },
+            "prompt_tokens": 359,
+            "completion_tokens": 85,
+            "client_cpu": {
+              "avg": 0.0,
+              "max": 0.4
+            }
+          },
+          {
+            "rpm": 60,
+            "verdict": "pass",
+            "ok": 120,
+            "started": 120,
+            "errors": {},
+            "latency_ms": {
+              "p50": 1665.9,
+              "p90": 2046.8,
+              "p95": 2487.5,
+              "p99": 5616.5,
+              "max": 10872.8
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "Central US": 120
+            },
+            "prompt_tokens": 359,
+            "completion_tokens": 85,
+            "client_cpu": {
+              "avg": 0.0,
+              "max": 0.3
+            }
+          },
+          {
+            "rpm": 120,
+            "verdict": "pass",
+            "ok": 240,
+            "started": 240,
+            "errors": {},
+            "latency_ms": {
+              "p50": 1586.5,
+              "p90": 1944.5,
+              "p95": 2162.4,
+              "p99": 2429.9,
+              "max": 5244.0
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "Central US": 240
+            },
+            "prompt_tokens": 359,
+            "completion_tokens": 85,
+            "client_cpu": {
+              "avg": 0.0,
+              "max": 0.8
+            }
+          },
+          {
+            "rpm": 240,
+            "verdict": "pass",
+            "ok": 480,
+            "started": 480,
+            "errors": {},
+            "latency_ms": {
+              "p50": 1605.0,
+              "p90": 2075.9,
+              "p95": 2320.5,
+              "p99": 4893.9,
+              "max": 11382.0
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "Central US": 333,
+              "East US 2": 147
+            },
+            "prompt_tokens": 359,
+            "completion_tokens": 86,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 1.3
+            }
+          },
+          {
+            "rpm": 360,
+            "verdict": "pass",
+            "ok": 720,
+            "started": 720,
+            "errors": {},
+            "latency_ms": {
+              "p50": 1532.6,
+              "p90": 2118.4,
+              "p95": 2567.5,
+              "p99": 4492.0,
+              "max": 6653.8
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "East US 2": 520,
+              "Central US": 200
+            },
+            "prompt_tokens": 359,
+            "completion_tokens": 86,
+            "client_cpu": {
+              "avg": 0.2,
+              "max": 7.3
+            }
+          }
+        ],
+        "baseline": null
+      },
+      {
+        "label": "direct-luna",
+        "target": "direct-luna",
+        "shape": "agent",
+        "max_passing_rpm": 4,
+        "first_failure": {
+          "rpm": 8,
+          "reason": "errors"
+        },
+        "baseline_p95_ms": null,
+        "steps": [
+          {
+            "rpm": 2,
+            "verdict": "pass",
+            "ok": 4,
+            "started": 4,
+            "errors": {},
+            "latency_ms": {
+              "p50": 4182.9,
+              "p90": 4649.9,
+              "p95": 4649.9,
+              "p99": 4649.9,
+              "max": 4649.9
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "Central US": 4
+            },
+            "prompt_tokens": 35158,
+            "completion_tokens": 297,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 5.2
+            }
+          },
+          {
+            "rpm": 4,
+            "verdict": "pass",
+            "ok": 8,
+            "started": 8,
+            "errors": {},
+            "latency_ms": {
+              "p50": 3744.9,
+              "p90": 4247.4,
+              "p95": 4247.4,
+              "p99": 4247.4,
+              "max": 4247.4
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "Central US": 8
+            },
+            "prompt_tokens": 35158,
+            "completion_tokens": 290,
+            "client_cpu": {
+              "avg": 0.0,
+              "max": 0.2
+            }
+          },
+          {
+            "rpm": 8,
+            "verdict": "errors",
+            "ok": 7,
+            "started": 16,
+            "errors": {
+              "429": 9
+            },
+            "latency_ms": {
+              "p50": 3827.8,
+              "p90": 4480.4,
+              "p95": 4480.4,
+              "p99": 4480.4,
+              "max": 4480.4
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "Central US": 7
+            },
+            "prompt_tokens": 35158,
+            "completion_tokens": 298,
+            "client_cpu": {
+              "avg": 0.0,
+              "max": 0.3
+            }
+          }
+        ],
+        "baseline": null
+      },
+      {
+        "label": "direct-luna",
+        "target": "direct-luna",
+        "shape": "chat",
+        "max_passing_rpm": 80,
+        "first_failure": {
+          "rpm": 160,
+          "reason": "errors"
+        },
+        "baseline_p95_ms": null,
+        "steps": [
+          {
+            "rpm": 20,
+            "verdict": "pass",
+            "ok": 40,
+            "started": 40,
+            "errors": {},
+            "latency_ms": {
+              "p50": 4965.3,
+              "p90": 5804.5,
+              "p95": 5896.3,
+              "p99": 6126.4,
+              "max": 6126.4
+            },
+            "ttft_ms": {
+              "p50": 888.0,
+              "p95": 941.7,
+              "p99": 954.2
+            },
+            "members": {
+              "Central US": 40
+            },
+            "prompt_tokens": 1414,
+            "completion_tokens": 415,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 5.1
+            }
+          },
+          {
+            "rpm": 40,
+            "verdict": "pass",
+            "ok": 80,
+            "started": 80,
+            "errors": {},
+            "latency_ms": {
+              "p50": 4575.8,
+              "p90": 5363.9,
+              "p95": 5623.7,
+              "p99": 5700.4,
+              "max": 5700.4
+            },
+            "ttft_ms": {
+              "p50": 848.3,
+              "p95": 1014.8,
+              "p99": 1480.8
+            },
+            "members": {
+              "Central US": 80
+            },
+            "prompt_tokens": 1414,
+            "completion_tokens": 418,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 0.4
+            }
+          },
+          {
+            "rpm": 80,
+            "verdict": "pass",
+            "ok": 160,
+            "started": 160,
+            "errors": {},
+            "latency_ms": {
+              "p50": 4692.1,
+              "p90": 5431.8,
+              "p95": 5530.4,
+              "p99": 5962.0,
+              "max": 6015.8
+            },
+            "ttft_ms": {
+              "p50": 858.2,
+              "p95": 1147.0,
+              "p99": 1574.1
+            },
+            "members": {
+              "Central US": 160
+            },
+            "prompt_tokens": 1414,
+            "completion_tokens": 419,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 6.6
+            }
+          },
+          {
+            "rpm": 160,
+            "verdict": "errors",
+            "ok": 241,
+            "started": 320,
+            "errors": {
+              "429": 79
+            },
+            "latency_ms": {
+              "p50": 5063.5,
+              "p90": 5626.8,
+              "p95": 5887.8,
+              "p99": 6127.7,
+              "max": 6634.3
+            },
+            "ttft_ms": {
+              "p50": 868.4,
+              "p95": 1058.8,
+              "p99": 1495.1
+            },
+            "members": {
+              "Central US": 241
+            },
+            "prompt_tokens": 1414,
+            "completion_tokens": 425,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 0.6
+            }
+          }
+        ],
+        "baseline": null
+      },
+      {
+        "label": "direct-luna",
+        "target": "direct-luna",
+        "shape": "short",
+        "max_passing_rpm": 120,
+        "first_failure": {
+          "rpm": 240,
+          "reason": "errors"
+        },
+        "baseline_p95_ms": null,
+        "steps": [
+          {
+            "rpm": 30,
+            "verdict": "pass",
+            "ok": 60,
+            "started": 60,
+            "errors": {},
+            "latency_ms": {
+              "p50": 1663.3,
+              "p90": 1930.9,
+              "p95": 2174.5,
+              "p99": 2516.4,
+              "max": 2516.4
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "Central US": 60
+            },
+            "prompt_tokens": 359,
+            "completion_tokens": 85,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 6.4
+            }
+          },
+          {
+            "rpm": 60,
+            "verdict": "pass",
+            "ok": 120,
+            "started": 120,
+            "errors": {},
+            "latency_ms": {
+              "p50": 1617.0,
+              "p90": 1894.9,
+              "p95": 2110.5,
+              "p99": 2571.0,
+              "max": 3168.0
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "Central US": 120
+            },
+            "prompt_tokens": 359,
+            "completion_tokens": 87,
+            "client_cpu": {
+              "avg": 0.0,
+              "max": 0.4
+            }
+          },
+          {
+            "rpm": 120,
+            "verdict": "pass",
+            "ok": 240,
+            "started": 240,
+            "errors": {},
+            "latency_ms": {
+              "p50": 1598.5,
+              "p90": 1906.9,
+              "p95": 2251.1,
+              "p99": 3405.5,
+              "max": 6584.5
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "Central US": 240
+            },
+            "prompt_tokens": 359,
+            "completion_tokens": 86,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 6.5
+            }
+          },
+          {
+            "rpm": 240,
+            "verdict": "errors",
+            "ok": 336,
+            "started": 480,
+            "errors": {
+              "429": 144
+            },
+            "latency_ms": {
+              "p50": 1593.8,
+              "p90": 1954.2,
+              "p95": 2207.0,
+              "p99": 3039.1,
+              "max": 4754.9
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "Central US": 336
+            },
+            "prompt_tokens": 359,
+            "completion_tokens": 86,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 4.0
+            }
+          },
+          {
+            "rpm": 360,
+            "verdict": "errors",
+            "ok": 250,
+            "started": 720,
+            "errors": {
+              "429": 470
+            },
+            "latency_ms": {
+              "p50": 1638.9,
+              "p90": 2037.8,
+              "p95": 2237.4,
+              "p99": 2634.1,
+              "max": 11193.1
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "Central US": 250
+            },
+            "prompt_tokens": 359,
+            "completion_tokens": 85,
+            "client_cpu": {
+              "avg": 0.2,
+              "max": 6.1
+            }
+          }
+        ],
+        "baseline": null
+      }
+    ],
+    "failovers": []
+  },
+  "aca-1": {
+    "ramps": [
+      {
+        "label": "aca-mock",
+        "target": "aca-perf-mock",
+        "shape": "agent",
+        "max_passing_rpm": 22500,
+        "first_failure": null,
+        "baseline_p95_ms": 12660.4,
+        "steps": [
+          {
+            "rpm": 600,
+            "verdict": "pass",
+            "ok": 1200,
+            "started": 1200,
+            "errors": {},
+            "latency_ms": {
+              "p50": 12684.4,
+              "p90": 12699.4,
+              "p95": 12708.5,
+              "p99": 12846.7,
+              "max": 12951.9
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-mock--mock-a": 1200
+            },
+            "prompt_tokens": 50000,
+            "completion_tokens": 400,
+            "client_cpu": {
+              "avg": 0.2,
+              "max": 3.2
+            }
+          },
+          {
+            "rpm": 1500,
+            "verdict": "pass",
+            "ok": 3000,
+            "started": 3000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 12682.8,
+              "p90": 12697.8,
+              "p95": 12707.1,
+              "p99": 12828.0,
+              "max": 13705.8
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-mock--mock-a": 3000
+            },
+            "prompt_tokens": 50000,
+            "completion_tokens": 400,
+            "client_cpu": {
+              "avg": 0.6,
+              "max": 15.2
+            }
+          },
+          {
+            "rpm": 3000,
+            "verdict": "pass",
+            "ok": 6000,
+            "started": 6000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 12679.5,
+              "p90": 12688.9,
+              "p95": 12701.4,
+              "p99": 12854.0,
+              "max": 13721.4
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-mock--mock-a": 6000
+            },
+            "prompt_tokens": 50000,
+            "completion_tokens": 400,
+            "client_cpu": {
+              "avg": 1.0,
+              "max": 26.7
+            }
+          },
+          {
+            "rpm": 6000,
+            "verdict": "pass",
+            "ok": 12000,
+            "started": 12000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 12679.2,
+              "p90": 12689.4,
+              "p95": 12698.8,
+              "p99": 12941.9,
+              "max": 19353.2
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-mock--mock-a": 12000
+            },
+            "prompt_tokens": 50000,
+            "completion_tokens": 400,
+            "client_cpu": {
+              "avg": 1.6,
+              "max": 66.7
+            }
+          },
+          {
+            "rpm": 9000,
+            "verdict": "pass",
+            "ok": 18000,
+            "started": 18000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 12679.2,
+              "p90": 12692.0,
+              "p95": 12704.9,
+              "p99": 12932.3,
+              "max": 14377.4
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-mock--mock-a": 18000
+            },
+            "prompt_tokens": 50000,
+            "completion_tokens": 400,
+            "client_cpu": {
+              "avg": 3.1,
+              "max": 66.7
+            }
+          },
+          {
+            "rpm": 12000,
+            "verdict": "pass",
+            "ok": 23986,
+            "started": 24000,
+            "errors": {
+              "5xx": 14
+            },
+            "latency_ms": {
+              "p50": 12679.6,
+              "p90": 12694.5,
+              "p95": 12714.2,
+              "p99": 14623.9,
+              "max": 39812.6
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-mock--mock-a": 23986
+            },
+            "prompt_tokens": 50000,
+            "completion_tokens": 400,
+            "client_cpu": {
+              "avg": 1.0,
+              "max": 35.7
+            }
+          },
+          {
+            "rpm": 15000,
+            "verdict": "pass",
+            "ok": 29995,
+            "started": 30000,
+            "errors": {
+              "5xx": 5
+            },
+            "latency_ms": {
+              "p50": 12680.2,
+              "p90": 12698.5,
+              "p95": 12722.5,
+              "p99": 16651.6,
+              "max": 38196.2
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-mock--mock-a": 29995
+            },
+            "prompt_tokens": 50000,
+            "completion_tokens": 400,
+            "client_cpu": {
+              "avg": 3.2,
+              "max": 80.0
+            }
+          },
+          {
+            "rpm": 22500,
+            "verdict": "pass",
+            "ok": 44999,
+            "started": 45000,
+            "errors": {
+              "5xx": 1
+            },
+            "latency_ms": {
+              "p50": 12681.7,
+              "p90": 12704.5,
+              "p95": 12749.5,
+              "p99": 13476.5,
+              "max": 16080.4
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-mock--mock-a": 44999
+            },
+            "prompt_tokens": 50000,
+            "completion_tokens": 400,
+            "client_cpu": {
+              "avg": 1.8,
+              "max": 45.5
+            }
+          }
+        ],
+        "baseline": {
+          "latency_ms": {
+            "p50": 12657.7,
+            "p90": 12659.7,
+            "p95": 12660.4,
+            "p99": 12661.5,
+            "max": 12661.5
+          },
+          "ttft_ms": {
+            "p50": null,
+            "p95": null,
+            "p99": null
+          }
+        }
+      },
+      {
+        "label": "aca-mock",
+        "target": "aca-perf-mock",
+        "shape": "chat",
+        "max_passing_rpm": 3720,
+        "first_failure": {
+          "rpm": 4500,
+          "reason": "errors"
+        },
+        "baseline_p95_ms": 9524.8,
+        "steps": [
+          {
+            "rpm": 600,
+            "verdict": "pass",
+            "ok": 1200,
+            "started": 1200,
+            "errors": {},
+            "latency_ms": {
+              "p50": 9588.8,
+              "p90": 9614.9,
+              "p95": 9719.6,
+              "p99": 10437.9,
+              "max": 13859.9
+            },
+            "ttft_ms": {
+              "p50": 1221.3,
+              "p95": 1269.0,
+              "p99": 1641.2
+            },
+            "members": {
+              "perf-mock--mock-a": 1200
+            },
+            "prompt_tokens": 2000,
+            "completion_tokens": 500,
+            "client_cpu": {
+              "avg": 1.3,
+              "max": 6.1
+            }
+          },
+          {
+            "rpm": 1500,
+            "verdict": "pass",
+            "ok": 3000,
+            "started": 3000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 9603.5,
+              "p90": 9672.6,
+              "p95": 10173.0,
+              "p99": 13750.0,
+              "max": 25133.8
+            },
+            "ttft_ms": {
+              "p50": 1223.3,
+              "p95": 1373.7,
+              "p99": 2787.1
+            },
+            "members": {
+              "perf-mock--mock-a": 3000
+            },
+            "prompt_tokens": 2000,
+            "completion_tokens": 500,
+            "client_cpu": {
+              "avg": 3.7,
+              "max": 15.4
+            }
+          },
+          {
+            "rpm": 3000,
+            "verdict": "pass",
+            "ok": 6000,
+            "started": 6000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 9654.5,
+              "p90": 10126.1,
+              "p95": 10868.2,
+              "p99": 11976.8,
+              "max": 51217.0
+            },
+            "ttft_ms": {
+              "p50": 1237.1,
+              "p95": 2108.9,
+              "p99": 3198.9
+            },
+            "members": {
+              "perf-mock--mock-a": 6000
+            },
+            "prompt_tokens": 2000,
+            "completion_tokens": 500,
+            "client_cpu": {
+              "avg": 6.6,
+              "max": 66.7
+            }
+          },
+          {
+            "rpm": 3720,
+            "verdict": "pass",
+            "ok": 7440,
+            "started": 7440,
+            "errors": {},
+            "latency_ms": {
+              "p50": 9744.9,
+              "p90": 11246.4,
+              "p95": 11857.4,
+              "p99": 13640.9,
+              "max": 17264.6
+            },
+            "ttft_ms": {
+              "p50": 1274.8,
+              "p95": 2800.4,
+              "p99": 4072.5
+            },
+            "members": {
+              "perf-mock--mock-a": 7440
+            },
+            "prompt_tokens": 2000,
+            "completion_tokens": 500,
+            "client_cpu": {
+              "avg": 6.9,
+              "max": 24.0
+            }
+          },
+          {
+            "rpm": 4500,
+            "verdict": "errors",
+            "ok": 8884,
+            "started": 9000,
+            "errors": {
+              "5xx": 103,
+              "connection": 13
+            },
+            "latency_ms": {
+              "p50": 31676.5,
+              "p90": 73252.9,
+              "p95": 78158.3,
+              "p99": 100891.8,
+              "max": 124189.1
+            },
+            "ttft_ms": {
+              "p50": 15115.2,
+              "p95": 66053.2,
+              "p99": 88094.7
+            },
+            "members": {
+              "perf-mock--mock-a": 8884
+            },
+            "prompt_tokens": 2000,
+            "completion_tokens": 500,
+            "client_cpu": {
+              "avg": 2.1,
+              "max": 12.8
+            }
+          },
+          {
+            "rpm": 6000,
+            "verdict": "errors",
+            "ok": 11764,
+            "started": 12000,
+            "errors": {
+              "5xx": 91,
+              "connection": 145
+            },
+            "latency_ms": {
+              "p50": 79714.0,
+              "p90": 154523.5,
+              "p95": 176868.4,
+              "p99": 209359.5,
+              "max": 246711.2
+            },
+            "ttft_ms": {
+              "p50": 60494.5,
+              "p95": 161240.5,
+              "p99": 191892.3
+            },
+            "members": {
+              "perf-mock--mock-a": 11764
+            },
+            "prompt_tokens": 2000,
+            "completion_tokens": 500,
+            "client_cpu": {
+              "avg": 2.3,
+              "max": 60.0
+            }
+          }
+        ],
+        "baseline": {
+          "latency_ms": {
+            "p50": 9519.4,
+            "p90": 9521.5,
+            "p95": 9524.8,
+            "p99": 9547.9,
+            "max": 9547.9
+          },
+          "ttft_ms": {
+            "p50": 1202.6,
+            "p95": 1206.1,
+            "p99": 1230.9
+          }
+        }
+      },
+      {
+        "label": "aca-mock",
+        "target": "aca-perf-mock",
+        "shape": "rag",
+        "max_passing_rpm": 5280,
+        "first_failure": {
+          "rpm": 6000,
+          "reason": "latency"
+        },
+        "baseline_p95_ms": 6788.0,
+        "steps": [
+          {
+            "rpm": 600,
+            "verdict": "pass",
+            "ok": 1200,
+            "started": 1200,
+            "errors": {},
+            "latency_ms": {
+              "p50": 6837.1,
+              "p90": 6858.4,
+              "p95": 6876.4,
+              "p99": 7258.6,
+              "max": 7951.9
+            },
+            "ttft_ms": {
+              "p50": 1823.3,
+              "p95": 1856.6,
+              "p99": 2014.2
+            },
+            "members": {
+              "perf-mock--mock-a": 1200
+            },
+            "prompt_tokens": 8000,
+            "completion_tokens": 300,
+            "client_cpu": {
+              "avg": 0.9,
+              "max": 5.4
+            }
+          },
+          {
+            "rpm": 1500,
+            "verdict": "pass",
+            "ok": 3000,
+            "started": 3000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 6839.3,
+              "p90": 6864.9,
+              "p95": 6951.0,
+              "p99": 10218.3,
+              "max": 20001.7
+            },
+            "ttft_ms": {
+              "p50": 1821.5,
+              "p95": 1877.2,
+              "p99": 2988.9
+            },
+            "members": {
+              "perf-mock--mock-a": 3000
+            },
+            "prompt_tokens": 8000,
+            "completion_tokens": 300,
+            "client_cpu": {
+              "avg": 2.2,
+              "max": 20.0
+            }
+          },
+          {
+            "rpm": 3000,
+            "verdict": "pass",
+            "ok": 6000,
+            "started": 6000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 6853.3,
+              "p90": 6899.6,
+              "p95": 7068.4,
+              "p99": 8157.6,
+              "max": 27614.3
+            },
+            "ttft_ms": {
+              "p50": 1825.2,
+              "p95": 1913.4,
+              "p99": 2993.8
+            },
+            "members": {
+              "perf-mock--mock-a": 6000
+            },
+            "prompt_tokens": 8000,
+            "completion_tokens": 300,
+            "client_cpu": {
+              "avg": 4.9,
+              "max": 33.3
+            }
+          },
+          {
+            "rpm": 4500,
+            "verdict": "pass",
+            "ok": 9000,
+            "started": 9000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 6880.1,
+              "p90": 7243.7,
+              "p95": 7981.9,
+              "p99": 8770.6,
+              "max": 25314.6
+            },
+            "ttft_ms": {
+              "p50": 1835.1,
+              "p95": 2613.9,
+              "p99": 3487.8
+            },
+            "members": {
+              "perf-mock--mock-a": 9000
+            },
+            "prompt_tokens": 8000,
+            "completion_tokens": 300,
+            "client_cpu": {
+              "avg": 6.8,
+              "max": 31.2
+            }
+          },
+          {
+            "rpm": 5280,
+            "verdict": "pass",
+            "ok": 10548,
+            "started": 10560,
+            "errors": {
+              "5xx": 12
+            },
+            "latency_ms": {
+              "p50": 6907.9,
+              "p90": 7829.0,
+              "p95": 8482.6,
+              "p99": 10091.4,
+              "max": 66212.1
+            },
+            "ttft_ms": {
+              "p50": 1848.4,
+              "p95": 3029.9,
+              "p99": 4317.1
+            },
+            "members": {
+              "perf-mock--mock-a": 10548
+            },
+            "prompt_tokens": 8000,
+            "completion_tokens": 300,
+            "client_cpu": {
+              "avg": 6.2,
+              "max": 50.0
+            }
+          },
+          {
+            "rpm": 6000,
+            "verdict": "latency",
+            "ok": 12000,
+            "started": 12000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 6990.0,
+              "p90": 8488.3,
+              "p95": 9039.3,
+              "p99": 10404.3,
+              "max": 27723.7
+            },
+            "ttft_ms": {
+              "p50": 1893.4,
+              "p95": 3375.0,
+              "p99": 4397.9
+            },
+            "members": {
+              "perf-mock--mock-a": 12000
+            },
+            "prompt_tokens": 8000,
+            "completion_tokens": 300,
+            "client_cpu": {
+              "avg": 8.0,
+              "max": 60.0
+            }
+          }
+        ],
+        "baseline": {
+          "latency_ms": {
+            "p50": 6787.1,
+            "p90": 6787.7,
+            "p95": 6788.0,
+            "p99": 6788.5,
+            "max": 6788.5
+          },
+          "ttft_ms": {
+            "p50": 1803.7,
+            "p95": 1804.7,
+            "p99": 1805.5
+          }
+        }
+      },
+      {
+        "label": "aca-mock",
+        "target": "aca-perf-mock",
+        "shape": "short",
+        "max_passing_rpm": 22500,
+        "first_failure": null,
+        "baseline_p95_ms": 2706.5,
+        "steps": [
+          {
+            "rpm": 600,
+            "verdict": "pass",
+            "ok": 1200,
+            "started": 1200,
+            "errors": {},
+            "latency_ms": {
+              "p50": 2725.4,
+              "p90": 2738.1,
+              "p95": 2746.9,
+              "p99": 6118.2,
+              "max": 20082.7
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-mock--mock-a": 1200
+            },
+            "prompt_tokens": 500,
+            "completion_tokens": 100,
+            "client_cpu": {
+              "avg": 0.2,
+              "max": 3.3
+            }
+          },
+          {
+            "rpm": 1500,
+            "verdict": "pass",
+            "ok": 3000,
+            "started": 3000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 2723.3,
+              "p90": 2735.5,
+              "p95": 2743.9,
+              "p99": 2823.9,
+              "max": 2974.5
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-mock--mock-a": 3000
+            },
+            "prompt_tokens": 500,
+            "completion_tokens": 100,
+            "client_cpu": {
+              "avg": 0.4,
+              "max": 9.5
+            }
+          },
+          {
+            "rpm": 3000,
+            "verdict": "pass",
+            "ok": 6000,
+            "started": 6000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 2721.1,
+              "p90": 2727.6,
+              "p95": 2733.8,
+              "p99": 2815.4,
+              "max": 2950.3
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-mock--mock-a": 6000
+            },
+            "prompt_tokens": 500,
+            "completion_tokens": 100,
+            "client_cpu": {
+              "avg": 0.9,
+              "max": 25.0
+            }
+          },
+          {
+            "rpm": 6000,
+            "verdict": "pass",
+            "ok": 12000,
+            "started": 12000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 2720.7,
+              "p90": 2728.2,
+              "p95": 2734.7,
+              "p99": 2865.5,
+              "max": 3610.6
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-mock--mock-a": 12000
+            },
+            "prompt_tokens": 500,
+            "completion_tokens": 100,
+            "client_cpu": {
+              "avg": 2.1,
+              "max": 57.1
+            }
+          },
+          {
+            "rpm": 9000,
+            "verdict": "pass",
+            "ok": 18000,
+            "started": 18000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 2720.9,
+              "p90": 2731.4,
+              "p95": 2747.1,
+              "p99": 3006.5,
+              "max": 5682.4
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-mock--mock-a": 18000
+            },
+            "prompt_tokens": 500,
+            "completion_tokens": 100,
+            "client_cpu": {
+              "avg": 2.1,
+              "max": 52.6
+            }
+          },
+          {
+            "rpm": 12000,
+            "verdict": "pass",
+            "ok": 24000,
+            "started": 24000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 2721.2,
+              "p90": 2733.2,
+              "p95": 2746.4,
+              "p99": 3105.2,
+              "max": 3987.9
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-mock--mock-a": 24000
+            },
+            "prompt_tokens": 500,
+            "completion_tokens": 100,
+            "client_cpu": {
+              "avg": 2.9,
+              "max": 75.0
+            }
+          },
+          {
+            "rpm": 15000,
+            "verdict": "pass",
+            "ok": 30000,
+            "started": 30000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 2721.3,
+              "p90": 2733.5,
+              "p95": 2743.4,
+              "p99": 3577.7,
+              "max": 7863.7
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-mock--mock-a": 30000
+            },
+            "prompt_tokens": 500,
+            "completion_tokens": 100,
+            "client_cpu": {
+              "avg": 1.9,
+              "max": 61.1
+            }
+          },
+          {
+            "rpm": 22500,
+            "verdict": "pass",
+            "ok": 45000,
+            "started": 45000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 2722.5,
+              "p90": 2742.2,
+              "p95": 2777.5,
+              "p99": 9327.4,
+              "max": 36046.7
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-mock--mock-a": 45000
+            },
+            "prompt_tokens": 500,
+            "completion_tokens": 100,
+            "client_cpu": {
+              "avg": 1.0,
+              "max": 33.3
+            }
+          }
+        ],
+        "baseline": {
+          "latency_ms": {
+            "p50": 2703.1,
+            "p90": 2704.9,
+            "p95": 2706.5,
+            "p99": 2716.0,
+            "max": 2716.0
+          },
+          "ttft_ms": {
+            "p50": null,
+            "p95": null,
+            "p99": null
+          }
+        }
+      }
+    ],
+    "failovers": [
+      {
+        "name": "failover-aca-mock-chat-1200",
+        "target": "aca-perf-mock",
+        "rpm": 1200,
+        "phases": [
+          {
+            "phase": "healthy",
+            "from_s": 0.0,
+            "to_s": 60.0,
+            "requests": 1200,
+            "errors": {},
+            "error_rate": 0.0,
+            "p50_ms": 9602.1,
+            "p95_ms": 9734.0,
+            "members": {
+              "perf-mock--mock-a": 1192,
+              "perf-mock--mock-b": 8
+            },
+            "moved_after_s": null
+          },
+          {
+            "phase": "mock-a 429",
+            "from_s": 60.0,
+            "to_s": 180.0,
+            "requests": 2400,
+            "errors": {},
+            "error_rate": 0.0,
+            "p50_ms": 9599.2,
+            "p95_ms": 9868.3,
+            "members": {
+              "perf-mock--mock-b": 2400
+            },
+            "moved_after_s": 0
+          },
+          {
+            "phase": "mock-a 200",
+            "from_s": 180.0,
+            "to_s": 300.0,
+            "requests": 2400,
+            "errors": {},
+            "error_rate": 0.0,
+            "p50_ms": 9598.0,
+            "p95_ms": 9888.0,
+            "members": {
+              "perf-mock--mock-a": 2315,
+              "perf-mock--mock-b": 85
+            },
+            "moved_after_s": null
+          },
+          {
+            "phase": "mock-a 500",
+            "from_s": 300.0,
+            "to_s": 420.0,
+            "requests": 2400,
+            "errors": {},
+            "error_rate": 0.0,
+            "p50_ms": 9597.1,
+            "p95_ms": 9962.3,
+            "members": {
+              "perf-mock--mock-b": 2400
+            },
+            "moved_after_s": 0
+          },
+          {
+            "phase": "mock-a 200",
+            "from_s": 420.0,
+            "to_s": 540.0,
+            "requests": 2400,
+            "errors": {},
+            "error_rate": 0.0,
+            "p50_ms": 9597.0,
+            "p95_ms": 10172.6,
+            "members": {
+              "perf-mock--mock-a": 2220,
+              "perf-mock--mock-b": 180
+            },
+            "moved_after_s": null
+          },
+          {
+            "phase": "mock-a hang",
+            "from_s": 540.0,
+            "to_s": 660.0,
+            "requests": 2400,
+            "errors": {
+              "connection": 8,
+              "timeout": 2
+            },
+            "error_rate": 0.0042,
+            "p50_ms": 129690.8,
+            "p95_ms": 130883.0,
+            "members": {
+              "perf-mock--mock-b": 2384,
+              "perf-mock--mock-a": 6
+            },
+            "moved_after_s": 0
+          },
+          {
+            "phase": "mock-a 200",
+            "from_s": 660.0,
+            "to_s": 780.95,
+            "requests": 2400,
+            "errors": {
+              "connection": 1,
+              "503": 2
+            },
+            "error_rate": 0.0012,
+            "p50_ms": 9633.4,
+            "p95_ms": 10276.3,
+            "members": {
+              "perf-mock--mock-b": 2396,
+              "perf-mock--mock-a": 1
+            },
+            "moved_after_s": null
+          }
+        ]
+      }
+    ]
+  },
+  "aca-real-1": {
+    "ramps": [
+      {
+        "label": "aca-perf-luna",
+        "target": "aca-perf-luna",
+        "shape": "agent",
+        "max_passing_rpm": 4,
+        "first_failure": {
+          "rpm": 8,
+          "reason": "errors"
+        },
+        "baseline_p95_ms": null,
+        "steps": [
+          {
+            "rpm": 2,
+            "verdict": "pass",
+            "ok": 4,
+            "started": 4,
+            "errors": {},
+            "latency_ms": {
+              "p50": 4432.1,
+              "p90": 7577.3,
+              "p95": 7577.3,
+              "p99": 7577.3,
+              "max": 7577.3
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-luna--pool-openaiminggu-gpt-6-luna": 4
+            },
+            "prompt_tokens": 35158,
+            "completion_tokens": 305,
+            "client_cpu": {
+              "avg": 0.0,
+              "max": 0.4
+            }
+          },
+          {
+            "rpm": 4,
+            "verdict": "pass",
+            "ok": 8,
+            "started": 8,
+            "errors": {},
+            "latency_ms": {
+              "p50": 4291.2,
+              "p90": 5384.5,
+              "p95": 5384.5,
+              "p99": 5384.5,
+              "max": 5384.5
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-luna--pool-openaiminggu-gpt-6-luna": 8
+            },
+            "prompt_tokens": 35158,
+            "completion_tokens": 298,
+            "client_cpu": {
+              "avg": 0.0,
+              "max": 0.2
+            }
+          },
+          {
+            "rpm": 8,
+            "verdict": "errors",
+            "ok": 14,
+            "started": 16,
+            "errors": {
+              "4xx": 2
+            },
+            "latency_ms": {
+              "p50": 4986.8,
+              "p90": 6476.0,
+              "p95": 6802.1,
+              "p99": 6802.1,
+              "max": 6802.1
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-luna--pool-control-plane-test-gpt-6-luna": 7,
+              "perf-luna--pool-openaiminggu-gpt-6-luna": 7
+            },
+            "prompt_tokens": 35158,
+            "completion_tokens": 314,
+            "client_cpu": {
+              "avg": 0.0,
+              "max": 0.4
+            }
+          }
+        ],
+        "baseline": null
+      },
+      {
+        "label": "aca-perf-luna",
+        "target": "aca-perf-luna",
+        "shape": "chat",
+        "max_passing_rpm": 160,
+        "first_failure": null,
+        "baseline_p95_ms": null,
+        "steps": [
+          {
+            "rpm": 20,
+            "verdict": "pass",
+            "ok": 40,
+            "started": 40,
+            "errors": {},
+            "latency_ms": {
+              "p50": 5137.2,
+              "p90": 5528.6,
+              "p95": 5634.9,
+              "p99": 6726.3,
+              "max": 6726.3
+            },
+            "ttft_ms": {
+              "p50": 993.2,
+              "p95": 1283.2,
+              "p99": 1570.6
+            },
+            "members": {
+              "perf-luna--pool-openaiminggu-gpt-6-luna": 36,
+              "perf-luna--pool-control-plane-test-gpt-6-luna": 4
+            },
+            "prompt_tokens": 1414,
+            "completion_tokens": 434,
+            "client_cpu": {
+              "avg": 0.0,
+              "max": 0.4
+            }
+          },
+          {
+            "rpm": 40,
+            "verdict": "pass",
+            "ok": 80,
+            "started": 80,
+            "errors": {},
+            "latency_ms": {
+              "p50": 5060.6,
+              "p90": 5593.1,
+              "p95": 5683.5,
+              "p99": 6591.3,
+              "max": 6591.3
+            },
+            "ttft_ms": {
+              "p50": 1069.1,
+              "p95": 1459.5,
+              "p99": 2674.2
+            },
+            "members": {
+              "perf-luna--pool-openaiminggu-gpt-6-luna": 80
+            },
+            "prompt_tokens": 1414,
+            "completion_tokens": 420,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 0.3
+            }
+          },
+          {
+            "rpm": 80,
+            "verdict": "pass",
+            "ok": 160,
+            "started": 160,
+            "errors": {},
+            "latency_ms": {
+              "p50": 5117.9,
+              "p90": 5649.9,
+              "p95": 5922.4,
+              "p99": 6634.9,
+              "max": 9947.9
+            },
+            "ttft_ms": {
+              "p50": 1071.0,
+              "p95": 1496.9,
+              "p99": 2428.8
+            },
+            "members": {
+              "perf-luna--pool-openaiminggu-gpt-6-luna": 160
+            },
+            "prompt_tokens": 1414,
+            "completion_tokens": 424,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 1.6
+            }
+          },
+          {
+            "rpm": 160,
+            "verdict": "pass",
+            "ok": 320,
+            "started": 320,
+            "errors": {},
+            "latency_ms": {
+              "p50": 5152.1,
+              "p90": 5952.1,
+              "p95": 6831.9,
+              "p99": 8825.0,
+              "max": 9405.4
+            },
+            "ttft_ms": {
+              "p50": 1055.8,
+              "p95": 2490.8,
+              "p99": 4661.5
+            },
+            "members": {
+              "perf-luna--pool-control-plane-test-gpt-6-luna": 162,
+              "perf-luna--pool-openaiminggu-gpt-6-luna": 158
+            },
+            "prompt_tokens": 1414,
+            "completion_tokens": 425,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 1.8
+            }
+          }
+        ],
+        "baseline": null
+      },
+      {
+        "label": "aca-perf-luna",
+        "target": "aca-perf-luna",
+        "shape": "short",
+        "max_passing_rpm": 240,
+        "first_failure": {
+          "rpm": 360,
+          "reason": "errors"
+        },
+        "baseline_p95_ms": null,
+        "steps": [
+          {
+            "rpm": 30,
+            "verdict": "pass",
+            "ok": 60,
+            "started": 60,
+            "errors": {},
+            "latency_ms": {
+              "p50": 1892.3,
+              "p90": 2444.1,
+              "p95": 3479.4,
+              "p99": 5039.0,
+              "max": 5039.0
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-luna--pool-openaiminggu-gpt-6-luna": 39,
+              "perf-luna--pool-control-plane-test-gpt-6-luna": 21
+            },
+            "prompt_tokens": 359,
+            "completion_tokens": 84,
+            "client_cpu": {
+              "avg": 0.0,
+              "max": 1.1
+            }
+          },
+          {
+            "rpm": 60,
+            "verdict": "pass",
+            "ok": 120,
+            "started": 120,
+            "errors": {},
+            "latency_ms": {
+              "p50": 1675.6,
+              "p90": 2058.8,
+              "p95": 2412.0,
+              "p99": 2593.3,
+              "max": 3366.6
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-luna--pool-openaiminggu-gpt-6-luna": 120
+            },
+            "prompt_tokens": 359,
+            "completion_tokens": 85,
+            "client_cpu": {
+              "avg": 0.0,
+              "max": 0.4
+            }
+          },
+          {
+            "rpm": 120,
+            "verdict": "pass",
+            "ok": 240,
+            "started": 240,
+            "errors": {},
+            "latency_ms": {
+              "p50": 1609.9,
+              "p90": 2304.4,
+              "p95": 3129.4,
+              "p99": 5212.9,
+              "max": 5654.4
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-luna--pool-openaiminggu-gpt-6-luna": 240
+            },
+            "prompt_tokens": 359,
+            "completion_tokens": 86,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 1.3
+            }
+          },
+          {
+            "rpm": 240,
+            "verdict": "pass",
+            "ok": 480,
+            "started": 480,
+            "errors": {},
+            "latency_ms": {
+              "p50": 1619.4,
+              "p90": 2250.1,
+              "p95": 2906.1,
+              "p99": 5342.7,
+              "max": 8841.9
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-luna--pool-control-plane-test-gpt-6-luna": 241,
+              "perf-luna--pool-openaiminggu-gpt-6-luna": 239
+            },
+            "prompt_tokens": 359,
+            "completion_tokens": 85,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 5.0
+            }
+          },
+          {
+            "rpm": 360,
+            "verdict": "errors",
+            "ok": 512,
+            "started": 720,
+            "errors": {
+              "4xx": 208
+            },
+            "latency_ms": {
+              "p50": 1584.0,
+              "p90": 2132.9,
+              "p95": 2408.9,
+              "p99": 4690.6,
+              "max": 9344.5
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-luna--pool-control-plane-test-gpt-6-luna": 276,
+              "perf-luna--pool-openaiminggu-gpt-6-luna": 236
+            },
+            "prompt_tokens": 359,
+            "completion_tokens": 86,
+            "client_cpu": {
+              "avg": 0.2,
+              "max": 5.4
+            }
+          }
+        ],
+        "baseline": null
+      },
+      {
+        "label": "direct-luna",
+        "target": "direct-luna",
+        "shape": "agent",
+        "max_passing_rpm": 4,
+        "first_failure": {
+          "rpm": 8,
+          "reason": "errors"
+        },
+        "baseline_p95_ms": null,
+        "steps": [
+          {
+            "rpm": 2,
+            "verdict": "pass",
+            "ok": 4,
+            "started": 4,
+            "errors": {},
+            "latency_ms": {
+              "p50": 4772.1,
+              "p90": 5545.2,
+              "p95": 5545.2,
+              "p99": 5545.2,
+              "max": 5545.2
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "Central US": 4
+            },
+            "prompt_tokens": 35158,
+            "completion_tokens": 340,
+            "client_cpu": {
+              "avg": 0.0,
+              "max": 0.3
+            }
+          },
+          {
+            "rpm": 4,
+            "verdict": "pass",
+            "ok": 8,
+            "started": 8,
+            "errors": {},
+            "latency_ms": {
+              "p50": 4231.4,
+              "p90": 6465.1,
+              "p95": 6465.1,
+              "p99": 6465.1,
+              "max": 6465.1
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "Central US": 8
+            },
+            "prompt_tokens": 35158,
+            "completion_tokens": 306,
+            "client_cpu": {
+              "avg": 0.0,
+              "max": 0.2
+            }
+          },
+          {
+            "rpm": 8,
+            "verdict": "errors",
+            "ok": 7,
+            "started": 16,
+            "errors": {
+              "429": 9
+            },
+            "latency_ms": {
+              "p50": 4080.8,
+              "p90": 4669.2,
+              "p95": 4669.2,
+              "p99": 4669.2,
+              "max": 4669.2
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "Central US": 7
+            },
+            "prompt_tokens": 35158,
+            "completion_tokens": 290,
+            "client_cpu": {
+              "avg": 0.0,
+              "max": 0.3
+            }
+          }
+        ],
+        "baseline": null
+      },
+      {
+        "label": "direct-luna",
+        "target": "direct-luna",
+        "shape": "chat",
+        "max_passing_rpm": 80,
+        "first_failure": {
+          "rpm": 160,
+          "reason": "errors"
+        },
+        "baseline_p95_ms": null,
+        "steps": [
+          {
+            "rpm": 20,
+            "verdict": "pass",
+            "ok": 40,
+            "started": 40,
+            "errors": {},
+            "latency_ms": {
+              "p50": 4826.8,
+              "p90": 5349.7,
+              "p95": 5474.1,
+              "p99": 5754.5,
+              "max": 5754.5
+            },
+            "ttft_ms": {
+              "p50": 932.0,
+              "p95": 1203.0,
+              "p99": 1469.4
+            },
+            "members": {
+              "Central US": 40
+            },
+            "prompt_tokens": 1414,
+            "completion_tokens": 428,
+            "client_cpu": {
+              "avg": 0.0,
+              "max": 0.4
+            }
+          },
+          {
+            "rpm": 40,
+            "verdict": "pass",
+            "ok": 80,
+            "started": 80,
+            "errors": {},
+            "latency_ms": {
+              "p50": 4990.5,
+              "p90": 5818.6,
+              "p95": 5943.8,
+              "p99": 6492.3,
+              "max": 6492.3
+            },
+            "ttft_ms": {
+              "p50": 902.1,
+              "p95": 1067.9,
+              "p99": 1258.0
+            },
+            "members": {
+              "Central US": 80
+            },
+            "prompt_tokens": 1414,
+            "completion_tokens": 427,
+            "client_cpu": {
+              "avg": 0.0,
+              "max": 0.3
+            }
+          },
+          {
+            "rpm": 80,
+            "verdict": "pass",
+            "ok": 160,
+            "started": 160,
+            "errors": {},
+            "latency_ms": {
+              "p50": 4809.8,
+              "p90": 5458.2,
+              "p95": 5675.1,
+              "p99": 6088.3,
+              "max": 6111.9
+            },
+            "ttft_ms": {
+              "p50": 924.1,
+              "p95": 1217.2,
+              "p99": 1461.2
+            },
+            "members": {
+              "Central US": 160
+            },
+            "prompt_tokens": 1414,
+            "completion_tokens": 426,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 0.9
+            }
+          },
+          {
+            "rpm": 160,
+            "verdict": "errors",
+            "ok": 241,
+            "started": 320,
+            "errors": {
+              "429": 79
+            },
+            "latency_ms": {
+              "p50": 4961.4,
+              "p90": 5525.4,
+              "p95": 5727.1,
+              "p99": 6240.1,
+              "max": 6280.9
+            },
+            "ttft_ms": {
+              "p50": 908.8,
+              "p95": 1132.8,
+              "p99": 1382.3
+            },
+            "members": {
+              "Central US": 241
+            },
+            "prompt_tokens": 1414,
+            "completion_tokens": 428,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 1.8
+            }
+          }
+        ],
+        "baseline": null
+      },
+      {
+        "label": "direct-luna",
+        "target": "direct-luna",
+        "shape": "short",
+        "max_passing_rpm": 120,
+        "first_failure": {
+          "rpm": 240,
+          "reason": "errors"
+        },
+        "baseline_p95_ms": null,
+        "steps": [
+          {
+            "rpm": 30,
+            "verdict": "pass",
+            "ok": 60,
+            "started": 60,
+            "errors": {},
+            "latency_ms": {
+              "p50": 1839.2,
+              "p90": 2250.4,
+              "p95": 2514.5,
+              "p99": 3463.5,
+              "max": 3463.5
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "Central US": 60
+            },
+            "prompt_tokens": 359,
+            "completion_tokens": 86,
+            "client_cpu": {
+              "avg": 0.0,
+              "max": 0.3
+            }
+          },
+          {
+            "rpm": 60,
+            "verdict": "pass",
+            "ok": 120,
+            "started": 120,
+            "errors": {},
+            "latency_ms": {
+              "p50": 1701.5,
+              "p90": 2075.5,
+              "p95": 2275.4,
+              "p99": 2809.9,
+              "max": 4119.8
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "Central US": 120
+            },
+            "prompt_tokens": 359,
+            "completion_tokens": 86,
+            "client_cpu": {
+              "avg": 0.0,
+              "max": 0.4
+            }
+          },
+          {
+            "rpm": 120,
+            "verdict": "pass",
+            "ok": 240,
+            "started": 240,
+            "errors": {},
+            "latency_ms": {
+              "p50": 1556.0,
+              "p90": 2096.5,
+              "p95": 2526.5,
+              "p99": 4331.5,
+              "max": 4849.3
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "Central US": 240
+            },
+            "prompt_tokens": 359,
+            "completion_tokens": 85,
+            "client_cpu": {
+              "avg": 0.0,
+              "max": 0.4
+            }
+          },
+          {
+            "rpm": 240,
+            "verdict": "errors",
+            "ok": 336,
+            "started": 480,
+            "errors": {
+              "429": 144
+            },
+            "latency_ms": {
+              "p50": 1577.0,
+              "p90": 2095.5,
+              "p95": 2517.0,
+              "p99": 4157.7,
+              "max": 4905.0
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "Central US": 336
+            },
+            "prompt_tokens": 359,
+            "completion_tokens": 85,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 2.0
+            }
+          },
+          {
+            "rpm": 360,
+            "verdict": "errors",
+            "ok": 250,
+            "started": 720,
+            "errors": {
+              "429": 470
+            },
+            "latency_ms": {
+              "p50": 1584.6,
+              "p90": 1925.6,
+              "p95": 2270.3,
+              "p99": 4688.8,
+              "max": 4997.5
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "Central US": 250
+            },
+            "prompt_tokens": 359,
+            "completion_tokens": 85,
+            "client_cpu": {
+              "avg": 0.2,
+              "max": 15.4
+            }
+          }
+        ],
+        "baseline": null
+      }
+    ],
+    "failovers": []
+  },
+  "aca-real-2": {
+    "ramps": [
+      {
+        "label": "aca-perf-luna",
+        "target": "aca-perf-luna",
+        "shape": "agent",
+        "max_passing_rpm": 8,
+        "first_failure": null,
+        "baseline_p95_ms": null,
+        "steps": [
+          {
+            "rpm": 2,
+            "verdict": "pass",
+            "ok": 4,
+            "started": 4,
+            "errors": {},
+            "latency_ms": {
+              "p50": 3695.8,
+              "p90": 3992.3,
+              "p95": 3992.3,
+              "p99": 3992.3,
+              "max": 3992.3
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-luna--pool-openaiminggu-gpt-6-luna": 4
+            },
+            "prompt_tokens": 35158,
+            "completion_tokens": 344,
+            "client_cpu": {
+              "avg": 0.0,
+              "max": 0.3
+            }
+          },
+          {
+            "rpm": 4,
+            "verdict": "pass",
+            "ok": 8,
+            "started": 8,
+            "errors": {},
+            "latency_ms": {
+              "p50": 3505.2,
+              "p90": 3982.1,
+              "p95": 3982.1,
+              "p99": 3982.1,
+              "max": 3982.1
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-luna--pool-openaiminggu-gpt-6-luna": 8
+            },
+            "prompt_tokens": 35158,
+            "completion_tokens": 338,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 6.9
+            }
+          },
+          {
+            "rpm": 8,
+            "verdict": "pass",
+            "ok": 16,
+            "started": 16,
+            "errors": {},
+            "latency_ms": {
+              "p50": 3790.2,
+              "p90": 4577.6,
+              "p95": 4852.5,
+              "p99": 4852.5,
+              "max": 4852.5
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-luna--pool-control-plane-test-gpt-6-luna": 7,
+              "perf-luna--pool-openaiminggu-gpt-6-luna": 7,
+              "perf-luna--pool-ai-minggu3566ai776846365708-gpt-6-luna-dz": 2
+            },
+            "prompt_tokens": 35158,
+            "completion_tokens": 331,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 4.6
+            }
+          }
+        ],
+        "baseline": null
+      },
+      {
+        "label": "aca-perf-luna",
+        "target": "aca-perf-luna",
+        "shape": "chat",
+        "max_passing_rpm": 160,
+        "first_failure": null,
+        "baseline_p95_ms": null,
+        "steps": [
+          {
+            "rpm": 20,
+            "verdict": "pass",
+            "ok": 40,
+            "started": 40,
+            "errors": {},
+            "latency_ms": {
+              "p50": 3948.0,
+              "p90": 4452.4,
+              "p95": 4681.8,
+              "p99": 22773.7,
+              "max": 22773.7
+            },
+            "ttft_ms": {
+              "p50": 825.0,
+              "p95": 1390.6,
+              "p99": 20007.6
+            },
+            "members": {
+              "perf-luna--pool-openaiminggu-gpt-6-luna": 35,
+              "perf-luna--pool-control-plane-test-gpt-6-luna": 5
+            },
+            "prompt_tokens": 1414,
+            "completion_tokens": 432,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 0.3
+            }
+          },
+          {
+            "rpm": 40,
+            "verdict": "pass",
+            "ok": 80,
+            "started": 80,
+            "errors": {},
+            "latency_ms": {
+              "p50": 4143.6,
+              "p90": 4643.2,
+              "p95": 4810.5,
+              "p99": 5602.1,
+              "max": 5602.1
+            },
+            "ttft_ms": {
+              "p50": 943.8,
+              "p95": 1042.0,
+              "p99": 2232.1
+            },
+            "members": {
+              "perf-luna--pool-openaiminggu-gpt-6-luna": 80
+            },
+            "prompt_tokens": 1414,
+            "completion_tokens": 427,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 6.5
+            }
+          },
+          {
+            "rpm": 80,
+            "verdict": "pass",
+            "ok": 160,
+            "started": 160,
+            "errors": {},
+            "latency_ms": {
+              "p50": 4247.8,
+              "p90": 4756.8,
+              "p95": 4922.2,
+              "p99": 5794.3,
+              "max": 5968.7
+            },
+            "ttft_ms": {
+              "p50": 938.4,
+              "p95": 1130.6,
+              "p99": 1698.9
+            },
+            "members": {
+              "perf-luna--pool-openaiminggu-gpt-6-luna": 160
+            },
+            "prompt_tokens": 1414,
+            "completion_tokens": 430,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 0.4
+            }
+          },
+          {
+            "rpm": 160,
+            "verdict": "pass",
+            "ok": 320,
+            "started": 320,
+            "errors": {},
+            "latency_ms": {
+              "p50": 4071.0,
+              "p90": 4875.9,
+              "p95": 5759.1,
+              "p99": 7539.3,
+              "max": 9667.2
+            },
+            "ttft_ms": {
+              "p50": 902.1,
+              "p95": 2554.8,
+              "p99": 4644.3
+            },
+            "members": {
+              "perf-luna--pool-control-plane-test-gpt-6-luna": 161,
+              "perf-luna--pool-openaiminggu-gpt-6-luna": 159
+            },
+            "prompt_tokens": 1414,
+            "completion_tokens": 431,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 1.2
+            }
+          }
+        ],
+        "baseline": null
+      },
+      {
+        "label": "aca-perf-luna",
+        "target": "aca-perf-luna",
+        "shape": "short",
+        "max_passing_rpm": 360,
+        "first_failure": null,
+        "baseline_p95_ms": null,
+        "steps": [
+          {
+            "rpm": 30,
+            "verdict": "pass",
+            "ok": 60,
+            "started": 60,
+            "errors": {},
+            "latency_ms": {
+              "p50": 1543.4,
+              "p90": 1665.4,
+              "p95": 1828.1,
+              "p99": 2686.7,
+              "max": 2686.7
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-luna--pool-openaiminggu-gpt-6-luna": 60
+            },
+            "prompt_tokens": 359,
+            "completion_tokens": 86,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 6.0
+            }
+          },
+          {
+            "rpm": 60,
+            "verdict": "pass",
+            "ok": 120,
+            "started": 120,
+            "errors": {},
+            "latency_ms": {
+              "p50": 1483.3,
+              "p90": 1739.0,
+              "p95": 1950.9,
+              "p99": 2587.7,
+              "max": 2665.8
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-luna--pool-openaiminggu-gpt-6-luna": 120
+            },
+            "prompt_tokens": 359,
+            "completion_tokens": 87,
+            "client_cpu": {
+              "avg": 0.0,
+              "max": 0.2
+            }
+          },
+          {
+            "rpm": 120,
+            "verdict": "pass",
+            "ok": 240,
+            "started": 240,
+            "errors": {},
+            "latency_ms": {
+              "p50": 1386.6,
+              "p90": 1666.9,
+              "p95": 1973.8,
+              "p99": 4394.5,
+              "max": 5941.9
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-luna--pool-openaiminggu-gpt-6-luna": 240
+            },
+            "prompt_tokens": 359,
+            "completion_tokens": 86,
+            "client_cpu": {
+              "avg": 0.2,
+              "max": 5.1
+            }
+          },
+          {
+            "rpm": 240,
+            "verdict": "pass",
+            "ok": 480,
+            "started": 480,
+            "errors": {},
+            "latency_ms": {
+              "p50": 1446.2,
+              "p90": 1940.3,
+              "p95": 2946.8,
+              "p99": 5243.6,
+              "max": 11051.8
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-luna--pool-openaiminggu-gpt-6-luna": 240,
+              "perf-luna--pool-control-plane-test-gpt-6-luna": 240
+            },
+            "prompt_tokens": 359,
+            "completion_tokens": 86,
+            "client_cpu": {
+              "avg": 0.2,
+              "max": 5.1
+            }
+          },
+          {
+            "rpm": 360,
+            "verdict": "pass",
+            "ok": 720,
+            "started": 720,
+            "errors": {},
+            "latency_ms": {
+              "p50": 1370.4,
+              "p90": 1775.4,
+              "p95": 1939.7,
+              "p99": 3175.6,
+              "max": 8135.1
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-luna--pool-control-plane-test-gpt-6-luna": 287,
+              "perf-luna--pool-openaiminggu-gpt-6-luna": 232,
+              "perf-luna--pool-ai-minggu3566ai776846365708-gpt-6-luna-dz": 138,
+              "perf-luna--pool-minggu-luna-eu-22610-gpt-6-luna-dz": 63
+            },
+            "prompt_tokens": 359,
+            "completion_tokens": 86,
+            "client_cpu": {
+              "avg": 0.3,
+              "max": 6.7
+            }
+          }
+        ],
+        "baseline": null
+      }
+    ],
+    "failovers": []
+  },
+  "aks-1": {
+    "ramps": [
+      {
+        "label": "aks-mock",
+        "target": "aks-perf-mock",
+        "shape": "agent",
+        "max_passing_rpm": 15000,
+        "first_failure": null,
+        "baseline_p95_ms": 12663.6,
+        "steps": [
+          {
+            "rpm": 600,
+            "verdict": "pass",
+            "ok": 1200,
+            "started": 1200,
+            "errors": {},
+            "latency_ms": {
+              "p50": 12686.4,
+              "p90": 12695.2,
+              "p95": 12698.5,
+              "p99": 12708.0,
+              "max": 12740.8
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-mock--mock-a": 1200
+            },
+            "prompt_tokens": 50000,
+            "completion_tokens": 400,
+            "client_cpu": {
+              "avg": 0.3,
+              "max": 6.7
+            }
+          },
+          {
+            "rpm": 1500,
+            "verdict": "pass",
+            "ok": 2997,
+            "started": 3000,
+            "errors": {
+              "5xx": 3
+            },
+            "latency_ms": {
+              "p50": 12685.1,
+              "p90": 12691.3,
+              "p95": 12694.6,
+              "p99": 12702.8,
+              "max": 12851.2
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-mock--mock-a": 2997
+            },
+            "prompt_tokens": 50000,
+            "completion_tokens": 400,
+            "client_cpu": {
+              "avg": 0.6,
+              "max": 12.2
+            }
+          },
+          {
+            "rpm": 3000,
+            "verdict": "pass",
+            "ok": 5999,
+            "started": 6000,
+            "errors": {
+              "5xx": 1
+            },
+            "latency_ms": {
+              "p50": 12684.0,
+              "p90": 12690.7,
+              "p95": 12695.9,
+              "p99": 12743.1,
+              "max": 14154.7
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-mock--mock-a": 5999
+            },
+            "prompt_tokens": 50000,
+            "completion_tokens": 400,
+            "client_cpu": {
+              "avg": 1.1,
+              "max": 23.8
+            }
+          },
+          {
+            "rpm": 6000,
+            "verdict": "pass",
+            "ok": 12000,
+            "started": 12000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 12682.7,
+              "p90": 12688.0,
+              "p95": 12690.2,
+              "p99": 12697.1,
+              "max": 13610.3
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-mock--mock-a": 12000
+            },
+            "prompt_tokens": 50000,
+            "completion_tokens": 400,
+            "client_cpu": {
+              "avg": 2.5,
+              "max": 53.8
+            }
+          },
+          {
+            "rpm": 9000,
+            "verdict": "pass",
+            "ok": 17999,
+            "started": 18000,
+            "errors": {
+              "5xx": 1
+            },
+            "latency_ms": {
+              "p50": 12682.2,
+              "p90": 12687.7,
+              "p95": 12690.1,
+              "p99": 12697.2,
+              "max": 13502.8
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-mock--mock-a": 17999
+            },
+            "prompt_tokens": 50000,
+            "completion_tokens": 400,
+            "client_cpu": {
+              "avg": 3.5,
+              "max": 85.7
+            }
+          },
+          {
+            "rpm": 12000,
+            "verdict": "pass",
+            "ok": 23999,
+            "started": 24000,
+            "errors": {
+              "5xx": 1
+            },
+            "latency_ms": {
+              "p50": 12681.7,
+              "p90": 12687.3,
+              "p95": 12689.9,
+              "p99": 12697.7,
+              "max": 13421.5
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-mock--mock-a": 23999
+            },
+            "prompt_tokens": 50000,
+            "completion_tokens": 400,
+            "client_cpu": {
+              "avg": 3.2,
+              "max": 72.2
+            }
+          },
+          {
+            "rpm": 15000,
+            "verdict": "pass",
+            "ok": 29998,
+            "started": 30000,
+            "errors": {
+              "5xx": 2
+            },
+            "latency_ms": {
+              "p50": 12681.3,
+              "p90": 12687.6,
+              "p95": 12690.7,
+              "p99": 12699.8,
+              "max": 13312.9
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-mock--mock-a": 29998
+            },
+            "prompt_tokens": 50000,
+            "completion_tokens": 400,
+            "client_cpu": {
+              "avg": 3.6,
+              "max": 84.2
+            }
+          }
+        ],
+        "baseline": {
+          "latency_ms": {
+            "p50": 12659.9,
+            "p90": 12662.3,
+            "p95": 12663.6,
+            "p99": 12670.1,
+            "max": 12670.1
+          },
+          "ttft_ms": {
+            "p50": null,
+            "p95": null,
+            "p99": null
+          }
+        }
+      },
+      {
+        "label": "aks-mock",
+        "target": "aks-perf-mock",
+        "shape": "chat",
+        "max_passing_rpm": 11280,
+        "first_failure": {
+          "rpm": 12000,
+          "reason": "latency"
+        },
+        "baseline_p95_ms": 9520.6,
+        "steps": [
+          {
+            "rpm": 600,
+            "verdict": "pass",
+            "ok": 1200,
+            "started": 1200,
+            "errors": {},
+            "latency_ms": {
+              "p50": 9576.8,
+              "p90": 9586.9,
+              "p95": 9590.9,
+              "p99": 9683.0,
+              "max": 10190.8
+            },
+            "ttft_ms": {
+              "p50": 1220.2,
+              "p95": 1231.6,
+              "p99": 1252.7
+            },
+            "members": {
+              "perf-mock--mock-a": 1200
+            },
+            "prompt_tokens": 2000,
+            "completion_tokens": 500,
+            "client_cpu": {
+              "avg": 2.4,
+              "max": 8.3
+            }
+          },
+          {
+            "rpm": 1500,
+            "verdict": "pass",
+            "ok": 3000,
+            "started": 3000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 9581.6,
+              "p90": 9592.3,
+              "p95": 9597.1,
+              "p99": 9623.9,
+              "max": 10471.3
+            },
+            "ttft_ms": {
+              "p50": 1219.8,
+              "p95": 1231.7,
+              "p99": 1252.1
+            },
+            "members": {
+              "perf-mock--mock-a": 3000
+            },
+            "prompt_tokens": 2000,
+            "completion_tokens": 500,
+            "client_cpu": {
+              "avg": 5.0,
+              "max": 17.1
+            }
+          },
+          {
+            "rpm": 3000,
+            "verdict": "pass",
+            "ok": 6000,
+            "started": 6000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 9594.6,
+              "p90": 9613.1,
+              "p95": 9628.4,
+              "p99": 10013.9,
+              "max": 10814.7
+            },
+            "ttft_ms": {
+              "p50": 1221.8,
+              "p95": 1246.8,
+              "p99": 1718.2
+            },
+            "members": {
+              "perf-mock--mock-a": 6000
+            },
+            "prompt_tokens": 2000,
+            "completion_tokens": 500,
+            "client_cpu": {
+              "avg": 10.1,
+              "max": 25.0
+            }
+          },
+          {
+            "rpm": 6000,
+            "verdict": "pass",
+            "ok": 11993,
+            "started": 12000,
+            "errors": {
+              "5xx": 7
+            },
+            "latency_ms": {
+              "p50": 9643.0,
+              "p90": 9727.5,
+              "p95": 9901.0,
+              "p99": 11028.8,
+              "max": 11880.6
+            },
+            "ttft_ms": {
+              "p50": 1237.2,
+              "p95": 1358.8,
+              "p99": 2471.7
+            },
+            "members": {
+              "perf-mock--mock-a": 11993
+            },
+            "prompt_tokens": 2000,
+            "completion_tokens": 500,
+            "client_cpu": {
+              "avg": 18.0,
+              "max": 44.4
+            }
+          },
+          {
+            "rpm": 9000,
+            "verdict": "pass",
+            "ok": 17981,
+            "started": 18000,
+            "errors": {
+              "5xx": 19
+            },
+            "latency_ms": {
+              "p50": 9743.4,
+              "p90": 10451.2,
+              "p95": 11300.9,
+              "p99": 12559.2,
+              "max": 15258.5
+            },
+            "ttft_ms": {
+              "p50": 1284.2,
+              "p95": 2382.5,
+              "p99": 3594.6
+            },
+            "members": {
+              "perf-mock--mock-a": 17981
+            },
+            "prompt_tokens": 2000,
+            "completion_tokens": 500,
+            "client_cpu": {
+              "avg": 20.4,
+              "max": 62.5
+            }
+          },
+          {
+            "rpm": 10500,
+            "verdict": "pass",
+            "ok": 20984,
+            "started": 21000,
+            "errors": {
+              "5xx": 16
+            },
+            "latency_ms": {
+              "p50": 9730.0,
+              "p90": 10094.0,
+              "p95": 10995.7,
+              "p99": 12047.3,
+              "max": 13567.9
+            },
+            "ttft_ms": {
+              "p50": 1284.1,
+              "p95": 2132.7,
+              "p99": 3225.5
+            },
+            "members": {
+              "perf-mock--mock-a": 20984
+            },
+            "prompt_tokens": 2000,
+            "completion_tokens": 500,
+            "client_cpu": {
+              "avg": 23.1,
+              "max": 31.8
+            }
+          },
+          {
+            "rpm": 11280,
+            "verdict": "pass",
+            "ok": 22518,
+            "started": 22560,
+            "errors": {
+              "5xx": 42
+            },
+            "latency_ms": {
+              "p50": 9789.2,
+              "p90": 10876.7,
+              "p95": 11803.6,
+              "p99": 12979.6,
+              "max": 15248.8
+            },
+            "ttft_ms": {
+              "p50": 1282.1,
+              "p95": 2627.8,
+              "p99": 3976.0
+            },
+            "members": {
+              "perf-mock--mock-a": 22518
+            },
+            "prompt_tokens": 2000,
+            "completion_tokens": 500,
+            "client_cpu": {
+              "avg": 28.5,
+              "max": 32.4
+            }
+          },
+          {
+            "rpm": 12000,
+            "verdict": "latency",
+            "ok": 23961,
+            "started": 24000,
+            "errors": {
+              "5xx": 39
+            },
+            "latency_ms": {
+              "p50": 9853.7,
+              "p90": 11191.2,
+              "p95": 12032.4,
+              "p99": 13192.4,
+              "max": 15960.7
+            },
+            "ttft_ms": {
+              "p50": 1330.6,
+              "p95": 2840.1,
+              "p99": 4221.3
+            },
+            "members": {
+              "perf-mock--mock-a": 23961
+            },
+            "prompt_tokens": 2000,
+            "completion_tokens": 500,
+            "client_cpu": {
+              "avg": 21.6,
+              "max": 30.5
+            }
+          }
+        ],
+        "baseline": {
+          "latency_ms": {
+            "p50": 9519.7,
+            "p90": 9520.3,
+            "p95": 9520.6,
+            "p99": 9522.7,
+            "max": 9522.7
+          },
+          "ttft_ms": {
+            "p50": 1202.8,
+            "p95": 1203.5,
+            "p99": 1206.6
+          }
+        }
+      },
+      {
+        "label": "aks-mock",
+        "target": "aks-perf-mock",
+        "shape": "rag",
+        "max_passing_rpm": 480,
+        "first_failure": {
+          "rpm": 600,
+          "reason": "errors"
+        },
+        "baseline_p95_ms": 6788.9,
+        "steps": [
+          {
+            "rpm": 300,
+            "verdict": "pass",
+            "ok": 600,
+            "started": 600,
+            "errors": {},
+            "latency_ms": {
+              "p50": 6833.9,
+              "p90": 6846.7,
+              "p95": 6854.0,
+              "p99": 6946.7,
+              "max": 7611.6
+            },
+            "ttft_ms": {
+              "p50": 1825.1,
+              "p95": 1844.7,
+              "p99": 1874.3
+            },
+            "members": {
+              "perf-mock--mock-a": 600
+            },
+            "prompt_tokens": 8000,
+            "completion_tokens": 300,
+            "client_cpu": {
+              "avg": 0.8,
+              "max": 1.7
+            }
+          },
+          {
+            "rpm": 480,
+            "verdict": "pass",
+            "ok": 960,
+            "started": 960,
+            "errors": {},
+            "latency_ms": {
+              "p50": 6833.0,
+              "p90": 6842.3,
+              "p95": 6845.1,
+              "p99": 6854.1,
+              "max": 7147.7
+            },
+            "ttft_ms": {
+              "p50": 1824.4,
+              "p95": 1836.1,
+              "p99": 1846.1
+            },
+            "members": {
+              "perf-mock--mock-a": 960
+            },
+            "prompt_tokens": 8000,
+            "completion_tokens": 300,
+            "client_cpu": {
+              "avg": 1.3,
+              "max": 8.4
+            }
+          },
+          {
+            "rpm": 600,
+            "verdict": "errors",
+            "ok": 1168,
+            "started": 1200,
+            "errors": {
+              "connection": 32
+            },
+            "latency_ms": {
+              "p50": 6833.4,
+              "p90": 6844.2,
+              "p95": 6847.0,
+              "p99": 6864.2,
+              "max": 7578.7
+            },
+            "ttft_ms": {
+              "p50": 1824.3,
+              "p95": 1837.5,
+              "p99": 1850.1
+            },
+            "members": {
+              "perf-mock--mock-a": 1168
+            },
+            "prompt_tokens": 8000,
+            "completion_tokens": 300,
+            "client_cpu": {
+              "avg": 1.6,
+              "max": 16.7
+            }
+          }
+        ],
+        "baseline": {
+          "latency_ms": {
+            "p50": 6787.8,
+            "p90": 6788.6,
+            "p95": 6788.9,
+            "p99": 6791.5,
+            "max": 6791.5
+          },
+          "ttft_ms": {
+            "p50": 1804.3,
+            "p95": 1805.7,
+            "p99": 1806.1
+          }
+        }
+      },
+      {
+        "label": "aks-mock",
+        "target": "aks-perf-mock",
+        "shape": "short",
+        "max_passing_rpm": 15000,
+        "first_failure": null,
+        "baseline_p95_ms": 2705.4,
+        "steps": [
+          {
+            "rpm": 600,
+            "verdict": "pass",
+            "ok": 1200,
+            "started": 1200,
+            "errors": {},
+            "latency_ms": {
+              "p50": 2725.7,
+              "p90": 2735.0,
+              "p95": 2738.1,
+              "p99": 2744.3,
+              "max": 2766.6
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-mock--mock-a": 1200
+            },
+            "prompt_tokens": 500,
+            "completion_tokens": 100,
+            "client_cpu": {
+              "avg": 0.4,
+              "max": 6.6
+            }
+          },
+          {
+            "rpm": 1500,
+            "verdict": "pass",
+            "ok": 2999,
+            "started": 3000,
+            "errors": {
+              "5xx": 1
+            },
+            "latency_ms": {
+              "p50": 2724.2,
+              "p90": 2731.2,
+              "p95": 2734.6,
+              "p99": 2742.2,
+              "max": 5312.8
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-mock--mock-a": 2999
+            },
+            "prompt_tokens": 500,
+            "completion_tokens": 100,
+            "client_cpu": {
+              "avg": 0.6,
+              "max": 8.8
+            }
+          },
+          {
+            "rpm": 3000,
+            "verdict": "pass",
+            "ok": 5999,
+            "started": 6000,
+            "errors": {
+              "5xx": 1
+            },
+            "latency_ms": {
+              "p50": 2723.2,
+              "p90": 2728.8,
+              "p95": 2732.7,
+              "p99": 2747.9,
+              "max": 3519.9
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-mock--mock-a": 5999
+            },
+            "prompt_tokens": 500,
+            "completion_tokens": 100,
+            "client_cpu": {
+              "avg": 0.9,
+              "max": 19.2
+            }
+          },
+          {
+            "rpm": 6000,
+            "verdict": "pass",
+            "ok": 12000,
+            "started": 12000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 2722.1,
+              "p90": 2726.9,
+              "p95": 2729.4,
+              "p99": 2735.7,
+              "max": 2880.5
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-mock--mock-a": 12000
+            },
+            "prompt_tokens": 500,
+            "completion_tokens": 100,
+            "client_cpu": {
+              "avg": 2.1,
+              "max": 55.6
+            }
+          },
+          {
+            "rpm": 9000,
+            "verdict": "pass",
+            "ok": 18000,
+            "started": 18000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 2721.2,
+              "p90": 2725.4,
+              "p95": 2728.1,
+              "p99": 2735.0,
+              "max": 3362.3
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-mock--mock-a": 18000
+            },
+            "prompt_tokens": 500,
+            "completion_tokens": 100,
+            "client_cpu": {
+              "avg": 2.9,
+              "max": 68.8
+            }
+          },
+          {
+            "rpm": 12000,
+            "verdict": "pass",
+            "ok": 23999,
+            "started": 24000,
+            "errors": {
+              "5xx": 1
+            },
+            "latency_ms": {
+              "p50": 2720.9,
+              "p90": 2725.2,
+              "p95": 2727.8,
+              "p99": 2733.3,
+              "max": 2824.3
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-mock--mock-a": 23999
+            },
+            "prompt_tokens": 500,
+            "completion_tokens": 100,
+            "client_cpu": {
+              "avg": 2.7,
+              "max": 73.7
+            }
+          },
+          {
+            "rpm": 15000,
+            "verdict": "pass",
+            "ok": 30000,
+            "started": 30000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 2720.7,
+              "p90": 2725.3,
+              "p95": 2728.1,
+              "p99": 2734.4,
+              "max": 2781.7
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-mock--mock-a": 30000
+            },
+            "prompt_tokens": 500,
+            "completion_tokens": 100,
+            "client_cpu": {
+              "avg": 2.5,
+              "max": 75.0
+            }
+          }
+        ],
+        "baseline": {
+          "latency_ms": {
+            "p50": 2703.5,
+            "p90": 2704.4,
+            "p95": 2705.4,
+            "p99": 2706.8,
+            "max": 2706.8
+          },
+          "ttft_ms": {
+            "p50": null,
+            "p95": null,
+            "p99": null
+          }
+        }
+      }
+    ],
+    "failovers": [
+      {
+        "name": "failover-aks-mock-chat-1200",
+        "target": "aks-perf-mock",
+        "rpm": 1200,
+        "phases": [
+          {
+            "phase": "healthy",
+            "from_s": 0.0,
+            "to_s": 60.0,
+            "requests": 1200,
+            "errors": {},
+            "error_rate": 0.0,
+            "p50_ms": 9580.6,
+            "p95_ms": 9602.4,
+            "members": {
+              "perf-mock--mock-a": 1192,
+              "perf-mock--mock-b": 8
+            },
+            "moved_after_s": null
+          },
+          {
+            "phase": "mock-a 429",
+            "from_s": 60.0,
+            "to_s": 180.0,
+            "requests": 2400,
+            "errors": {},
+            "error_rate": 0.0,
+            "p50_ms": 9580.9,
+            "p95_ms": 9606.4,
+            "members": {
+              "perf-mock--mock-b": 2400
+            },
+            "moved_after_s": 0
+          },
+          {
+            "phase": "mock-a 200",
+            "from_s": 180.0,
+            "to_s": 300.0,
+            "requests": 2400,
+            "errors": {
+              "503": 1
+            },
+            "error_rate": 0.0004,
+            "p50_ms": 9580.6,
+            "p95_ms": 9600.1,
+            "members": {
+              "perf-mock--mock-a": 2384,
+              "perf-mock--mock-b": 15
+            },
+            "moved_after_s": null
+          },
+          {
+            "phase": "mock-a 500",
+            "from_s": 300.0,
+            "to_s": 420.0,
+            "requests": 2400,
+            "errors": {},
+            "error_rate": 0.0,
+            "p50_ms": 9580.8,
+            "p95_ms": 9598.3,
+            "members": {
+              "perf-mock--mock-b": 2400
+            },
+            "moved_after_s": 0
+          },
+          {
+            "phase": "mock-a 200",
+            "from_s": 420.0,
+            "to_s": 540.0,
+            "requests": 2400,
+            "errors": {},
+            "error_rate": 0.0,
+            "p50_ms": 9580.2,
+            "p95_ms": 9598.6,
+            "members": {
+              "perf-mock--mock-a": 2382,
+              "perf-mock--mock-b": 18
+            },
+            "moved_after_s": null
+          },
+          {
+            "phase": "mock-a hang",
+            "from_s": 540.0,
+            "to_s": 660.0,
+            "requests": 2400,
+            "errors": {},
+            "error_rate": 0.0,
+            "p50_ms": 129634.9,
+            "p95_ms": 129670.7,
+            "members": {
+              "perf-mock--mock-b": 2398,
+              "perf-mock--mock-a": 2
+            },
+            "moved_after_s": 0
+          },
+          {
+            "phase": "mock-a 200",
+            "from_s": 660.0,
+            "to_s": 781.0,
+            "requests": 2401,
+            "errors": {},
+            "error_rate": 0.0,
+            "p50_ms": 9590.8,
+            "p95_ms": 9624.9,
+            "members": {
+              "perf-mock--mock-b": 2401
+            },
+            "moved_after_s": null
+          }
+        ]
+      }
+    ]
+  },
+  "aks-rag-1": {
+    "ramps": [
+      {
+        "label": "aks-mock-rerun",
+        "target": "aks-perf-mock",
+        "shape": "rag",
+        "max_passing_rpm": 14280,
+        "first_failure": {
+          "rpm": 15000,
+          "reason": "latency"
+        },
+        "baseline_p95_ms": 6792.4,
+        "steps": [
+          {
+            "rpm": 600,
+            "verdict": "pass",
+            "ok": 1200,
+            "started": 1200,
+            "errors": {},
+            "latency_ms": {
+              "p50": 6832.2,
+              "p90": 6842.4,
+              "p95": 6845.5,
+              "p99": 6858.0,
+              "max": 7654.1
+            },
+            "ttft_ms": {
+              "p50": 1823.6,
+              "p95": 1836.6,
+              "p99": 1849.2
+            },
+            "members": {
+              "perf-mock--mock-a": 1200
+            },
+            "prompt_tokens": 8000,
+            "completion_tokens": 300,
+            "client_cpu": {
+              "avg": 1.5,
+              "max": 3.8
+            }
+          },
+          {
+            "rpm": 1500,
+            "verdict": "pass",
+            "ok": 3000,
+            "started": 3000,
+            "errors": {},
+            "latency_ms": {
+              "p50": 6832.8,
+              "p90": 6840.6,
+              "p95": 6844.6,
+              "p99": 6859.6,
+              "max": 7743.1
+            },
+            "ttft_ms": {
+              "p50": 1822.6,
+              "p95": 1833.0,
+              "p99": 1845.1
+            },
+            "members": {
+              "perf-mock--mock-a": 3000
+            },
+            "prompt_tokens": 8000,
+            "completion_tokens": 300,
+            "client_cpu": {
+              "avg": 3.3,
+              "max": 10.2
+            }
+          },
+          {
+            "rpm": 3000,
+            "verdict": "pass",
+            "ok": 5999,
+            "started": 6000,
+            "errors": {
+              "5xx": 1
+            },
+            "latency_ms": {
+              "p50": 6836.3,
+              "p90": 6845.8,
+              "p95": 6851.5,
+              "p99": 6984.5,
+              "max": 7999.0
+            },
+            "ttft_ms": {
+              "p50": 1822.8,
+              "p95": 1835.0,
+              "p99": 1860.3
+            },
+            "members": {
+              "perf-mock--mock-a": 5999
+            },
+            "prompt_tokens": 8000,
+            "completion_tokens": 300,
+            "client_cpu": {
+              "avg": 6.5,
+              "max": 26.7
+            }
+          },
+          {
+            "rpm": 6000,
+            "verdict": "pass",
+            "ok": 11999,
+            "started": 12000,
+            "errors": {
+              "5xx": 1
+            },
+            "latency_ms": {
+              "p50": 6847.7,
+              "p90": 6866.7,
+              "p95": 6884.2,
+              "p99": 7681.9,
+              "max": 8333.9
+            },
+            "ttft_ms": {
+              "p50": 1825.6,
+              "p95": 1851.5,
+              "p99": 2575.7
+            },
+            "members": {
+              "perf-mock--mock-a": 11999
+            },
+            "prompt_tokens": 8000,
+            "completion_tokens": 300,
+            "client_cpu": {
+              "avg": 13.5,
+              "max": 57.1
+            }
+          },
+          {
+            "rpm": 9000,
+            "verdict": "pass",
+            "ok": 17996,
+            "started": 18000,
+            "errors": {
+              "5xx": 4
+            },
+            "latency_ms": {
+              "p50": 6870.8,
+              "p90": 6930.7,
+              "p95": 7057.9,
+              "p99": 8185.0,
+              "max": 9062.3
+            },
+            "ttft_ms": {
+              "p50": 1834.3,
+              "p95": 1938.6,
+              "p99": 2996.5
+            },
+            "members": {
+              "perf-mock--mock-a": 17996
+            },
+            "prompt_tokens": 8000,
+            "completion_tokens": 300,
+            "client_cpu": {
+              "avg": 18.5,
+              "max": 45.5
+            }
+          },
+          {
+            "rpm": 12000,
+            "verdict": "pass",
+            "ok": 23989,
+            "started": 24000,
+            "errors": {
+              "5xx": 11
+            },
+            "latency_ms": {
+              "p50": 6909.4,
+              "p90": 7092.8,
+              "p95": 7798.2,
+              "p99": 8911.8,
+              "max": 10452.1
+            },
+            "ttft_ms": {
+              "p50": 1852.6,
+              "p95": 2366.9,
+              "p99": 3501.5
+            },
+            "members": {
+              "perf-mock--mock-a": 23989
+            },
+            "prompt_tokens": 8000,
+            "completion_tokens": 300,
+            "client_cpu": {
+              "avg": 20.9,
+              "max": 27.3
+            }
+          },
+          {
+            "rpm": 13500,
+            "verdict": "pass",
+            "ok": 26984,
+            "started": 27000,
+            "errors": {
+              "5xx": 16
+            },
+            "latency_ms": {
+              "p50": 6889.7,
+              "p90": 6973.5,
+              "p95": 7234.5,
+              "p99": 8490.6,
+              "max": 9594.8
+            },
+            "ttft_ms": {
+              "p50": 1842.9,
+              "p95": 2002.0,
+              "p99": 3235.5
+            },
+            "members": {
+              "perf-mock--mock-a": 26984
+            },
+            "prompt_tokens": 8000,
+            "completion_tokens": 300,
+            "client_cpu": {
+              "avg": 26.2,
+              "max": 46.2
+            }
+          },
+          {
+            "rpm": 14280,
+            "verdict": "pass",
+            "ok": 28540,
+            "started": 28560,
+            "errors": {
+              "5xx": 20
+            },
+            "latency_ms": {
+              "p50": 6893.4,
+              "p90": 6992.8,
+              "p95": 7397.8,
+              "p99": 8637.9,
+              "max": 9951.7
+            },
+            "ttft_ms": {
+              "p50": 1842.4,
+              "p95": 2099.1,
+              "p99": 3357.5
+            },
+            "members": {
+              "perf-mock--mock-a": 28540
+            },
+            "prompt_tokens": 8000,
+            "completion_tokens": 300,
+            "client_cpu": {
+              "avg": 27.5,
+              "max": 75.0
+            }
+          },
+          {
+            "rpm": 15000,
+            "verdict": "latency",
+            "ok": 29972,
+            "started": 30000,
+            "errors": {
+              "5xx": 28
+            },
+            "latency_ms": {
+              "p50": 6974.0,
+              "p90": 7743.3,
+              "p95": 8653.1,
+              "p99": 9765.9,
+              "max": 11819.8
+            },
+            "ttft_ms": {
+              "p50": 1884.2,
+              "p95": 2973.7,
+              "p99": 4234.7
+            },
+            "members": {
+              "perf-mock--mock-a": 29972
+            },
+            "prompt_tokens": 8000,
+            "completion_tokens": 300,
+            "client_cpu": {
+              "avg": 23.7,
+              "max": 36.0
+            }
+          }
+        ],
+        "baseline": {
+          "latency_ms": {
+            "p50": 6788.0,
+            "p90": 6790.7,
+            "p95": 6792.4,
+            "p99": 6798.5,
+            "max": 6798.5
+          },
+          "ttft_ms": {
+            "p50": 1804.8,
+            "p95": 1808.8,
+            "p99": 1815.3
+          }
+        }
+      }
+    ],
+    "failovers": []
+  },
+  "aks-real-1": {
+    "ramps": [
+      {
+        "label": "aks-perf-luna",
+        "target": "aks-perf-luna",
+        "shape": "agent",
+        "max_passing_rpm": 8,
+        "first_failure": null,
+        "baseline_p95_ms": null,
+        "steps": [
+          {
+            "rpm": 2,
+            "verdict": "pass",
+            "ok": 4,
+            "started": 4,
+            "errors": {},
+            "latency_ms": {
+              "p50": 4449.3,
+              "p90": 4951.3,
+              "p95": 4951.3,
+              "p99": 4951.3,
+              "max": 4951.3
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-luna--pool-openaiminggu-gpt-6-luna": 4
+            },
+            "prompt_tokens": 35158,
+            "completion_tokens": 341,
+            "client_cpu": {
+              "avg": 0.2,
+              "max": 5.8
+            }
+          },
+          {
+            "rpm": 4,
+            "verdict": "pass",
+            "ok": 8,
+            "started": 8,
+            "errors": {},
+            "latency_ms": {
+              "p50": 4157.7,
+              "p90": 5037.1,
+              "p95": 5037.1,
+              "p99": 5037.1,
+              "max": 5037.1
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-luna--pool-openaiminggu-gpt-6-luna": 8
+            },
+            "prompt_tokens": 35158,
+            "completion_tokens": 335,
+            "client_cpu": {
+              "avg": 0.0,
+              "max": 0.2
+            }
+          },
+          {
+            "rpm": 8,
+            "verdict": "pass",
+            "ok": 16,
+            "started": 16,
+            "errors": {},
+            "latency_ms": {
+              "p50": 4776.4,
+              "p90": 5541.6,
+              "p95": 6296.5,
+              "p99": 6296.5,
+              "max": 6296.5
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-luna--pool-control-plane-test-gpt-6-luna": 7,
+              "perf-luna--pool-openaiminggu-gpt-6-luna": 7,
+              "perf-luna--pool-ai-minggu3566ai776846365708-gpt-6-luna-dz": 2
+            },
+            "prompt_tokens": 35158,
+            "completion_tokens": 322,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 6.2
+            }
+          }
+        ],
+        "baseline": null
+      },
+      {
+        "label": "aks-perf-luna",
+        "target": "aks-perf-luna",
+        "shape": "chat",
+        "max_passing_rpm": 160,
+        "first_failure": null,
+        "baseline_p95_ms": null,
+        "steps": [
+          {
+            "rpm": 20,
+            "verdict": "pass",
+            "ok": 40,
+            "started": 40,
+            "errors": {},
+            "latency_ms": {
+              "p50": 4368.7,
+              "p90": 5125.6,
+              "p95": 6045.4,
+              "p99": 21126.5,
+              "max": 21126.5
+            },
+            "ttft_ms": {
+              "p50": 1119.0,
+              "p95": 1488.3,
+              "p99": 10296.4
+            },
+            "members": {
+              "perf-luna--pool-openaiminggu-gpt-6-luna": 35,
+              "perf-luna--pool-control-plane-test-gpt-6-luna": 5
+            },
+            "prompt_tokens": 1414,
+            "completion_tokens": 434,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 0.4
+            }
+          },
+          {
+            "rpm": 40,
+            "verdict": "pass",
+            "ok": 80,
+            "started": 80,
+            "errors": {},
+            "latency_ms": {
+              "p50": 4667.1,
+              "p90": 5240.6,
+              "p95": 5306.1,
+              "p99": 5641.4,
+              "max": 5641.4
+            },
+            "ttft_ms": {
+              "p50": 1342.3,
+              "p95": 1525.1,
+              "p99": 2157.4
+            },
+            "members": {
+              "perf-luna--pool-openaiminggu-gpt-6-luna": 80
+            },
+            "prompt_tokens": 1414,
+            "completion_tokens": 427,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 6.2
+            }
+          },
+          {
+            "rpm": 80,
+            "verdict": "pass",
+            "ok": 160,
+            "started": 160,
+            "errors": {},
+            "latency_ms": {
+              "p50": 4594.6,
+              "p90": 5091.6,
+              "p95": 5241.1,
+              "p99": 5442.6,
+              "max": 6032.5
+            },
+            "ttft_ms": {
+              "p50": 1308.2,
+              "p95": 1697.1,
+              "p99": 2229.6
+            },
+            "members": {
+              "perf-luna--pool-openaiminggu-gpt-6-luna": 160
+            },
+            "prompt_tokens": 1414,
+            "completion_tokens": 425,
+            "client_cpu": {
+              "avg": 0.3,
+              "max": 6.9
+            }
+          },
+          {
+            "rpm": 160,
+            "verdict": "pass",
+            "ok": 320,
+            "started": 320,
+            "errors": {},
+            "latency_ms": {
+              "p50": 4698.3,
+              "p90": 5247.3,
+              "p95": 5464.6,
+              "p99": 7980.2,
+              "max": 34821.3
+            },
+            "ttft_ms": {
+              "p50": 1322.7,
+              "p95": 1789.8,
+              "p99": 3058.2
+            },
+            "members": {
+              "perf-luna--pool-control-plane-test-gpt-6-luna": 161,
+              "perf-luna--pool-openaiminggu-gpt-6-luna": 159
+            },
+            "prompt_tokens": 1414,
+            "completion_tokens": 429,
+            "client_cpu": {
+              "avg": 0.2,
+              "max": 9.6
+            }
+          }
+        ],
+        "baseline": null
+      },
+      {
+        "label": "aks-perf-luna",
+        "target": "aks-perf-luna",
+        "shape": "short",
+        "max_passing_rpm": 360,
+        "first_failure": null,
+        "baseline_p95_ms": null,
+        "steps": [
+          {
+            "rpm": 30,
+            "verdict": "pass",
+            "ok": 60,
+            "started": 60,
+            "errors": {},
+            "latency_ms": {
+              "p50": 2402.0,
+              "p90": 3196.7,
+              "p95": 3494.9,
+              "p99": 9807.3,
+              "max": 9807.3
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-luna--pool-openaiminggu-gpt-6-luna": 38,
+              "perf-luna--pool-control-plane-test-gpt-6-luna": 22
+            },
+            "prompt_tokens": 359,
+            "completion_tokens": 85,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 6.3
+            }
+          },
+          {
+            "rpm": 60,
+            "verdict": "pass",
+            "ok": 120,
+            "started": 120,
+            "errors": {},
+            "latency_ms": {
+              "p50": 1746.2,
+              "p90": 2528.1,
+              "p95": 2674.7,
+              "p99": 4182.5,
+              "max": 4382.4
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-luna--pool-openaiminggu-gpt-6-luna": 120
+            },
+            "prompt_tokens": 359,
+            "completion_tokens": 86,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 0.2
+            }
+          },
+          {
+            "rpm": 120,
+            "verdict": "pass",
+            "ok": 240,
+            "started": 240,
+            "errors": {},
+            "latency_ms": {
+              "p50": 1643.1,
+              "p90": 2093.7,
+              "p95": 2383.2,
+              "p99": 3335.7,
+              "max": 10940.6
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-luna--pool-openaiminggu-gpt-6-luna": 240
+            },
+            "prompt_tokens": 359,
+            "completion_tokens": 87,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 6.4
+            }
+          },
+          {
+            "rpm": 240,
+            "verdict": "pass",
+            "ok": 480,
+            "started": 480,
+            "errors": {},
+            "latency_ms": {
+              "p50": 1666.5,
+              "p90": 2251.8,
+              "p95": 2419.9,
+              "p99": 4303.8,
+              "max": 12039.2
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-luna--pool-control-plane-test-gpt-6-luna": 241,
+              "perf-luna--pool-openaiminggu-gpt-6-luna": 239
+            },
+            "prompt_tokens": 359,
+            "completion_tokens": 86,
+            "client_cpu": {
+              "avg": 0.2,
+              "max": 20.0
+            }
+          },
+          {
+            "rpm": 360,
+            "verdict": "pass",
+            "ok": 720,
+            "started": 720,
+            "errors": {},
+            "latency_ms": {
+              "p50": 1766.1,
+              "p90": 5375.0,
+              "p95": 7298.5,
+              "p99": 12530.6,
+              "max": 23374.0
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "perf-luna--pool-control-plane-test-gpt-6-luna": 283,
+              "perf-luna--pool-openaiminggu-gpt-6-luna": 244,
+              "perf-luna--pool-ai-minggu3566ai776846365708-gpt-6-luna-dz": 139,
+              "perf-luna--pool-minggu-luna-eu-22610-gpt-6-luna-dz": 54
+            },
+            "prompt_tokens": 359,
+            "completion_tokens": 87,
+            "client_cpu": {
+              "avg": 0.3,
+              "max": 6.0
+            }
+          }
+        ],
+        "baseline": null
+      },
+      {
+        "label": "direct-luna",
+        "target": "direct-luna",
+        "shape": "agent",
+        "max_passing_rpm": 4,
+        "first_failure": {
+          "rpm": 8,
+          "reason": "errors"
+        },
+        "baseline_p95_ms": null,
+        "steps": [
+          {
+            "rpm": 2,
+            "verdict": "pass",
+            "ok": 4,
+            "started": 4,
+            "errors": {},
+            "latency_ms": {
+              "p50": 4350.0,
+              "p90": 4673.2,
+              "p95": 4673.2,
+              "p99": 4673.2,
+              "max": 4673.2
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "Central US": 4
+            },
+            "prompt_tokens": 35158,
+            "completion_tokens": 318,
+            "client_cpu": {
+              "avg": 0.0,
+              "max": 0.3
+            }
+          },
+          {
+            "rpm": 4,
+            "verdict": "pass",
+            "ok": 8,
+            "started": 8,
+            "errors": {},
+            "latency_ms": {
+              "p50": 4192.1,
+              "p90": 5659.7,
+              "p95": 5659.7,
+              "p99": 5659.7,
+              "max": 5659.7
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "Central US": 8
+            },
+            "prompt_tokens": 35158,
+            "completion_tokens": 350,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 6.0
+            }
+          },
+          {
+            "rpm": 8,
+            "verdict": "errors",
+            "ok": 7,
+            "started": 16,
+            "errors": {
+              "429": 9
+            },
+            "latency_ms": {
+              "p50": 4130.3,
+              "p90": 4648.9,
+              "p95": 4648.9,
+              "p99": 4648.9,
+              "max": 4648.9
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "Central US": 7
+            },
+            "prompt_tokens": 35158,
+            "completion_tokens": 332,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 2.1
+            }
+          }
+        ],
+        "baseline": null
+      },
+      {
+        "label": "direct-luna",
+        "target": "direct-luna",
+        "shape": "chat",
+        "max_passing_rpm": 80,
+        "first_failure": {
+          "rpm": 160,
+          "reason": "errors"
+        },
+        "baseline_p95_ms": null,
+        "steps": [
+          {
+            "rpm": 20,
+            "verdict": "pass",
+            "ok": 40,
+            "started": 40,
+            "errors": {},
+            "latency_ms": {
+              "p50": 4074.6,
+              "p90": 4514.3,
+              "p95": 4590.5,
+              "p99": 6273.5,
+              "max": 6273.5
+            },
+            "ttft_ms": {
+              "p50": 848.9,
+              "p95": 1174.5,
+              "p99": 2614.2
+            },
+            "members": {
+              "Central US": 40
+            },
+            "prompt_tokens": 1414,
+            "completion_tokens": 431,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 0.2
+            }
+          },
+          {
+            "rpm": 40,
+            "verdict": "pass",
+            "ok": 80,
+            "started": 80,
+            "errors": {},
+            "latency_ms": {
+              "p50": 4168.4,
+              "p90": 4711.0,
+              "p95": 4890.4,
+              "p99": 6947.8,
+              "max": 6947.8
+            },
+            "ttft_ms": {
+              "p50": 844.4,
+              "p95": 1004.0,
+              "p99": 3513.4
+            },
+            "members": {
+              "Central US": 80
+            },
+            "prompt_tokens": 1414,
+            "completion_tokens": 427,
+            "client_cpu": {
+              "avg": 0.2,
+              "max": 6.6
+            }
+          },
+          {
+            "rpm": 80,
+            "verdict": "pass",
+            "ok": 160,
+            "started": 160,
+            "errors": {},
+            "latency_ms": {
+              "p50": 4042.2,
+              "p90": 4534.9,
+              "p95": 4651.3,
+              "p99": 4825.4,
+              "max": 4917.0
+            },
+            "ttft_ms": {
+              "p50": 842.9,
+              "p95": 1010.9,
+              "p99": 1504.7
+            },
+            "members": {
+              "Central US": 160
+            },
+            "prompt_tokens": 1414,
+            "completion_tokens": 426,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 0.2
+            }
+          },
+          {
+            "rpm": 160,
+            "verdict": "errors",
+            "ok": 240,
+            "started": 320,
+            "errors": {
+              "429": 80
+            },
+            "latency_ms": {
+              "p50": 4190.1,
+              "p90": 4720.5,
+              "p95": 4867.8,
+              "p99": 5050.5,
+              "max": 5248.4
+            },
+            "ttft_ms": {
+              "p50": 866.6,
+              "p95": 1011.9,
+              "p99": 1649.8
+            },
+            "members": {
+              "Central US": 240
+            },
+            "prompt_tokens": 1414,
+            "completion_tokens": 428,
+            "client_cpu": {
+              "avg": 0.2,
+              "max": 6.6
+            }
+          }
+        ],
+        "baseline": null
+      },
+      {
+        "label": "direct-luna",
+        "target": "direct-luna",
+        "shape": "short",
+        "max_passing_rpm": 120,
+        "first_failure": {
+          "rpm": 240,
+          "reason": "errors"
+        },
+        "baseline_p95_ms": null,
+        "steps": [
+          {
+            "rpm": 30,
+            "verdict": "pass",
+            "ok": 60,
+            "started": 60,
+            "errors": {},
+            "latency_ms": {
+              "p50": 1610.9,
+              "p90": 1934.2,
+              "p95": 2286.8,
+              "p99": 2478.6,
+              "max": 2478.6
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "Central US": 60
+            },
+            "prompt_tokens": 359,
+            "completion_tokens": 85,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 6.1
+            }
+          },
+          {
+            "rpm": 60,
+            "verdict": "pass",
+            "ok": 120,
+            "started": 120,
+            "errors": {},
+            "latency_ms": {
+              "p50": 1581.1,
+              "p90": 1911.6,
+              "p95": 2186.4,
+              "p99": 2801.4,
+              "max": 12386.3
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "Central US": 120
+            },
+            "prompt_tokens": 359,
+            "completion_tokens": 86,
+            "client_cpu": {
+              "avg": 0.0,
+              "max": 0.2
+            }
+          },
+          {
+            "rpm": 120,
+            "verdict": "pass",
+            "ok": 240,
+            "started": 240,
+            "errors": {},
+            "latency_ms": {
+              "p50": 1513.8,
+              "p90": 1892.9,
+              "p95": 2176.4,
+              "p99": 4171.0,
+              "max": 7723.4
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "Central US": 240
+            },
+            "prompt_tokens": 359,
+            "completion_tokens": 86,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 6.8
+            }
+          },
+          {
+            "rpm": 240,
+            "verdict": "errors",
+            "ok": 335,
+            "started": 480,
+            "errors": {
+              "429": 145
+            },
+            "latency_ms": {
+              "p50": 1541.8,
+              "p90": 1925.0,
+              "p95": 2202.0,
+              "p99": 2811.0,
+              "max": 4737.9
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "Central US": 335
+            },
+            "prompt_tokens": 359,
+            "completion_tokens": 86,
+            "client_cpu": {
+              "avg": 0.1,
+              "max": 1.4
+            }
+          },
+          {
+            "rpm": 360,
+            "verdict": "errors",
+            "ok": 248,
+            "started": 720,
+            "errors": {
+              "429": 472
+            },
+            "latency_ms": {
+              "p50": 1544.9,
+              "p90": 1870.5,
+              "p95": 2291.4,
+              "p99": 4344.9,
+              "max": 7427.2
+            },
+            "ttft_ms": {
+              "p50": null,
+              "p95": null,
+              "p99": null
+            },
+            "members": {
+              "Central US": 248
+            },
+            "prompt_tokens": 359,
+            "completion_tokens": 87,
+            "client_cpu": {
+              "avg": 0.2,
+              "max": 6.9
+            }
+          }
+        ],
+        "baseline": null
+      }
+    ],
+    "failovers": []
+  }
+}

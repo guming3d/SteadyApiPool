@@ -1,0 +1,161 @@
+{
+  "control_url": "https://mock-control.proudgrass-1985eba9.japaneast.azurecontainerapps.io",
+  "workers": 14,
+  "targets": {
+    "direct": {
+      "url": "https://mock-a.proudgrass-1985eba9.japaneast.azurecontainerapps.io/openai/deployments/gpt-6-luna/chat/completions",
+      "model": "gpt-6-luna",
+      "key_header": "api-key",
+      "member_header": "x-ms-region",
+      "timeout": 300
+    },
+    "direct-luna": {
+      "url": "https://openaiminggu.openai.azure.com/openai/deployments/gpt-6-luna/chat/completions",
+      "query": "api-version=2025-04-01-preview",
+      "model": "gpt-6-luna",
+      "key_source": "imds:https://cognitiveservices.azure.com",
+      "key_header": "Authorization",
+      "member_header": "x-ms-region",
+      "timeout": 300,
+      "extra": {
+        "reasoning_effort": "none"
+      }
+    },
+    "aks-perf-mock": {
+      "url": "https://perf-aks-26977.japaneast.cloudapp.azure.com/v1/chat/completions",
+      "model": "perf-mock",
+      "key_source": "file:aks-perf-mock",
+      "key_header": "Authorization",
+      "member_header": "x-litellm-model-id",
+      "timeout": 300
+    },
+    "aks-perf-luna": {
+      "url": "https://perf-aks-26977.japaneast.cloudapp.azure.com/v1/chat/completions",
+      "model": "perf-luna",
+      "key_source": "file:aks-perf-luna",
+      "key_header": "Authorization",
+      "member_header": "x-litellm-model-id",
+      "timeout": 300,
+      "extra": {
+        "reasoning_effort": "none"
+      }
+    }
+  },
+  "baseline": {
+    "target": "direct",
+    "rpm": 60,
+    "warmup": 20,
+    "duration": 90
+  },
+  "ramps": [
+    {
+      "target": "aks-perf-mock",
+      "label": "aks-mock",
+      "shape": "short",
+      "steps": [
+        600,
+        1500,
+        3000,
+        6000,
+        9000,
+        12000,
+        15000
+      ],
+      "warmup": 120,
+      "duration": 120,
+      "bisect": 2
+    },
+    {
+      "target": "aks-perf-mock",
+      "label": "aks-mock",
+      "shape": "chat",
+      "steps": [
+        600,
+        1500,
+        3000,
+        6000,
+        9000,
+        12000,
+        15000
+      ],
+      "warmup": 120,
+      "duration": 120,
+      "bisect": 2
+    },
+    {
+      "target": "aks-perf-mock",
+      "label": "aks-mock",
+      "shape": "rag",
+      "steps": [
+        600,
+        1500,
+        3000,
+        6000,
+        9000,
+        12000,
+        15000
+      ],
+      "warmup": 120,
+      "duration": 120,
+      "bisect": 2
+    },
+    {
+      "target": "aks-perf-mock",
+      "label": "aks-mock",
+      "shape": "agent",
+      "steps": [
+        600,
+        1500,
+        3000,
+        6000,
+        9000,
+        12000,
+        15000
+      ],
+      "warmup": 120,
+      "duration": 120,
+      "bisect": 2
+    }
+  ],
+  "failovers": [
+    {
+      "target": "aks-perf-mock",
+      "label": "aks-mock",
+      "shape": "chat",
+      "rpm": 1200,
+      "duration": 780,
+      "schedule": [
+        [
+          60,
+          "mock-a",
+          "429"
+        ],
+        [
+          180,
+          "mock-a",
+          "200"
+        ],
+        [
+          300,
+          "mock-a",
+          "500"
+        ],
+        [
+          420,
+          "mock-a",
+          "200"
+        ],
+        [
+          540,
+          "mock-a",
+          "hang"
+        ],
+        [
+          660,
+          "mock-a",
+          "200"
+        ]
+      ]
+    }
+  ]
+}

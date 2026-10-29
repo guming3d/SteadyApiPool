@@ -1,0 +1,144 @@
+{
+  "control_url": "https://mock-control.proudgrass-1985eba9.japaneast.azurecontainerapps.io",
+  "workers": 14,
+  "targets": {
+    "direct": {
+      "url": "https://mock-a.proudgrass-1985eba9.japaneast.azurecontainerapps.io/openai/deployments/gpt-6-luna/chat/completions",
+      "model": "gpt-6-luna",
+      "key_header": "api-key",
+      "member_header": "x-ms-region",
+      "timeout": 300
+    },
+    "direct-luna": {
+      "url": "https://openaiminggu.openai.azure.com/openai/deployments/gpt-6-luna/chat/completions",
+      "query": "api-version=2025-04-01-preview",
+      "model": "gpt-6-luna",
+      "key_source": "imds:https://cognitiveservices.azure.com",
+      "key_header": "Authorization",
+      "member_header": "x-ms-region",
+      "timeout": 300,
+      "extra": {
+        "reasoning_effort": "none"
+      }
+    },
+    "aks-perf-mock": {
+      "url": "https://perf-aks-26977.japaneast.cloudapp.azure.com/v1/chat/completions",
+      "model": "perf-mock",
+      "key_source": "file:aks-perf-mock",
+      "key_header": "Authorization",
+      "member_header": "x-litellm-model-id",
+      "timeout": 300
+    },
+    "aks-perf-luna": {
+      "url": "https://perf-aks-26977.japaneast.cloudapp.azure.com/v1/chat/completions",
+      "model": "perf-luna",
+      "key_source": "file:aks-perf-luna",
+      "key_header": "Authorization",
+      "member_header": "x-litellm-model-id",
+      "timeout": 300,
+      "extra": {
+        "reasoning_effort": "none"
+      }
+    }
+  },
+  "baseline": null,
+  "ramps": [
+    {
+      "target": "direct-luna",
+      "label": "direct-luna",
+      "shape": "short",
+      "steps": [
+        30,
+        60,
+        120,
+        240,
+        360
+      ],
+      "warmup": 20,
+      "duration": 120,
+      "compare": false,
+      "all_steps": true,
+      "bisect": 0
+    },
+    {
+      "target": "direct-luna",
+      "label": "direct-luna",
+      "shape": "chat",
+      "steps": [
+        20,
+        40,
+        80,
+        160
+      ],
+      "warmup": 20,
+      "duration": 120,
+      "compare": false,
+      "all_steps": true,
+      "bisect": 0
+    },
+    {
+      "target": "direct-luna",
+      "label": "direct-luna",
+      "shape": "agent",
+      "steps": [
+        2,
+        4,
+        8
+      ],
+      "warmup": 20,
+      "duration": 120,
+      "compare": false,
+      "all_steps": true,
+      "bisect": 0
+    },
+    {
+      "target": "aks-perf-luna",
+      "label": "aks-perf-luna",
+      "shape": "short",
+      "steps": [
+        30,
+        60,
+        120,
+        240,
+        360
+      ],
+      "warmup": 20,
+      "duration": 120,
+      "compare": false,
+      "all_steps": true,
+      "bisect": 0
+    },
+    {
+      "target": "aks-perf-luna",
+      "label": "aks-perf-luna",
+      "shape": "chat",
+      "steps": [
+        20,
+        40,
+        80,
+        160
+      ],
+      "warmup": 20,
+      "duration": 120,
+      "compare": false,
+      "all_steps": true,
+      "bisect": 0
+    },
+    {
+      "target": "aks-perf-luna",
+      "label": "aks-perf-luna",
+      "shape": "agent",
+      "steps": [
+        2,
+        4,
+        8
+      ],
+      "warmup": 20,
+      "duration": 120,
+      "compare": false,
+      "all_steps": true,
+      "bisect": 0
+    }
+  ],
+  "failovers": []
+}

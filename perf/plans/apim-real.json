@@ -1,0 +1,215 @@
+{
+  "control_url": "https://mock-control.victoriousflower-7eba4b18.southcentralus.azurecontainerapps.io",
+  "workers": 14,
+  "targets": {
+    "direct": {
+      "url": "https://mock-a.victoriousflower-7eba4b18.southcentralus.azurecontainerapps.io/openai/deployments/gpt-6-luna/chat/completions",
+      "model": "gpt-6-luna",
+      "key_header": "api-key",
+      "member_header": "x-ms-region",
+      "timeout": 300
+    },
+    "direct-luna": {
+      "url": "https://openaiminggu.openai.azure.com/openai/deployments/gpt-6-luna/chat/completions",
+      "query": "api-version=2025-04-01-preview",
+      "model": "gpt-6-luna",
+      "key_source": "imds:https://cognitiveservices.azure.com",
+      "key_header": "Authorization",
+      "member_header": "x-ms-region",
+      "timeout": 300,
+      "extra": {
+        "reasoning_effort": "none"
+      }
+    },
+    "apim-basic-perf-mock": {
+      "url": "https://perf-basicv2-26977.azure-api.net/perf-mock/chat/completions",
+      "query": "api-version=2025-04-01-preview",
+      "model": "gpt-6-luna",
+      "key_source": "file:apim-basic-perf-mock",
+      "key_header": "Ocp-Apim-Subscription-Key",
+      "member_header": "x-ms-region",
+      "timeout": 300
+    },
+    "apim-basic-perf-luna": {
+      "url": "https://perf-basicv2-26977.azure-api.net/perf-luna/chat/completions",
+      "query": "api-version=2025-04-01-preview",
+      "model": "gpt-6-luna",
+      "key_source": "file:apim-basic-perf-luna",
+      "key_header": "Ocp-Apim-Subscription-Key",
+      "member_header": "x-ms-region",
+      "timeout": 300,
+      "extra": {
+        "reasoning_effort": "none"
+      }
+    },
+    "apim-std-perf-mock": {
+      "url": "https://perf-standardv2-26977.azure-api.net/perf-mock/chat/completions",
+      "query": "api-version=2025-04-01-preview",
+      "model": "gpt-6-luna",
+      "key_source": "file:apim-std-perf-mock",
+      "key_header": "Ocp-Apim-Subscription-Key",
+      "member_header": "x-ms-region",
+      "timeout": 300
+    },
+    "apim-std-perf-luna": {
+      "url": "https://perf-standardv2-26977.azure-api.net/perf-luna/chat/completions",
+      "query": "api-version=2025-04-01-preview",
+      "model": "gpt-6-luna",
+      "key_source": "file:apim-std-perf-luna",
+      "key_header": "Ocp-Apim-Subscription-Key",
+      "member_header": "x-ms-region",
+      "timeout": 300,
+      "extra": {
+        "reasoning_effort": "none"
+      }
+    }
+  },
+  "baseline": null,
+  "ramps": [
+    {
+      "target": "direct-luna",
+      "label": "direct-luna",
+      "shape": "short",
+      "steps": [
+        30,
+        60,
+        120,
+        240,
+        360
+      ],
+      "warmup": 20,
+      "duration": 120,
+      "compare": false,
+      "all_steps": true,
+      "bisect": 0
+    },
+    {
+      "target": "direct-luna",
+      "label": "direct-luna",
+      "shape": "chat",
+      "steps": [
+        20,
+        40,
+        80,
+        160
+      ],
+      "warmup": 20,
+      "duration": 120,
+      "compare": false,
+      "all_steps": true,
+      "bisect": 0
+    },
+    {
+      "target": "direct-luna",
+      "label": "direct-luna",
+      "shape": "agent",
+      "steps": [
+        2,
+        4,
+        8
+      ],
+      "warmup": 20,
+      "duration": 120,
+      "compare": false,
+      "all_steps": true,
+      "bisect": 0
+    },
+    {
+      "target": "apim-basic-perf-luna",
+      "label": "apim-basic-perf-luna",
+      "shape": "short",
+      "steps": [
+        30,
+        60,
+        120,
+        240,
+        360
+      ],
+      "warmup": 20,
+      "duration": 120,
+      "compare": false,
+      "all_steps": true,
+      "bisect": 0
+    },
+    {
+      "target": "apim-basic-perf-luna",
+      "label": "apim-basic-perf-luna",
+      "shape": "chat",
+      "steps": [
+        20,
+        40,
+        80,
+        160
+      ],
+      "warmup": 20,
+      "duration": 120,
+      "compare": false,
+      "all_steps": true,
+      "bisect": 0
+    },
+    {
+      "target": "apim-basic-perf-luna",
+      "label": "apim-basic-perf-luna",
+      "shape": "agent",
+      "steps": [
+        2,
+        4,
+        8
+      ],
+      "warmup": 20,
+      "duration": 120,
+      "compare": false,
+      "all_steps": true,
+      "bisect": 0
+    },
+    {
+      "target": "apim-std-perf-luna",
+      "label": "apim-std-perf-luna",
+      "shape": "short",
+      "steps": [
+        30,
+        60,
+        120,
+        240,
+        360
+      ],
+      "warmup": 20,
+      "duration": 120,
+      "compare": false,
+      "all_steps": true,
+      "bisect": 0
+    },
+    {
+      "target": "apim-std-perf-luna",
+      "label": "apim-std-perf-luna",
+      "shape": "chat",
+      "steps": [
+        20,
+        40,
+        80,
+        160
+      ],
+      "warmup": 20,
+      "duration": 120,
+      "compare": false,
+      "all_steps": true,
+      "bisect": 0
+    },
+    {
+      "target": "apim-std-perf-luna",
+      "label": "apim-std-perf-luna",
+      "shape": "agent",
+      "steps": [
+        2,
+        4,
+        8
+      ],
+      "warmup": 20,
+      "duration": 120,
+      "compare": false,
+      "all_steps": true,
+      "bisect": 0
+    }
+  ],
+  "failovers": []
+}

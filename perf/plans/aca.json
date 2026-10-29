@@ -1,0 +1,165 @@
+{
+  "control_url": "https://mock-control.whitesea-b9539e4a.westus3.azurecontainerapps.io",
+  "workers": 14,
+  "targets": {
+    "direct": {
+      "url": "https://mock-a.whitesea-b9539e4a.westus3.azurecontainerapps.io/openai/deployments/gpt-6-luna/chat/completions",
+      "model": "gpt-6-luna",
+      "key_header": "api-key",
+      "member_header": "x-ms-region",
+      "timeout": 300
+    },
+    "direct-luna": {
+      "url": "https://openaiminggu.openai.azure.com/openai/deployments/gpt-6-luna/chat/completions",
+      "query": "api-version=2025-04-01-preview",
+      "model": "gpt-6-luna",
+      "key_source": "imds:https://cognitiveservices.azure.com",
+      "key_header": "Authorization",
+      "member_header": "x-ms-region",
+      "timeout": 300,
+      "extra": {
+        "reasoning_effort": "none"
+      }
+    },
+    "aca-perf-mock": {
+      "url": "https://perf-aca-26977.blackforest-49cb930d.westus3.azurecontainerapps.io/v1/chat/completions",
+      "model": "perf-mock",
+      "key_source": "file:aca-perf-mock",
+      "key_header": "Authorization",
+      "member_header": "x-litellm-model-id",
+      "timeout": 300
+    },
+    "aca-perf-luna": {
+      "url": "https://perf-aca-26977.blackforest-49cb930d.westus3.azurecontainerapps.io/v1/chat/completions",
+      "model": "perf-luna",
+      "key_source": "file:aca-perf-luna",
+      "key_header": "Authorization",
+      "member_header": "x-litellm-model-id",
+      "timeout": 300,
+      "extra": {
+        "reasoning_effort": "none"
+      }
+    }
+  },
+  "baseline": {
+    "target": "direct",
+    "rpm": 60,
+    "warmup": 20,
+    "duration": 90
+  },
+  "ramps": [
+    {
+      "target": "aca-perf-mock",
+      "label": "aca-mock",
+      "shape": "short",
+      "steps": [
+        600,
+        1500,
+        3000,
+        6000,
+        9000,
+        12000,
+        15000,
+        22500
+      ],
+      "warmup": 90,
+      "duration": 120,
+      "bisect": 2
+    },
+    {
+      "target": "aca-perf-mock",
+      "label": "aca-mock",
+      "shape": "chat",
+      "steps": [
+        600,
+        1500,
+        3000,
+        6000,
+        9000,
+        12000,
+        15000,
+        22500
+      ],
+      "warmup": 90,
+      "duration": 120,
+      "bisect": 2
+    },
+    {
+      "target": "aca-perf-mock",
+      "label": "aca-mock",
+      "shape": "rag",
+      "steps": [
+        600,
+        1500,
+        3000,
+        6000,
+        9000,
+        12000,
+        15000,
+        22500
+      ],
+      "warmup": 90,
+      "duration": 120,
+      "bisect": 2
+    },
+    {
+      "target": "aca-perf-mock",
+      "label": "aca-mock",
+      "shape": "agent",
+      "steps": [
+        600,
+        1500,
+        3000,
+        6000,
+        9000,
+        12000,
+        15000,
+        22500
+      ],
+      "warmup": 90,
+      "duration": 120,
+      "bisect": 2
+    }
+  ],
+  "failovers": [
+    {
+      "target": "aca-perf-mock",
+      "label": "aca-mock",
+      "shape": "chat",
+      "rpm": 1200,
+      "duration": 780,
+      "schedule": [
+        [
+          60,
+          "mock-a",
+          "429"
+        ],
+        [
+          180,
+          "mock-a",
+          "200"
+        ],
+        [
+          300,
+          "mock-a",
+          "500"
+        ],
+        [
+          420,
+          "mock-a",
+          "200"
+        ],
+        [
+          540,
+          "mock-a",
+          "hang"
+        ],
+        [
+          660,
+          "mock-a",
+          "200"
+        ]
+      ]
+    }
+  ]
+}

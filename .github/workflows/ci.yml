@@ -28,8 +28,8 @@ jobs:
       - name: Lint, type-check and test backend
         working-directory: backend
         run: |
-          ruff check . ../scripts
-          ruff format --check . ../scripts
+          ruff check . ../scripts ../perf
+          ruff format --check . ../scripts ../perf
           mypy
           mypy --strict ../scripts/doctor.py ../scripts/package-release.py ../scripts/build-gateway-template.py ../scripts/benchmark.py
           pytest -q

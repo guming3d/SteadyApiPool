@@ -51,6 +51,23 @@ benches the primary for 60 s, then takes it back.*
 Both kinds manage the same Foundry deployments with the same identity rules (the gateway calls
 them with its managed identity, no keys), and you can switch between them on the setup page.
 
+### How much traffic?
+
+Measured on Azure (October 2026), each gateway as the app sets it up, loaded from a VM in its
+region; requests a minute it carried, and the median latency it added at 600 a minute:
+
+| | APIM Basic v2 | APIM Standard v2 | LiteLLM on Container Apps | LiteLLM on AKS |
+| --- | --- | --- | --- | --- |
+| Streamed chat (2,000 tokens in, 500 out) | 4,500 | 12,000 | 3,720 | 11,280 |
+| Short answers, not streamed | ≥ 22,500 | ≥ 22,500 | ≥ 22,500 | ≥ 15,000 |
+| Agent loop steps (50,000 tokens in) | 10,500 | 16,860 | ≥ 22,500 | ≥ 15,000 |
+| Added latency (median) | under 10 ms | under 10 ms | 20–70 ms | 20–60 ms |
+
+When a deployment answered 429 or 500, both gateways moved its traffic to the next one within a
+second; with a real model, every pool answered all calls past one deployment's quota, where that
+deployment alone turned up to 65% away. The sizes, prices, failover details and the method are in
+[Benchmarks](docs/benchmarks.md).
+
 ## Quick start
 
 The app runs on your computer and needs only **Python**: no Azure CLI, Node.js, Docker or config
@@ -101,6 +118,8 @@ screenshot of each step.
   runs without Azure.
 - [Features and how it works](docs/features.md): everything the app does, how a pool maps to APIM
   and to LiteLLM, and what a LiteLLM gateway deployment creates and how it's maintained.
+- [Benchmarks](docs/benchmarks.md): how much each gateway carries, the latency it adds and what
+  clients see when a deployment fails, measured on Azure.
 - [Host it in Azure](docs/deploy.md): App Service for a team with `azd`, and the public
   multi-tenant app.
 - [Run it locally and develop](docs/development.md): prerequisites per OS, sign-in, proxies and

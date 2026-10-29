@@ -1,0 +1,96 @@
+{
+  "control_url": "https://mock-control.whitesea-b9539e4a.westus3.azurecontainerapps.io",
+  "workers": 14,
+  "targets": {
+    "direct": {
+      "url": "https://mock-a.whitesea-b9539e4a.westus3.azurecontainerapps.io/openai/deployments/gpt-6-luna/chat/completions",
+      "model": "gpt-6-luna",
+      "key_header": "api-key",
+      "member_header": "x-ms-region",
+      "timeout": 300
+    },
+    "direct-luna": {
+      "url": "https://openaiminggu.openai.azure.com/openai/deployments/gpt-6-luna/chat/completions",
+      "query": "api-version=2025-04-01-preview",
+      "model": "gpt-6-luna",
+      "key_source": "imds:https://cognitiveservices.azure.com",
+      "key_header": "Authorization",
+      "member_header": "x-ms-region",
+      "timeout": 300,
+      "extra": {
+        "reasoning_effort": "none"
+      }
+    },
+    "aca-perf-mock": {
+      "url": "https://perf-aca-26977.blackforest-49cb930d.westus3.azurecontainerapps.io/v1/chat/completions",
+      "model": "perf-mock",
+      "key_source": "file:aca-perf-mock",
+      "key_header": "Authorization",
+      "member_header": "x-litellm-model-id",
+      "timeout": 300
+    },
+    "aca-perf-luna": {
+      "url": "https://perf-aca-26977.blackforest-49cb930d.westus3.azurecontainerapps.io/v1/chat/completions",
+      "model": "perf-luna",
+      "key_source": "file:aca-perf-luna",
+      "key_header": "Authorization",
+      "member_header": "x-litellm-model-id",
+      "timeout": 300,
+      "extra": {
+        "reasoning_effort": "none"
+      }
+    }
+  },
+  "baseline": null,
+  "ramps": [
+    {
+      "target": "aca-perf-luna",
+      "label": "aca-perf-luna",
+      "shape": "short",
+      "steps": [
+        30,
+        60,
+        120,
+        240,
+        360
+      ],
+      "warmup": 20,
+      "duration": 120,
+      "compare": false,
+      "all_steps": true,
+      "bisect": 0
+    },
+    {
+      "target": "aca-perf-luna",
+      "label": "aca-perf-luna",
+      "shape": "chat",
+      "steps": [
+        20,
+        40,
+        80,
+        160
+      ],
+      "warmup": 20,
+      "duration": 120,
+      "compare": false,
+      "all_steps": true,
+      "bisect": 0
+    },
+    {
+      "target": "aca-perf-luna",
+      "label": "aca-perf-luna",
+      "shape": "agent",
+      "steps": [
+        2,
+        4,
+        8
+      ],
+      "warmup": 20,
+      "duration": 120,
+      "compare": false,
+      "all_steps": true,
+      "bisect": 0
+    }
+  ],
+  "failovers": []
+}
