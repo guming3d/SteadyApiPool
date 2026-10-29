@@ -33,6 +33,7 @@ dist/
 .playwright-mcp/
 
 # Local-only notes
+/CLAUDE.md
 /pulse-report-model-api-failover.md
 /模型网关容灾方案对比：APIM vs LiteLLM.md
 /SteadyApiPool - FY27 IP.pptx
