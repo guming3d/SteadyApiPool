@@ -1,6 +1,6 @@
 // The pool editor. Members are rows in the LiteLLM gateway's model table, all under the pool's
 // name, and saving writes them to the gateway directly.
-import { CheckCircle2, ChevronDown, CircleAlert, CircleHelp, Link2, ListPlus, LoaderCircle, Pencil, RotateCcw, Send, ShieldCheck, Star, Trash2, X } from "lucide-react"
+import { CheckCircle2, ChevronDown, CircleAlert, CircleHelp, Link2, ListPlus, LoaderCircle, Pencil, RotateCcw, Scale, Send, ShieldCheck, Star, Trash2, X } from "lucide-react"
 import { useEffect, useId, useMemo, useRef, useState } from "react"
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 
@@ -36,7 +36,9 @@ import { ChecklistBadge, checklistItems, GlossaryDialog, ModelCheckNotice, PoolC
 import { PoolMonitor } from "../components/pool-monitor"
 import { RemovePoolDialog } from "./removal-dialog"
 import { RoutingPreview } from "./routing-preview"
-import { PoolQuotaNotice } from "../components/pool-quota"
+import { MemberQuota, PoolQuotaNotice } from "../components/pool-quota"
+import { keepDraft, takeDraft } from "../pool-drafts"
+import { capacityWeights } from "../pool-quota"
 import { sizedFor } from "../pool-quota"
 import { Button, ErrorText, Field, FieldHelp } from "../components/ui"
 
@@ -51,6 +53,8 @@ function draftFromPool(pool: PoolView | null): PoolWrite {
 }
 
 const signature = (draft: PoolWrite) => JSON.stringify(draft)
+/** What stays of unpublished edits while the editor is closed (pool-drafts.ts). */
+type KeptDraft = { draft: PoolWrite; mode: DeploymentMode | null }
 
 export type EditorTab = "members" | "routing" | "connect" | "settings" | "monitor"
 
@@ -97,27 +101,43 @@ export function PoolEditor({ poolId, initial, addMembers, created, onCreated, on
   // A custom endpoint member whose URL or credentials are being edited.
   const [editingMember, setEditingMember] = useState<BackendView | null>(null)
 
+  // Edits left unpublished when this pool's editor last closed come back once, on first load.
+  const restored = useRef(false)
+  const [staleDraft, setStaleDraft] = useState(false)
   useEffect(() => {
     if (!pool.isSuccess) return
     const next = draftFromPool(pool.data)
     const previous = baselineRef.current
     baselineRef.current = next
     setBaseline(signature(next))
+    // Compared with the pool as read now, not a cached copy from before the user left.
+    let kept: { value: KeptDraft } | "stale" | null = null
+    if (!restored.current && !pool.isFetching) {
+      restored.current = true
+      kept = takeDraft<KeptDraft>("litellm", pool.data.id, pool.data.etag)
+      setStaleDraft(kept === "stale")
+    }
+    if (kept && kept !== "stale") {
+      setDraft(kept.value.draft)
+      setMode(kept.value.mode)
+      return
+    }
     setMode(next.members.length ? deploymentMode(next.members) : null)
     // Keep unsaved edits unless the draft still equals the previous baseline.
     setDraft((current) => signature(current) === signature(previous) ? next : current)
-  }, [pool.data, pool.dataUpdatedAt, pool.isSuccess])
+  }, [pool.data, pool.dataUpdatedAt, pool.isFetching, pool.isSuccess])
 
   // Applied once, on top of the loaded pool (this effect runs after the baseline one above).
   const pendingAdd = useRef(addMembers)
   const [addedCount, setAddedCount] = useState<number | null>(null)
   useEffect(() => {
     const backendIds = pendingAdd.current
-    if (!backendIds?.length || !pool.isSuccess) return
+    // After any kept draft came back, so the added members land on top of it.
+    if (!backendIds?.length || !pool.isSuccess || !restored.current) return
     pendingAdd.current = undefined
     setAddedCount(appendMembers(primaryFirst(pool.data.members), backendIds).added.length)
     setDraft((current) => ({ ...current, members: appendMembers(current.members, backendIds).members }))
-  }, [pool.data, pool.isSuccess])
+  }, [pool.data, pool.isFetching, pool.isSuccess])
 
   const save = useMutation({
     mutationFn: () => {
@@ -168,6 +188,11 @@ export function PoolEditor({ poolId, initial, addMembers, created, onCreated, on
   const idTaken = creating && (pools.data ?? []).some((item) => item.id.toLowerCase() === trimmedId.toLowerCase())
   const idValid = !creating || (POOL_ID_PATTERN.test(trimmedId) && !idTaken)
   const dirty = creating ? draft.members.length > 0 || newId !== "" : signature(draft) !== baseline
+  const loaded = pool.data
+  useEffect(() => {
+    if (creating || !poolId || !loaded || !restored.current) return
+    keepDraft("litellm", poolId, loaded.etag, dirty ? { draft, mode } satisfies KeptDraft : null)
+  }, [creating, poolId, loaded, dirty, draft, mode])
   const busy = save.isPending
   const hasEffectivePool = Boolean(pool.data)
   const primary = draft.members[0]?.backend_id
@@ -198,6 +223,9 @@ export function PoolEditor({ poolId, initial, addMembers, created, onCreated, on
   const dropMember = (backendId: string) => update({ members: removeMember(draft.members, backendId, mode) })
   // The pool's model as Azure reports it; the picker offers only deployments of that model.
   const poolModel = modelResult?.model_names.length === 1 ? modelResult.model_names[0]! : null
+  // Weights in proportion to the deployments' limits; offered only when they'd change something.
+  const capacity = capacityWeights(modelResult, draft.members)
+  const byCapacity = capacity?.some((member, index) => member.weight !== draft.members[index]!.weight) ? capacity : null
   // Accounts behind the Foundry members; the gateway's identity needs a data-plane role on each.
   const memberAccounts = [...new Set((modelResult?.members ?? []).flatMap((member) =>
     member.deployment_id ? [member.deployment_id.split("/deployments/")[0]!] : []))]
@@ -276,6 +304,9 @@ export function PoolEditor({ poolId, initial, addMembers, created, onCreated, on
     {mode === "custom" && <div className="state warning"><CircleAlert size={14} />{t.customReadOnly}</div>}
     {mode === "failover" && validMembers && !readOnly && <div className="state">{t.failoverPrimaryHint}</div>}
     {issues.includes("weights") && <div className="state warning"><CircleAlert size={14} />{t.weightsMustDiffer}</div>}
+    {mode === "weighted" && !readOnly && byCapacity && <div className="member-actions">
+      <Button disabled={busy} title={t.weightByCapacityHint} onClick={() => update({ members: byCapacity })}><Scale size={13} />{t.weightByCapacity}</Button>
+    </div>}
 
     <div className="member-list" role="list" aria-label={t.members}>
       {!rows.length && <div className="empty"><b>{t.noMembersYet}</b></div>}
@@ -296,6 +327,7 @@ export function PoolEditor({ poolId, initial, addMembers, created, onCreated, on
               <b title={backend.id}>{name}</b>
               <small>
                 {missing ? <span className="danger">{t.statusMissing}</span> : <>
+                  <MemberQuota product="litellm" model={model} />
                   {selected && model && (model.problem || !model.model_name || versionsDiffer) && <ModelTag model={model} />}
                   {pending && <span className="warn">{t.pending}</span>}
                 </>}
@@ -360,7 +392,7 @@ export function PoolEditor({ poolId, initial, addMembers, created, onCreated, on
     />}
     {!validMembers && !readOnly && <div className="state warning"><CircleAlert size={14} />{t.needMembers}</div>}
     <ModelCheckNotice check={modelResult} loading={draft.members.length > 0 && modelCheck.isFetching && !modelResult} />
-    <PoolQuotaNotice product="litellm" check={modelResult} sized={sizedFor(capabilities.data?.sized_for)} />
+    <PoolQuotaNotice product="litellm" check={modelResult} members={draft.members} sized={sizedFor(capabilities.data?.sized_for)} />
   </>
 
   const settingsPanel = <PoolBreakerSettings
@@ -389,6 +421,7 @@ export function PoolEditor({ poolId, initial, addMembers, created, onCreated, on
       ? dirty && <div className="state warning" role="status"><CircleAlert size={14} />{fill(t.addedFromDeployments, { count: addedCount })}</div>
       : <div className="state" role="status"><CheckCircle2 size={14} />{t.alreadyInPool}</div>)}
     {notice && !dirty && <div className="state" data-status="active"><CheckCircle2 size={14} />{notice}</div>}
+    {staleDraft && !dirty && <div className="state warning"><CircleAlert size={14} />{t.draftStale}</div>}
     <ErrorText error={save.error} />
 
     {creating ? <>
@@ -452,7 +485,7 @@ export function PoolEditor({ poolId, initial, addMembers, created, onCreated, on
       poolId={poolId}
       etag={pool.data?.etag}
       onClose={() => setDeleteOpen(false)}
-      onRemoved={() => { setDeleteOpen(false); onDeleted?.() }}
+      onRemoved={() => { setDeleteOpen(false); if (poolId) keepDraft("litellm", poolId, null, null); onDeleted?.() }}
     />}
   </section>
   return header ? <>{header(controls)}{editor}</> : editor

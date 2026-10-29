@@ -11,7 +11,7 @@ gateway creates. To get going, see the [step-by-step guide](getting-started.md).
 
 | Area | What it does |
 | --- | --- |
-| **Setup wizard** | Four steps: **Sign in**, the gateway (**AI gateway** or **APIM service**), **Permissions** and **Gateway → Foundry**. It checks sign-in, the gateway (for LiteLLM: reachable, database connected, master key valid), its managed identity, your access to it and the gateway's access to Foundry. It fixes what your Azure rights allow and writes a ready-to-send admin request for the rest. Locally it also chooses the kind of gateway, and picks, creates, connects or deletes the gateway. |
+| **Setup wizard** | Four steps: **Sign in**, **AI gateway**, **Permissions** and **Gateway → Foundry**. It checks sign-in, the gateway (for LiteLLM: reachable, database connected, master key valid), its managed identity, your access to it and the gateway's access to Foundry. It fixes what your Azure rights allow and writes a ready-to-send admin request for the rest. Locally it also chooses the kind of gateway, and picks, creates, connects or deletes the gateway. |
 | **Gateway choice** | APIM: an existing service, or a new one. LiteLLM: sizes the gateway for your peak traffic and recommends Container Apps or AKS, deploys on Container Apps in one step, or creates a new AKS cluster and installs LiteLLM with HTTPS on it, or generates the files for a cluster you already have, or connects any LiteLLM proxy. |
 | **Guided tour** | A two-minute walkthrough for people new to AI gateways. It runs once after setup; **Tour** in the top bar replays it. |
 | **Deployment discovery** | Lists the Azure OpenAI / Foundry deployments in your subscriptions, grouped by model, and imports the ones you select into a new or existing pool. |
