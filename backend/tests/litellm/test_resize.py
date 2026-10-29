@@ -15,7 +15,7 @@ from pool_manager.litellm.gateway_template import (
     parse_sizing_tag,
 )
 from pool_manager.litellm.models import GatewaySizing
-from pool_manager.litellm.sizing import plan
+from pool_manager.litellm.sizing import node_in_family, plan
 from tests.fake_azure import FakeAzure
 from tests.litellm.fake_litellm import MASTER_KEY
 from tests.litellm.test_app import PRODUCTION, TRIAL, WRITE, _client, _settings
@@ -35,15 +35,21 @@ def _aca(azure: FakeAzure, sizing: dict[str, Any] = TRIAL) -> TestClient:
     return _client(azure, _settings())
 
 
-def _aks(azure: FakeAzure, sizing: dict[str, Any] = TRIAL) -> TestClient:
+def _aks(azure: FakeAzure, sizing: dict[str, Any] = TRIAL, family: int = 0) -> TestClient:
+    """A cluster this app deployed; ``family`` picks its nodes' family (sizing.NODE_FAMILIES),
+    as the region check does where the first isn't open."""
     scenario = GatewaySizing.model_validate(sizing)
+    found = plan(scenario, "aks")
+    assert found.aks is not None
+    node_size = node_in_family(found.aks.node_size, family)
+    found = found.model_copy(update={"aks": found.aks.model_copy(update={"node_size": node_size})})
     parameters = {
         key: value["value"]
         for key, value in aks_parameters(
             name="gw-aks",
             location="eastus2",
             sizing=scenario,
-            plan=plan(scenario, "aks"),
+            plan=found,
             deployer="me",
             zones=[],
             postgres_password="x",
@@ -180,6 +186,17 @@ def test_a_gateway_this_app_didnt_deploy_isnt_resized() -> None:
 
     assert response.status_code == 409
     assert "wasn't deployed by this app" in response.json()["detail"]
+
+
+def test_a_cluster_on_another_node_family_keeps_its_family() -> None:
+    azure = FakeAzure()
+    client = _aks(azure, family=1)
+    try:
+        resize = _plan(client)
+    finally:
+        app.dependency_overrides.clear()
+
+    assert "node_size" not in {change["item"] for change in resize["changes"]}
 
 
 def test_aks_gets_new_nodes_and_pods_and_the_rest_as_commands() -> None:

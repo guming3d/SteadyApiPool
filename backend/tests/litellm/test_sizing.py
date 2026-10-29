@@ -20,7 +20,7 @@ from pool_manager.litellm.gateway_template import (
     sizing_tag,
 )
 from pool_manager.litellm.models import GatewaySizing
-from pool_manager.litellm.sizing import ACA_MAX_REPLICAS, plan, plans
+from pool_manager.litellm.sizing import ACA_MAX_REPLICAS, node_in_family, node_pods, plan, plans
 from tests.fake_azure import SUBSCRIPTION, TENANT, FakeAzure
 from tests.litellm.test_app import PRODUCTION, TRIAL, WRITE
 from tests.litellm.test_target import NO_TARGET, _settings, _Wizard
@@ -374,3 +374,11 @@ def test_the_deployment_carries_the_plan(wizard: _Wizard, azure: FakeAzure) -> N
     assert (parameters["minReplicas"], parameters["maxReplicas"]) == (2, 6)
     assert parameters["redisSku"] == "Balanced_B0"
     assert parse_sizing_tag(parameters["sizing"]) == GatewaySizing.model_validate(PRODUCTION)
+
+
+def test_a_node_size_has_its_twin_in_every_family() -> None:
+    assert node_in_family("Standard_D8ds_v5", 1) == "Standard_D8ds_v7"
+    assert node_in_family("Standard_D16ds_v7", 2) == "Standard_D16ds_v6"
+    assert node_in_family("Standard_E8s_v5", 1) == "Standard_E8s_v5"
+    assert node_pods("Standard_D8ds_v7") == node_pods("Standard_D8ds_v5") == 5
+    assert node_pods("Standard_E8s_v5") is None

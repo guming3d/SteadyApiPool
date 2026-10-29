@@ -58,7 +58,7 @@ from .models import (
     ResizePlan,
     ResizeResult,
 )
-from .sizing import NODE_SIZES, SIDECAR, plan, postgres_size
+from .sizing import SIDECAR, node_family, node_in_family, node_pods, plan, postgres_size
 
 logger = logging.getLogger(__name__)
 
@@ -126,10 +126,11 @@ def _http_rule(scale: Mapping[str, Any]) -> int | None:
 
 
 def pods_per_node(node_size: str) -> int:
-    """LiteLLM pods a node of this size takes (sizing.NODE_SIZES), or a guess from its vCPUs."""
-    for size, _, pods in NODE_SIZES:
-        if size.casefold() == node_size.casefold():
-            return pods
+    """LiteLLM pods a node of this size takes (sizing.NODE_SIZES, in any of its node families),
+    or a guess from its vCPUs."""
+    pods = node_pods(node_size)
+    if pods is not None:
+        return pods
     vcpus = re.search(r"_[A-Z]+(\d+)", node_size)
     return max(1, int(vcpus.group(1)) // 2) if vcpus else 2
 
@@ -294,14 +295,22 @@ class GatewayResizer:
             change("nodes", _range(current.node_min, current.node_max), _range(low, high), "apply")
             change("pods", _range(current.min_replicas, current.max_replicas), replicas, "apply")
             group, cluster = current.resource_group, current.name
-            if found.aks.node_size.casefold() != current.node_size.casefold():
+            # The plan's size in the family the cluster already runs (the region check may have
+            # deployed it on Ddsv7 where Ddsv5 wasn't open).
+            family = node_family(current.node_size)
+            wanted = (
+                node_in_family(found.aks.node_size, family)
+                if family is not None
+                else found.aks.node_size
+            )
+            if wanted.casefold() != current.node_size.casefold():
                 change(
                     "node_size",
                     current.node_size,
-                    found.aks.node_size,
+                    wanted,
                     "manual",
                     f"az aks nodepool add -g {group} --cluster-name {cluster} -n litellm2 "
-                    f"--node-vm-size {found.aks.node_size} --enable-cluster-autoscaler "
+                    f"--node-vm-size {wanted} --enable-cluster-autoscaler "
                     f"--min-count {found.aks.node_min} --max-count {found.aks.node_max}",
                 )
             if current.outbound_ports < found.aks.ports_needed:

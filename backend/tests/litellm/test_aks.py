@@ -170,6 +170,17 @@ def test_a_production_cluster_uses_the_zones_of_its_node_size(
     assert azure.arm_deployments[DEPLOYMENT.casefold()]["parameters"]["zones"] == ["1", "2", "3"]
 
 
+def test_a_cluster_gets_nodes_of_a_family_the_subscription_may_use(
+    wizard: _Wizard, azure: FakeAzure
+) -> None:
+    azure.vm_restricted_sizes = {f"Standard_D{n}ds_v5" for n in (4, 8, 16)}
+
+    assert wizard.create().status_code == 200
+
+    parameters = azure.arm_deployments[DEPLOYMENT.casefold()]["parameters"]
+    assert parameters["nodeVmSize"] == "Standard_D4ds_v7"
+
+
 @pytest.mark.parametrize(
     ("setup", "status", "text"),
     [

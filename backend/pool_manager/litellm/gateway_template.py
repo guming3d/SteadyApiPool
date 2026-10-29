@@ -101,6 +101,9 @@ def litellm_config(
             "master_key": "os.environ/LITELLM_MASTER_KEY",
             "database_url": "os.environ/DATABASE_URL",
             "store_model_in_db": True,
+            # How often each replica reloads the models this app writes (default 30 s), so a
+            # saved pool reaches every replica within seconds (service.SETTLE_SECONDS).
+            "proxy_config_reload_interval_seconds": 5,
             "proxy_batch_write_at": 60,
             "database_connection_pool_limit": db_pool,
         },

@@ -52,18 +52,34 @@ RETAIL_PRICES = {
     "Virtual Machines": [
         {
             "productName": "Virtual Machines Ddsv5 Series",
+            "armSkuName": "Standard_D4ds_v5",
             "meterName": "D4ds v5",
             "retailPrice": 0.24,
         },
         {
             "productName": "Virtual Machines Ddsv5 Series Windows",
+            "armSkuName": "Standard_D4ds_v5",
             "meterName": "D4ds v5",
             "retailPrice": 0.424,
         },
         {
             "productName": "Virtual Machines Ddsv5 Series",
+            "armSkuName": "Standard_D4ds_v5",
             "meterName": "D4ds v5 Spot",
             "retailPrice": 0.04,
+        },
+        # Ddsv7 meters carry the full size name.
+        {
+            "productName": "Virtual Machines Ddsv7-series Linux",
+            "armSkuName": "Standard_D4ds_v7",
+            "meterName": "Standard_D4ds_v7",
+            "retailPrice": 0.33,
+        },
+        {
+            "productName": "Virtual Machines Ddsv7-series Linux",
+            "armSkuName": "Standard_D4ds_v7",
+            "meterName": "Standard_D4ds_v7 Spot",
+            "retailPrice": 0.06,
         },
     ],
     "Azure Kubernetes Service": [
@@ -273,11 +289,14 @@ class FakeAzure:
     refused_deletes: dict[str, int] = field(default_factory=dict)
     # Polls of those operations' status.
     operation_polls: int = 0
-    # AKS: DNS labels already taken, the node size refused to the subscription, its free
-    # vCPUs, and Run Command: requests, results by ID, polls before a result and its outcome.
+    # AKS: DNS labels already taken, every node size refused to the subscription (or only
+    # some, by name), free vCPUs per quota family, and Run Command: requests, results by ID,
+    # polls before a result and its outcome.
     dns_taken: set[str] = field(default_factory=set)
     vm_restricted: bool = False
+    vm_restricted_sizes: set[str] = field(default_factory=set)
     vcpus_free: int = 100
+    vcpus_free_by_family: dict[str, int] = field(default_factory=dict)
     run_commands: list[dict[str, Any]] = field(default_factory=list)
     # Writes a resize makes, in order: (method, path, body).
     writes: list[tuple[str, str, Any]] = field(default_factory=list)
@@ -684,25 +703,35 @@ class FakeAzure:
             label = request.url.params["domainNameLabel"]
             return httpx.Response(200, json={"available": label not in self.dns_taken})
         if path.endswith("/providers/Microsoft.Compute/skus"):
-            restrictions = (
-                [{"type": "Location", "reasonCode": "NotAvailableForSubscription"}]
-                if self.vm_restricted
-                else []
-            )
-            sku = {
-                "resourceType": "virtualMachines",
-                "name": "Standard_D4ds_v5",
-                "locationInfo": [{"location": "x", "zones": ["3", "1", "2"]}],
-                "restrictions": restrictions,
-            }
-            return httpx.Response(200, json={"value": [sku]})
+            refused = [{"type": "Location", "reasonCode": "NotAvailableForSubscription"}]
+            skus = [
+                {
+                    "resourceType": "virtualMachines",
+                    "name": name,
+                    "locationInfo": [{"location": "x", "zones": ["3", "1", "2"]}],
+                    "restrictions": (
+                        refused if self.vm_restricted or name in self.vm_restricted_sizes else []
+                    ),
+                }
+                for family in ("ds_v5", "ds_v7", "ds_v6")
+                for name in (f"Standard_D{n}{family}" for n in (4, 8, 16))
+            ]
+            return httpx.Response(200, json={"value": skus})
         if path.endswith("/usages"):
-            usage = {
-                "name": {"value": "standardDDSv5Family", "localizedValue": "DDSv5 vCPUs"},
-                "limit": self.vcpus_free,
-                "currentValue": 0,
-            }
-            return httpx.Response(200, json={"value": [usage]})
+            usages = [
+                {
+                    "name": {"value": name, "localizedValue": label},
+                    "limit": self.vcpus_free_by_family.get(name, self.vcpus_free),
+                    "currentValue": 0,
+                }
+                for name, label in (
+                    ("standardDDSv5Family", "DDSv5 vCPUs"),
+                    ("StandardDdsv7Family", "Ddsv7 vCPUs"),
+                    ("StandardDdsv6Family", "Ddsv6 vCPUs"),
+                    ("cores", "Total Regional vCPUs"),
+                )
+            ]
+            return httpx.Response(200, json={"value": usages})
         if path.endswith(_CLUSTERS):
             prefix = path.removesuffix(_CLUSTERS).casefold() + "/"
             clusters = [

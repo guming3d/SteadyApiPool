@@ -29,7 +29,7 @@ from typing import Any
 from ..arm import ArmClient, ArmError, segment
 from ..config import Settings
 from ..errors import ServiceError, arm_failure
-from .capacity import CapacityCheck, CapacityReport
+from .capacity import CapacityCheck, CapacityReport, regional
 from .gateway import GATEWAY_TAG, MANAGED_TAG, MANAGED_TAG_VALUE
 from .gateway_template import aca_parameters, aca_template
 from .models import DeployStep, GatewayCreate, GatewayDeployStatus, GatewayPlan
@@ -137,11 +137,12 @@ class GatewayDeployer:
 
     def preflight(
         self, arm: ArmClient, body: GatewayCreate, found: GatewayPlan
-    ) -> tuple[list[str], list[str]]:
+    ) -> tuple[list[str], list[str], GatewayPlan]:
         """What would keep this deployment from succeeding there, without changing anything,
-        and the regions where nothing would."""
+        the regions where nothing would, and the plan as it would be deployed there (an AKS
+        plan's node size in a family the subscription may use)."""
         if found.problems:
-            return [describe(note) for note in found.problems], []
+            return [describe(note) for note in found.problems], [], found
         try:
             report = self.capacity.problems(arm, body.subscription_id, body.location, found)
             regions = (
@@ -151,7 +152,7 @@ class GatewayDeployer:
             )
         except ArmError as error:
             raise arm_failure(error, "check this region") from error
-        return report.problems, regions
+        return report.problems, regions, regional(found, report)
 
     def require_capacity(
         self, arm: ArmClient, body: GatewayCreate, found: GatewayPlan

@@ -244,7 +244,9 @@ class LiteLLMTargets:
         succeeding, before anything is created."""
         self._targets.require_local()
         found = sizing_plan(body.sizing, body.platform)
-        problems, regions = self._deployer.preflight(self._targets.arm(body.tenant_id), body, found)
+        problems, regions, found = self._deployer.preflight(
+            self._targets.arm(body.tenant_id), body, found
+        )
         return GatewayPreflight(
             location=body.location,
             plan=found,

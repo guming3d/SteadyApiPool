@@ -37,6 +37,11 @@ class FakeLiteLLM:
     db: str = "connected"
     # Rows (model_info.id) that answer this status instead of 200.
     failing: dict[str, int] = field(default_factory=dict)
+    # Reads of /model/info after a model write that still show the rows from before it, as a
+    # replica that hasn't reloaded from the database yet does.
+    lagging_reads: int = 0
+    _stale: list[dict[str, Any]] | None = None
+    _stale_left: int = 0
     requests: list[httpx.Request] = field(default_factory=list)
     # Hosts that don't answer yet.
     unreachable_hosts: set[str] = field(default_factory=set)
@@ -80,7 +85,13 @@ class FakeLiteLLM:
                 200, json={"status": "healthy", "db": self.db, "litellm_version": self.version}
             )
         if path == "/model/info":
-            return httpx.Response(200, json={"data": [self._public(row) for row in self.rows]})
+            rows = self.rows
+            if self._stale_left:
+                self._stale_left -= 1
+                rows = self._stale or []
+            return httpx.Response(200, json={"data": [self._public(row) for row in rows]})
+        if self.lagging_reads and path.startswith("/model/") and not self._stale_left:
+            self._stale, self._stale_left = copy.deepcopy(self.rows), self.lagging_reads
         if path == "/model/new":
             return self._new(body)
         if path.startswith("/model/") and path.endswith("/update"):

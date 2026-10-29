@@ -147,8 +147,10 @@ def aks_list_price(
     vms = prices.get("vm") or []
     node = meter(
         vms,
+        # By ARM size: the meter is "D4ds v5" for Ddsv5 but "Standard_D4ds_v7" for Ddsv7.
         lambda i: (
-            i.get("meterName") == node_size.removeprefix("Standard_").replace("_", " ")
+            str(i.get("armSkuName")).casefold() == node_size.casefold()
+            and not any(word in str(i.get("meterName")) for word in ("Spot", "Low Priority"))
             and "Windows" not in str(i.get("productName"))
             and i.get("unitOfMeasure") == "1 Hour"
         ),

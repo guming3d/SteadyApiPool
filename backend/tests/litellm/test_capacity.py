@@ -124,6 +124,53 @@ def test_an_aks_preflight_checks_the_nodes(wizard: _Wizard, azure: FakeAzure) ->
     )
 
 
+def test_an_aks_preflight_takes_a_node_family_the_subscription_may_use(
+    wizard: _Wizard, azure: FakeAzure
+) -> None:
+    azure.vm_restricted_sizes = {f"Standard_D{n}ds_v5" for n in (4, 8, 16)}
+
+    result = _preflight(wizard, platform="aks")
+
+    assert result["problems"] == []
+    assert result["plan"]["aks"]["node_size"] == "Standard_D4ds_v7"
+    nodes = next(item for item in result["list_price"]["items"] if item["kind"] == "aks_nodes")
+    assert nodes["detail"].startswith("Standard_D4ds_v7 x ")
+    assert nodes["monthly_low"] == round(0.33 * 730 * result["plan"]["aks"]["node_min"], 2)
+
+
+def test_an_aks_preflight_checks_the_quota_of_the_family_it_takes(
+    wizard: _Wizard, azure: FakeAzure
+) -> None:
+    azure.vm_restricted_sizes = {f"Standard_D{n}ds_v5" for n in (4, 8, 16)}
+    azure.vcpus_free = 8
+
+    result = _preflight(wizard, platform="aks", sizing=PRODUCTION)
+
+    assert result["problems"][0].startswith("Not enough quota in eastus2: Ddsv7 vCPUs has 8 free")
+
+
+def test_an_aks_preflight_takes_a_family_with_quota_for_the_nodes(
+    wizard: _Wizard, azure: FakeAzure
+) -> None:
+    azure.vcpus_free_by_family = {"standardDDSv5Family": 8}
+
+    result = _preflight(wizard, platform="aks", sizing=PRODUCTION)
+
+    assert result["problems"] == []
+    assert result["plan"]["aks"]["node_size"].endswith("ds_v7")
+
+
+def test_an_aks_preflight_names_every_family_it_tried(wizard: _Wizard, azure: FakeAzure) -> None:
+    azure.vm_restricted = True
+
+    result = _preflight(wizard, platform="aks")
+
+    assert result["problems"][0] == (
+        "The AKS node size Standard_D4ds_v5 isn't available to this subscription in eastus2, "
+        "nor Standard_D4ds_v7 or Standard_D4ds_v6."
+    )
+
+
 def test_azures_validation_refuses_before_anything_is_created(
     wizard: _Wizard, azure: FakeAzure
 ) -> None:

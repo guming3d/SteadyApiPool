@@ -36,6 +36,7 @@ from ..arm import ArmClient, ArmError, segment
 from ..config import Settings
 from ..errors import ServiceError, arm_failure
 from ..secret_store import SecretStore
+from .capacity import regional
 from .gateway import MANAGED_TAG, MANAGED_TAG_VALUE
 from .gateway_deploy import (
     DEPLOYMENTS_API_VERSION,
@@ -112,8 +113,11 @@ class AksDeployer:
 
     # -- before anything is created -------------------------------------------------------
 
-    def preflight(self, arm: ArmClient, body: GatewayCreate, found: GatewayPlan) -> list[str]:
-        """Read-only checks for what an AKS deployment needs; returns the VM size's zones."""
+    def preflight(
+        self, arm: ArmClient, body: GatewayCreate, found: GatewayPlan
+    ) -> tuple[list[str], GatewayPlan]:
+        """Read-only checks for what an AKS deployment needs; returns the node size's zones and
+        the plan with the node size the region allows."""
         subscription = f"/subscriptions/{segment(body.subscription_id)}"
         try:
             dns = arm.get_arm_json(
@@ -129,7 +133,7 @@ class AksDeployer:
                     "(it becomes the gateway's HTTPS address)",
                 )
             # The node size, its zones and the vCPU quota, with everything else it creates.
-            zones = self._base.require_capacity(arm, body, found).zones
+            report = self._base.require_capacity(arm, body, found)
             scope = group_path(body.subscription_id, body.resource_group)
             if arm.get_arm_json(scope, api_version="2021-04-01") is None:
                 scope = subscription
@@ -148,7 +152,7 @@ class AksDeployer:
                 "new cluster, which needs Owner or User Access Administrator on the resource "
                 f"group; your account lacks {ROLE_ASSIGNMENT_WRITE} there",
             )
-        return zones
+        return report.zones, regional(found, report)
 
     # -- deploying ------------------------------------------------------------------------
 
@@ -164,7 +168,7 @@ class AksDeployer:
             self._base.check(
                 arm, body, existing=cluster, existing_api=CONTAINER_SERVICE_API_VERSION
             )
-            zones = self.preflight(arm, body, found)
+            zones, found = self.preflight(arm, body, found)
             created = self._base.provision(
                 arm, body, actor, providers=AKS_PROVIDERS, redis=found.redis_sku is not None
             )

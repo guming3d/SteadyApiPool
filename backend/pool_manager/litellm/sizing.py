@@ -74,6 +74,14 @@ ACA_MAX_REPLICAS = 30
 # at most 100 of the largest.
 AKS_POD = (1.0, 4.0)
 NODE_SIZES = (("Standard_D4ds_v5", 4, 2), ("Standard_D8ds_v5", 8, 5), ("Standard_D16ds_v5", 16, 12))
+# The VM families a plan's node size can come from, in order, with their quota family: the
+# region check (capacity.py) takes the first the subscription may use there. Same vCPUs and
+# memory in each, so the same pods a node.
+NODE_FAMILIES = (
+    ("ds_v5", "standardDDSv5Family", "DDSv5 vCPUs"),
+    ("ds_v7", "StandardDdsv7Family", "Ddsv7 vCPUs"),
+    ("ds_v6", "StandardDdsv6Family", "Ddsv6 vCPUs"),
+)
 AKS_PREFERRED_NODES = 10
 AKS_MAX_NODES = 100
 SNAT_PORTS_PER_IP = 64_000
@@ -156,6 +164,32 @@ def postgres_size(sku: str) -> PostgresSize:
         (size for size in POSTGRES_SIZES if size.sku.casefold() == sku.casefold()),
         POSTGRES_SIZES[0],
     )
+
+
+def node_family(node_size: str) -> int | None:
+    """The index in NODE_FAMILIES of a ``Standard_D<n>ds_v<k>`` size, or None for others."""
+    lowered = node_size.casefold()
+    return next(
+        (i for i, (suffix, _, _) in enumerate(NODE_FAMILIES) if lowered.endswith(suffix)), None
+    )
+
+
+def node_in_family(node_size: str, family: int) -> str:
+    """The same node size in another of NODE_FAMILIES (``Standard_D8ds_v5`` -> ``_v7``)."""
+    current = node_family(node_size)
+    if current is None:
+        return node_size
+    stem = node_size[: -len(NODE_FAMILIES[current][0])]
+    return stem + NODE_FAMILIES[family][0]
+
+
+def node_pods(node_size: str) -> int | None:
+    """LiteLLM pods a node of this size takes (NODE_SIZES, in any of NODE_FAMILIES)."""
+    family = node_family(node_size)
+    if family is None:
+        return None
+    base = node_in_family(node_size, 0).casefold()
+    return next((pods for size, _, pods in NODE_SIZES if size.casefold() == base), None)
 
 
 def call_seconds(sizing: GatewaySizing) -> float:

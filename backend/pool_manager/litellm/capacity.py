@@ -8,7 +8,9 @@ leave the others behind, billed. ``CapacityCheck.problems`` reads, without chang
 - PostgreSQL Flexible Server: the region's restrictions, the server version, the size the
   sizing plan picked, and the subscription's vCore quota for that size's family;
 - Container Apps: room for one more managed environment in the region;
-- AKS: the plan's node size (and its zones) and the vCPU quota for the most nodes it runs.
+- AKS: the plan's node size, or the same size in the first node family the subscription may
+  use there (Ddsv5, then Ddsv7, then Ddsv6), its zones and that family's vCPU quota for the
+  most nodes it runs.
 
 Every problem is reported at once, so the user can pick another region in one go. A check that
 can't be read (no permission, a provider that doesn't answer) is skipped: the deployment's own
@@ -25,7 +27,7 @@ from typing import Any
 
 from ..arm import ArmClient, ArmError, segment
 from .models import GatewayPlan
-from .sizing import postgres_size
+from .sizing import NODE_FAMILIES, node_family, node_in_family, postgres_size
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +38,6 @@ POSTGRES_VERSION = "16"
 CONTAINER_APPS_API_VERSION = "2025-01-01"
 COMPUTE_API_VERSION = "2024-07-01"
 SKUS_API_VERSION = "2021-07-01"
-# The quota family of the AKS node sizes the plans use (Standard_D*ds_v5).
-VM_FAMILY = "standardDDSv5Family"
 # Offered instead when the chosen region can't take the gateway.
 ALTERNATIVE_REGIONS = (
     "eastus2",
@@ -92,6 +92,19 @@ class CapacityReport:
     problems: list[str] = field(default_factory=list)
     # The AKS node size's usable availability zones in the region.
     zones: list[str] = field(default_factory=list)
+    # The node size to deploy: the plan's, or the same size in the first of the node families
+    # the subscription may use in the region (sizing.NODE_FAMILIES). None without AKS.
+    node_size: str | None = None
+
+
+def regional(plan: GatewayPlan, report: CapacityReport) -> GatewayPlan:
+    """The plan with the node size the region check chose (the same, unless the plan's family
+    isn't open to the subscription there)."""
+    if plan.aks is None or not report.node_size or report.node_size == plan.aks.node_size:
+        return plan
+    return plan.model_copy(
+        update={"aks": plan.aks.model_copy(update={"node_size": report.node_size})}
+    )
 
 
 class CapacityCheck:
@@ -118,9 +131,10 @@ class CapacityCheck:
             aks = plan.aks
 
             def nodes_fit() -> list[str]:
-                zones, problems = self._nodes(
+                node_size, zones, problems = self._nodes(
                     arm, subscription, location, aks.node_size, aks.node_max * aks.node_vcpus
                 )
+                report.node_size = node_size
                 report.zones = zones
                 return problems
 
@@ -272,8 +286,10 @@ class CapacityCheck:
 
     def _nodes(
         self, arm: ArmClient, subscription: str, location: str, node_size: str, vcpus: int
-    ) -> tuple[list[str], list[str]]:
-        """The node size's usable zones, and what keeps ``vcpus`` of it from fitting."""
+    ) -> tuple[str, list[str], list[str]]:
+        """The node size to use (the plan's, or the same size in the first node family this
+        subscription may use there and has quota for), its usable zones, and what keeps
+        ``vcpus`` of it from fitting."""
         try:
             skus = list(
                 arm.list_arm(
@@ -288,26 +304,46 @@ class CapacityCheck:
             )
         except ArmError as error:
             logger.info("Cannot read the node size's capacity in %s: %s", location, error.message)
-            return [], []
-        sku = next(
-            (
-                item
-                for item in skus
-                if item.get("resourceType") == "virtualMachines" and item.get("name") == node_size
-            ),
-            None,
+            return node_size, [], []
+        by_name = {
+            str(item.get("name")).casefold(): item
+            for item in skus
+            if item.get("resourceType") == "virtualMachines"
+        }
+        family = node_family(node_size)
+        candidates = (
+            [node_in_family(node_size, i) for i in range(len(NODE_FAMILIES))]
+            if family is not None
+            else [node_size]
         )
-        if sku is None:
-            return [], [f"The AKS node size {node_size} isn't offered in {location}."]
+        offered = [size for size in candidates if size.casefold() in by_name]
+        if not offered:
+            return node_size, [], [f"The AKS node size {node_size} isn't offered in {location}."]
+        usable = [size for size in offered if _open(by_name[size.casefold()])]
+        if not usable:
+            others = [size for size in offered if size != node_size]
+            alternative = f", nor {' or '.join(others)}" if others else ""
+            return (
+                node_size,
+                [],
+                [
+                    f"The AKS node size {node_size} isn't available to this subscription in "
+                    f"{location}{alternative}."
+                ],
+            )
+        # The first open family with quota for the nodes; when none has, the first open one and
+        # its shortfall.
+        found = [self._fit(by_name[size.casefold()], usages, vcpus, location) for size in usable]
+        index = next((i for i, (_, problems) in enumerate(found) if not problems), 0)
+        zones, problems = found[index]
+        return usable[index], zones, problems
+
+    @staticmethod
+    def _fit(
+        sku: Mapping[str, Any], usages: Mapping[str, Any] | None, vcpus: int, location: str
+    ) -> tuple[list[str], list[str]]:
+        """A VM size's usable zones, and the quota that keeps ``vcpus`` of it from fitting."""
         restrictions = sku.get("restrictions") or []
-        if any(
-            item.get("type") == "Location"
-            and item.get("reasonCode") == "NotAvailableForSubscription"
-            for item in restrictions
-        ):
-            return [], [
-                f"The AKS node size {node_size} isn't available to this subscription in {location}."
-            ]
         info = (sku.get("locationInfo") or [{}])[0]
         blocked = {
             zone
@@ -316,13 +352,32 @@ class CapacityCheck:
             for zone in (item.get("restrictionInfo") or {}).get("zones") or []
         }
         zones = sorted(str(zone) for zone in info.get("zones") or [] if zone not in blocked)
-        problems = _quota(
-            (usages or {}).get("value") or [],
-            {VM_FAMILY: "DDSv5 vCPUs", "cores": "Total regional vCPUs"},
-            vcpus,
-            location,
-        )
+        quota_names = {"cores": "Total regional vCPUs"}
+        family = node_family(str(sku.get("name") or ""))
+        if family is not None:
+            _, quota, label = NODE_FAMILIES[family]
+            quota_names = {quota: label, **quota_names}
+        problems = _quota((usages or {}).get("value") or [], quota_names, vcpus, location)
         return zones, problems
+
+
+def _open(sku: Mapping[str, Any]) -> bool:
+    """Whether the subscription may create this VM size in the region: not refused there, nor
+    in every one of its zones."""
+    restrictions = sku.get("restrictions") or []
+    if any(
+        item.get("type") == "Location" and item.get("reasonCode") == "NotAvailableForSubscription"
+        for item in restrictions
+    ):
+        return False
+    zones = set((sku.get("locationInfo") or [{}])[0].get("zones") or [])
+    blocked = {
+        zone
+        for item in restrictions
+        if item.get("type") == "Zone"
+        for zone in (item.get("restrictionInfo") or {}).get("zones") or []
+    }
+    return not zones or not zones <= blocked
 
 
 def _quota(

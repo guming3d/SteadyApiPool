@@ -9,7 +9,8 @@ it first. Rows this app didn't write are shown but never changed.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+import time
+from collections.abc import Callable, Mapping
 from threading import Lock
 from typing import Any
 
@@ -55,9 +56,17 @@ from .resources import (
     row_metadata,
     row_model_id,
     row_name,
+    with_base_model,
 )
 
 logger = logging.getLogger(__name__)
+
+# Every gateway replica reloads models from the database on its own schedule
+# (proxy_config_reload_interval_seconds: 5 s on gateways this app deploys, 30 s by default), so a
+# read just after a save can reach one that hasn't yet. A save reads until this many reads in a
+# row show it, for at most SETTLE_SECONDS (one default interval and a margin).
+SETTLE_READS = 3
+SETTLE_SECONDS = 45.0
 
 
 def translate_error(error: LiteLLMError | GatewayUnavailable) -> ServiceError:
@@ -84,8 +93,18 @@ def alias_target(value: object) -> str | None:
 
 
 class LiteLLMService:
-    def __init__(self, settings: Settings, arm: ArmClient, gateway: GatewayConnection) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        arm: ArmClient,
+        gateway: GatewayConnection,
+        *,
+        sleep: Callable[[float], None] = time.sleep,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self._settings = settings
+        self._sleep = sleep
+        self._clock = clock
         self._arm = arm
         self.gateway = gateway
         self._protected = settings.protected_prefix_list
@@ -434,8 +453,22 @@ class LiteLLMService:
         existing = group[1] if group else []
         return name, current, existing, members, self._desired_rows(name, write, current, members)
 
+    def _with_base_models(
+        self, desired: list[dict[str, Any]], check: ModelCheck
+    ) -> list[dict[str, Any]]:
+        """The rows with the model each Foundry member's deployment serves (``base_model``),
+        as the model check read it from the deployment."""
+        names = {m.backend_id.casefold(): m.model_name for m in check.members if m.model_name}
+        out = []
+        for row in desired:
+            model_name = names.get(row_member(row).id.casefold())
+            out.append(with_base_model(row, model_name) if model_name else row)
+        return out
+
     def preview_pool(self, pool_id: str, write: PoolWrite) -> ConfigPreview:
-        name, current, existing, _, desired = self._prepare(pool_id, write)
+        name, current, existing, members, desired = self._prepare(pool_id, write)
+        check = self._models.check([(member.id, member.url) for member in members])
+        desired = self._with_base_models(desired, check)
         aliases = current.aliases if current else []
         return ConfigPreview(
             current=config_yaml(name, existing, aliases) if existing else None,
@@ -447,6 +480,7 @@ class LiteLLMService:
         check = self._models.check([(member.id, member.url) for member in members])
         if not check.ok:
             raise ServiceError(409, f"Pool {name} was not saved: {check.message}")
+        desired = self._with_base_models(desired, check)
         client = self.client()
         have = {row_model_id(row).casefold(): row for row in existing}
         want = {str(row["model_info"]["id"]).casefold() for row in desired}
@@ -467,7 +501,35 @@ class LiteLLMService:
             raise translate_error(error) from error
         logger.info("%s wrote pool %s with %d members", actor, name, len(members))
         self._delete_unused_credentials(client, [row_member(row).id for row in dropped])
-        return self.get_pool(name)
+        return self._settled(name, write)
+
+    def _settled(self, name: str, write: PoolWrite) -> PoolView:
+        """The pool as just saved, once SETTLE_READS reads in a row show its members, priorities
+        and weights (a replica that hasn't reloaded yet shows the old pool, or none)."""
+        wanted = sorted((m.backend_id.casefold(), m.priority, m.weight) for m in write.members)
+        deadline = self._clock() + SETTLE_SECONDS
+        streak = 0
+        while True:
+            group = self._pool_rows(name)
+            view = parse_pool(group[0], group[1], self._protected) if group else None
+            shown = (
+                sorted((m.backend_id.casefold(), m.priority, m.weight) for m in view.members)
+                if view
+                else None
+            )
+            streak = streak + 1 if shown == wanted else 0
+            if view is not None and streak >= SETTLE_READS:
+                return view
+            if self._clock() >= deadline:
+                if view is not None and streak:
+                    return view
+                raise ServiceError(
+                    503,
+                    f"Pool {name} was saved, but not every gateway replica has loaded it yet; "
+                    "reload in a minute",
+                )
+            if not streak:
+                self._sleep(1.0)
 
     # -- endpoint and aliases ----------------------------------------------------------
 

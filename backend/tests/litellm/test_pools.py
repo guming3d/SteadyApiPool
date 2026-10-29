@@ -168,6 +168,46 @@ def test_capabilities_describe_the_container_app(w: Wired) -> None:
 # -- pools ----------------------------------------------------------------------------------
 
 
+def _lagging(lag: int) -> tuple[Wired, list[float]]:
+    """A gateway whose replicas show a save only after ``lag`` reads, on a fake clock."""
+    w = _wire()
+    w.lite.lagging_reads = lag
+    now = [0.0]
+    naps: list[float] = []
+
+    def nap(seconds: float) -> None:
+        naps.append(seconds)
+        now[0] += seconds
+
+    w.service = LiteLLMService(
+        w.service._settings, w.service._arm, w.service.gateway, sleep=nap, clock=lambda: now[0]
+    )
+    w.discovery = DeploymentDiscovery(w.service._settings, w.service._arm, w.service)
+    return w, naps
+
+
+def test_a_save_waits_until_the_gateway_shows_it() -> None:
+    w, naps = _lagging(4)
+    ids = _import(w, *_seed(w.apim))
+
+    view = w.service.put_pool("gpt6", _pool(ids), "alice")
+
+    assert [m.backend_id for m in view.members] == ids
+    assert naps == [1.0] * 4
+
+
+def test_a_save_that_never_shows_says_so() -> None:
+    w, _ = _lagging(10_000)
+    ids = _import(w, *_seed(w.apim))
+
+    with pytest.raises(ServiceError) as raised:
+        w.service.put_pool("gpt6", _pool(ids), "alice")
+
+    assert raised.value.status == 503
+    assert "not every gateway replica has loaded it yet" in raised.value.message
+    assert len(w.lite.pool("gpt6")) == 2
+
+
 def test_a_pool_is_one_row_per_member(w: Wired) -> None:
     ids, _ = _saved(w)
 
@@ -181,7 +221,10 @@ def test_a_pool_is_one_row_per_member(w: Wired) -> None:
         "weight": 1,
         "num_retries": 1,
         "timeout": 120,
+        # The deployment is named gpt6; LiteLLM learns it serves gpt-6 (its parameters, its price).
+        "base_model": "azure/gpt-6",
     }
+    assert first["model_info"]["base_model"] == "azure/gpt-6"
     # No key: the gateway calls Foundry as its managed identity.
     assert "api_key" not in first["litellm_params"]
     assert first["model_info"]["allowed_fails"] == 0

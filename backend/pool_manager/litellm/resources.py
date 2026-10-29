@@ -124,6 +124,21 @@ def member_params(member: Member) -> dict[str, Any]:
     return params
 
 
+def with_base_model(row: dict[str, Any], model_name: str) -> dict[str, Any]:
+    """An Azure member's row told which model its deployment serves. LiteLLM picks a model's
+    parameters (``reasoning_effort``, ``max_completion_tokens``) and price by the deployment's
+    name, so a deployment named otherwise (``gpt-6-luna-dz``) would refuse them; ``base_model``
+    in ``litellm_params`` (its checks) and ``model_info`` (its cost) names the real one."""
+    if not str(row["litellm_params"].get("model", "")).startswith("azure/"):
+        return row
+    base = f"azure/{model_name}"
+    return {
+        **row,
+        "litellm_params": {**row["litellm_params"], "base_model": base},
+        "model_info": {**row["model_info"], "base_model": base},
+    }
+
+
 @dataclass
 class PoolSettings:
     title: str | None
