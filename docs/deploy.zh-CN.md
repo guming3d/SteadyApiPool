@@ -117,13 +117,13 @@ az ad app federated-credential create --id $APP_ID --parameters "{
 | Linux App Service 计划（B1）+ Web 应用（Python 3.12） | 仅 HTTPS、TLS 1.2，禁用 FTP/SCM 基本身份验证，系统分配托管标识。设置了 `GATEWAY_URL` 时，LiteLLM 网关的主密钥保存为应用设置 |
 | 用户分配托管标识 `id-pool-auth-*`（仅在启用委托的 Azure 访问时） | 作为 Easy Auth 的联合凭据，代替客户端密码。它没有任何 Azure 角色 |
 | App Service 身份验证（Easy Auth） | 除 `/health` 外的每个路径都需要 Entra 登录 |
-| APIM：API 管理服务 `apim-pool-*`（仅在未设置 `APIM_NAME` 时） | 默认为 `BasicV2`（`APIM_SKU`），带有供成员使用的系统分配托管标识，并标记 `managed-by: apim-backend-pool`。从创建起开始计费 |
+| APIM：API 管理服务 `apim-pool-*`（仅在未设置 `APIM_NAME` 时） | 默认为 `BasicV2`（`APIM_SKU`），带有供API节点使用的系统分配托管标识，并标记 `managed-by: apim-backend-pool`。从创建起开始计费 |
 | APIM：服务上的自定义角色 *APIM Backend Pool Manager* | 用于指标监控选项卡的 `Insights/metrics/read`、`backends/*`、`namedValues/*`、`apis/read,write,delete`（只在删除后端池时删除它自己创建的 API）、`apis/operations/write` 和 `apis/policies/read,write`，以及让设置检查应用自身访问权限的 `Authorization/permissions/read` |
 | LiteLLM：网关的容器应用及其 Application Insights 组件上的自定义角色 *AI Gateway Pool Manager*（仅容器应用上的网关） | `Microsoft.App/containerApps/read` 和 `listSecrets/action`（网关的 URL、标识和主密钥；之后每次后端池更改都通过 LiteLLM 的管理 API 进行），用于指标监控选项卡的 `Insights/components/read` 和 `Insights/logs/*/read`，以及让设置检查应用自身访问权限的 `Authorization/permissions/read`。它不能更改容器应用、数据库或其他任何内容 |
-| 每个发现订阅上的自定义角色 *APIM Backend Pool Deployment Reader* 或 *AI Gateway Pool Deployment Reader* | `CognitiveServices/accounts/read` 和 `accounts/deployments/read`，用于成员指标的 `Insights/metrics/read`，以及只读的 `Authorization/permissions`、`roleAssignments` 和 `roleDefinitions`，让设置可以检查网关在每个帐户上的角色。它没有 `listKeys`，也不能更改角色。用 Bicep 参数 `enableDeploymentDiscovery=false` 关闭，用 `discoverySubscriptionIds` 选择订阅（默认为网关所在订阅） |
+| 每个发现订阅上的自定义角色 *APIM Backend Pool Deployment Reader* 或 *AI Gateway Pool Deployment Reader* | `CognitiveServices/accounts/read` 和 `accounts/deployments/read`，用于API节点指标的 `Insights/metrics/read`，以及只读的 `Authorization/permissions`、`roleAssignments` 和 `roleDefinitions`，让设置可以检查网关在每个帐户上的角色。它没有 `listKeys`，也不能更改角色。用 Bicep 参数 `enableDeploymentDiscovery=false` 关闭，用 `discoverySubscriptionIds` 选择订阅（默认为网关所在订阅） |
 
-网关自身的标识需要每个成员帐户上的 *Cognitive Services OpenAI User*（或任何允许推理的角色）。设置向导会检查这一点，
-并在启用委托的 Azure 访问时授予。在 APIM 上，如果成员的机密引用 Key Vault，它的标识还需要该保管库上的
+网关自身的标识需要每个API节点帐户上的 *Cognitive Services OpenAI User*（或任何允许推理的角色）。设置向导会检查这一点，
+并在启用委托的 Azure 访问时授予。在 APIM 上，如果API节点的机密引用 Key Vault，它的标识还需要该保管库上的
 *Key Vault Secrets User* 角色。
 
 ### 配置
@@ -144,7 +144,7 @@ az ad app federated-credential create --id $APP_ID --parameters "{
 | `POOL_MANAGER_DELEGATED_ACCESS` | `false` | 由 `enableDelegatedAzureAccess` 设置：Easy Auth 提供用户的 ARM 令牌，让设置可以修复访问问题 |
 | `POOL_MANAGER_DISCOVERY_SUBSCRIPTIONS` | 网关所在订阅 | 扫描部署的订阅，以逗号分隔 |
 | `POOL_MANAGER_PROTECTED_PREFIXES` | 空 | 以只读方式显示的 ID 前缀，以逗号分隔，用于由其他工具管理的资源（例如 `finops-`） |
-| `POOL_MANAGER_ID_PREFIX` | `pool-` | 新后端池、成员和测试密钥的前缀 |
+| `POOL_MANAGER_ID_PREFIX` | `pool-` | 新后端池、API节点和测试密钥的前缀 |
 | `POOL_MANAGER_AUTH_MODE` | `easy_auth` | `disabled` 仅用于本地开发；在 App Service 上应用会拒绝以这种方式启动。`entra` 是[公开应用](#公开部署到-azure-容器应用)，仅支持 APIM |
 | `POOL_MANAGER_SYSTEM_TRUST` | `true` | 在本地使用操作系统证书存储验证 TLS（适用于 TLS 检查背后的公司 CA） |
 | `AZURE_CLIENT_ID` | — | 使用用户分配托管标识，而不是系统分配托管标识 |
@@ -220,7 +220,7 @@ azd provision && azd deploy
 之后登录页会提供**以访客身份浏览（只读）**。访客可以看到该服务以及其所在订阅中的 Foundry 部署，读取时使用应用的托管标识；
 它只在该订阅上获得内置的*读者*角色，不能做任何更改，也不能列出密钥和机密。后端还会拒绝访客的一切更改、订阅密钥、测试调用、
 设置修复以及切换服务。所有访客共用一个缓存会话，并有频率限制（每个客户端地址每分钟 300 个请求，所有访客合计 3,000 个）。
-该服务和订阅中的内容（例如后端池成员的 URL 和 API 策略）对任何拿到网址的人可见，所以请使用演示用的服务。
+该服务和订阅中的内容（例如后端池API节点的 URL 和 API 策略）对任何拿到网址的人可见，所以请使用演示用的服务。
 
 **限制。** 仅支持 Azure 公有云。一次登录对应一个租户；选择另一个租户中的服务时会登录到该租户。部署发现扫描所选
 服务所在的订阅。网关使用自定义域的服务可以管理，但不能在应用中发送测试调用。

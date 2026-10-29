@@ -48,13 +48,13 @@ LiteLLM 代理，点击**连接已有网关**。
 ## 5. 发布后端池
 
 后端池打开时所有内容都已填好。**故障转移**把所有流量发给主部署，在它失败时切换到备用部署；**轮询**和**加权**
-则把流量分摊到各个成员。
+则把流量分摊到各个API节点。
 
-![添加后端池，已预填故障转移模式下的三个成员和冷却设置](images/onboarding-4-create-pool.png)
+![添加后端池，已预填故障转移模式下的三个API节点和冷却设置](images/onboarding-4-create-pool.png)
 
 点击**发布到 APIM**（或**发布到网关**），查看应用将写入的全部内容，然后确认。
 
-![确认发布：新的后端池及其三个成员](images/onboarding-5-publish.png)
+![确认发布：新的后端池及其三个API节点](images/onboarding-5-publish.png)
 
 ## 6. 允许网关调用你的模型，并获取密钥
 
@@ -65,16 +65,16 @@ LiteLLM 代理，点击**连接已有网关**。
 
 ## 7. 发送测试请求
 
-点击**发送请求**，得到模型的回答以及处理请求的成员。页面下方的**发送请求**部分提供 curl、Python、JavaScript 和
+点击**发送请求**，得到模型的回答以及处理请求的API节点。页面下方的**发送请求**部分提供 curl、Python、JavaScript 和
 PowerShell 的客户端代码。
 
-![在这里测试：200，调用成功，由后端池的主成员 pool-aoai-westus3-gpt-5-6-luna-dz 响应](images/onboarding-7-test-call.png)
+![在这里测试：200，调用成功，由后端池的主API节点 pool-aoai-westus3-gpt-5-6-luna-dz 响应](images/onboarding-7-test-call.png)
 
 ## 8. 观察运行情况
 
-**指标监控**选项卡显示请求数、可用性、429 和延迟，以及每个成员承担的流量份额。**路由预览**可以模拟成员故障。
+**指标监控**选项卡显示请求数、可用性、429 和延迟，以及每个API节点承担的流量份额。**路由预览**可以模拟API节点故障。
 
-![指标监控选项卡：请求数、可用性、429、延迟和每个成员的流量份额](images/onboarding-8-metrics.png)
+![指标监控选项卡：请求数、可用性、429、延迟和每个API节点的流量份额](images/onboarding-8-metrics.png)
 
 ## 如果遇到问题
 
