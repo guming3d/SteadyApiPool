@@ -22,6 +22,7 @@ from .apim.metrics import ApimMonitor
 from .apim.service import ApimService
 from .apim.target import ApimTargets
 from .arm import ArmClient
+from .benchmark import BenchmarkRunner
 from .config import Settings, get_settings
 from .credentials import LocalCredential
 from .discovery import DeploymentDiscovery, MemberStore
@@ -29,7 +30,6 @@ from .entra import EntraUser, OboExchanger, TokenVerifier
 from .errors import ServiceError
 from .litellm.access import LiteLLMAccessChecker
 from .litellm.api_test import LiteLLMTester
-from .litellm.benchmark import BenchmarkRunner
 from .litellm.cleanup import GatewayCleanup
 from .litellm.cost import LiteLLMCost
 from .litellm.gateway import GatewayConnection
@@ -66,6 +66,12 @@ def _secrets() -> SecretStore:
 @lru_cache
 def _targets() -> TargetChooser:
     return TargetChooser(get_settings(), get_local_credential(), on_change=reset_target)
+
+
+@lru_cache
+def _benchmarks() -> BenchmarkRunner:
+    """Load tests; not bound to a gateway (each run gets its URL), so a switch keeps them."""
+    return BenchmarkRunner()
 
 
 # -- APIM ------------------------------------------------------------------------------------
@@ -119,12 +125,6 @@ def _litellm_monitor() -> LiteLLMMonitor:
 @lru_cache
 def _litellm_tester() -> LiteLLMTester:
     return LiteLLMTester(get_settings(), _litellm_service())
-
-
-@lru_cache
-def _benchmarks() -> BenchmarkRunner:
-    """Load tests; not bound to a gateway (each run gets its URL), so a switch keeps them."""
-    return BenchmarkRunner()
 
 
 @lru_cache
@@ -325,6 +325,10 @@ def get_targets(session: Session) -> TargetChooser:
     return session.targets if session else _targets()
 
 
+def get_benchmarks(session: Session) -> BenchmarkRunner:
+    return session.benchmarks if session else _benchmarks()
+
+
 # APIM.
 
 
@@ -365,10 +369,6 @@ def get_litellm_tester() -> LiteLLMTester:
 
 def get_litellm_cost() -> LiteLLMCost:
     return _litellm_cost()
-
-
-def get_benchmarks() -> BenchmarkRunner:
-    return _benchmarks()
 
 
 def get_litellm_targets() -> LiteLLMTargets:

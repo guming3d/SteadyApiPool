@@ -6,9 +6,11 @@ spaces out the requests they start. Streaming requests measure the time to the f
 Every request records a ``Sample``; ``summarize`` turns them into throughput, latency and
 time-to-first-token percentiles, errors and 429s, failovers, and which members answered.
 
-The same engine runs from the pool's Test call tab (``BenchmarkRunner``, one run at a time, in
-memory) and from the terminal (scripts/benchmark.py). The virtual key is only sent to the
-gateway; response bodies are read for their token usage and dropped.
+Both gateways use it; each says where and how to send the requests (a ``BenchmarkTarget``: the
+URL, the key's header, the response header naming the member that answered). It runs from the
+pool's call guide (``BenchmarkRunner``, one run at a time, in memory) and from the terminal
+(scripts/benchmark.py). The key is only sent to the gateway; response bodies are read for their
+token usage and dropped.
 """
 
 from __future__ import annotations
@@ -22,14 +24,14 @@ import secrets
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
 import httpx
 
-from ..errors import ServiceError
+from .errors import ServiceError
 from .models import (
     BenchmarkMember,
     BenchmarkPoint,
@@ -56,6 +58,26 @@ _FILLER = (
 )
 
 
+@dataclass(frozen=True)
+class BenchmarkTarget:
+    """Where and how a run sends its requests; each product fills it in."""
+
+    # The full chat completions URL.
+    url: str
+    # The model name in the body.
+    model: str
+    # They hold the key; never logged.
+    headers: Mapping[str, str]
+    params: Mapping[str, str] = field(default_factory=dict)
+    # The response header naming the member that answered, when the gateway passes one on.
+    member_header: str | None = None
+    # The response header counting failed attempts on other members before the answer.
+    fallbacks_header: str | None = None
+    # LiteLLM turns max_tokens into what each model takes; APIM forwards the body as it is,
+    # and newer Azure OpenAI models refuse max_tokens.
+    tokens_field: str = "max_tokens"
+
+
 @dataclass
 class Sample:
     """One request: when it started (seconds since the run began), how it went."""
@@ -79,11 +101,13 @@ def prompt(size: PromptSize) -> str:
     return "Summarize in two sentences:\n" + " ".join(filler)
 
 
-def request_body(spec: BenchmarkSpec, model: str) -> dict[str, Any]:
+def request_body(
+    spec: BenchmarkSpec, model: str, tokens_field: str = "max_tokens"
+) -> dict[str, Any]:
     body: dict[str, Any] = {
         "model": model,
         "messages": [{"role": "user", "content": prompt(spec.prompt_size)}],
-        "max_tokens": spec.max_tokens,
+        tokens_field: spec.max_tokens,
         "stream": spec.stream,
     }
     if spec.stream:
@@ -99,8 +123,7 @@ def _usage(sample: Sample, usage: Any) -> None:
 
 async def _call(
     client: httpx.AsyncClient,
-    url: str,
-    headers: dict[str, str],
+    target: BenchmarkTarget,
     body: dict[str, Any],
     started: float,
     clock: Callable[[], float],
@@ -108,13 +131,17 @@ async def _call(
     begin = clock()
     sample = Sample(start=begin - started, latency_ms=0.0)
     try:
-        async with client.stream("POST", url, json=body, headers=headers) as response:
+        async with client.stream(
+            "POST", target.url, params=dict(target.params), json=body, headers=target.headers
+        ) as response:
             sample.status = response.status_code
-            sample.member = response.headers.get("x-litellm-model-id")
-            try:
-                sample.fallbacks = int(response.headers.get("x-litellm-attempted-fallbacks") or 0)
-            except ValueError:
-                sample.fallbacks = 0
+            if target.member_header:
+                sample.member = response.headers.get(target.member_header)
+            if target.fallbacks_header:
+                try:
+                    sample.fallbacks = int(response.headers.get(target.fallbacks_header) or 0)
+                except ValueError:
+                    sample.fallbacks = 0
             if response.status_code == 200 and body.get("stream"):
                 async for line in response.aiter_lines():
                     if not line.startswith("data:"):
@@ -146,9 +173,7 @@ async def _call(
 
 async def run_benchmark(
     spec: BenchmarkSpec,
-    url: str,
-    key: str,
-    model: str,
+    target: BenchmarkTarget,
     samples: list[Sample],
     *,
     transport: httpx.AsyncBaseTransport | None = None,
@@ -156,13 +181,12 @@ async def run_benchmark(
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     should_stop: Callable[[], bool] = lambda: False,
 ) -> float:
-    """Runs the load against ``url`` (the full chat/completions URL), appending a sample per
-    request to ``samples`` as it goes (so a stopped or interrupted run keeps what it did).
-    Returns how long it ran, in seconds."""
+    """Runs the load against the target, appending a sample per request to ``samples`` as it
+    goes (so a stopped or interrupted run keeps what it did). Returns how long it ran, in
+    seconds."""
     started = clock()
     deadline = started + spec.duration_seconds
-    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-    body = request_body(spec, model)
+    body = request_body(spec, target.model, target.tokens_field)
     issued = 0
     lock = asyncio.Lock()
     next_slot = started
@@ -194,7 +218,7 @@ async def run_benchmark(
         if spec.ramp_up_seconds and spec.users > 1:
             await nap(spec.ramp_up_seconds * index / spec.users)
         while await turn():
-            samples.append(await _call(client, url, headers, body, started, clock))
+            samples.append(await _call(client, target, body, started, clock))
 
     limits = httpx.Limits(max_connections=spec.users, max_keepalive_connections=spec.users)
     async with httpx.AsyncClient(transport=transport, timeout=_TIMEOUT, limits=limits) as client:
@@ -316,7 +340,9 @@ def verdict(summary: BenchmarkSummary) -> str:
     else:
         text += "; every request succeeded"
     if summary.failovers:
-        text += f". LiteLLM moved {summary.failovers} requests to another member after a failure"
+        text += (
+            f". The gateway moved {summary.failovers} requests to another member after a failure"
+        )
     return text + "."
 
 
@@ -363,10 +389,19 @@ def report(summary: BenchmarkSummary, *, model: str, spec: BenchmarkSpec) -> str
 # -- runs from the web tab --------------------------------------------------------------------
 
 
+def _scope(pool_id: str | None, api_id: str | None) -> str:
+    """What the routes find a run by: the API on APIM (a key opens an API), else the pool."""
+    return (
+        f"api:{api_id.casefold()}" if api_id is not None else f"pool:{(pool_id or '').casefold()}"
+    )
+
+
 @dataclass
 class _Run:
     id: str
+    scope: str
     pool_id: str
+    api_id: str | None
     spec: BenchmarkSpec
     model: str
     started_at: str
@@ -388,8 +423,15 @@ class BenchmarkRunner:
         self._runs: OrderedDict[str, _Run] = OrderedDict()
 
     def start(
-        self, pool_id: str, spec: BenchmarkSpec, url: str, key: str, model: str, actor: str
+        self,
+        pool_id: str,
+        spec: BenchmarkSpec,
+        target: BenchmarkTarget,
+        actor: str,
+        *,
+        api_id: str | None = None,
     ) -> BenchmarkRun:
+        """Starts a run of the pool, through ``api_id`` on APIM."""
         with self._lock:
             busy = next((run for run in self._runs.values() if run.state == "running"), None)
             if busy is not None:
@@ -398,9 +440,11 @@ class BenchmarkRunner:
                 )
             run = _Run(
                 id=secrets.token_hex(6),
+                scope=_scope(pool_id, api_id),
                 pool_id=pool_id,
+                api_id=api_id,
                 spec=spec,
-                model=model,
+                model=target.model,
                 started_at=datetime.now(UTC).isoformat(timespec="seconds"),
                 started=time.monotonic(),
             )
@@ -408,23 +452,22 @@ class BenchmarkRunner:
             while len(self._runs) > _KEPT_RUNS:
                 self._runs.popitem(last=False)
         logger.info(
-            "%s started a load test of %s: %d users, %d s",
+            "%s started a load test of %s%s: %d users, %d s",
             actor,
             pool_id,
+            f" through API {api_id}" if api_id else "",
             spec.users,
             spec.duration_seconds,
         )
-        threading.Thread(target=self._run, args=(run, url, key), daemon=True).start()
+        threading.Thread(target=self._run, args=(run, target), daemon=True).start()
         return self._view(run)
 
-    def _run(self, run: _Run, url: str, key: str) -> None:
+    def _run(self, run: _Run, target: BenchmarkTarget) -> None:
         try:
             run.elapsed = asyncio.run(
                 run_benchmark(
                     run.spec,
-                    url,
-                    key,
-                    run.model,
+                    target,
                     run.samples,
                     transport=self._transport,
                     should_stop=lambda: run.stop,
@@ -437,18 +480,19 @@ class BenchmarkRunner:
             run.error = str(error) or type(error).__name__
             run.state = "failed"
 
-    def _find(self, pool_id: str, run_id: str) -> _Run:
+    def _find(self, pool_id: str | None, run_id: str, api_id: str | None) -> _Run:
         with self._lock:
             run = self._runs.get(run_id)
-        if run is None or run.pool_id.casefold() != pool_id.casefold():
+        if run is None or run.scope != _scope(pool_id, api_id):
             raise ServiceError(404, "No such load test (runs are kept in memory only)")
         return run
 
-    def get(self, pool_id: str, run_id: str) -> BenchmarkRun:
-        return self._view(self._find(pool_id, run_id))
+    def get(self, pool_id: str | None, run_id: str, *, api_id: str | None = None) -> BenchmarkRun:
+        """A run of the pool, or of the API when ``api_id`` is given (``pool_id`` unused)."""
+        return self._view(self._find(pool_id, run_id, api_id))
 
-    def stop(self, pool_id: str, run_id: str) -> BenchmarkRun:
-        run = self._find(pool_id, run_id)
+    def stop(self, pool_id: str | None, run_id: str, *, api_id: str | None = None) -> BenchmarkRun:
+        run = self._find(pool_id, run_id, api_id)
         run.stop = True
         return self._view(run)
 
@@ -463,6 +507,7 @@ class BenchmarkRunner:
         return BenchmarkRun(
             id=run.id,
             pool_id=run.pool_id,
+            api_id=run.api_id,
             state=run.state,  # type: ignore[arg-type]
             spec=run.spec,
             model=run.model,

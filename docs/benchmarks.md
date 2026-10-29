@@ -8,7 +8,7 @@ How much traffic each gateway the app sets up carries, how much latency it adds,
 see when a deployment fails, measured on Azure in October 2026. Use them as a reference for
 choosing and sizing a gateway, not as a guarantee: your prompts, models, regions and network
 differ, and the [sizer](getting-started.md#sizing-the-gateway) and a
-[load test of your own pool](getting-started.md#load-test-the-pool-optional-litellm) are the way
+[load test of your own pool](getting-started.md#load-test-the-pool-optional) are the way
 to check your case. How it was measured, and how to measure it again, is in
 [perf/README.md](../perf/README.md); every step of every run is in
 [perf/results-2026-10/report.md](../perf/results-2026-10/report.md).

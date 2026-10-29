@@ -252,18 +252,26 @@ response = client.chat.completions.create(
 print(response.choices[0].message.content)
 ```
 
-## Load-test the pool (optional, LiteLLM)
+## Load-test the pool (optional)
 
 **Load test**, under Try it here, simulates several users calling the pool at once: each sends a
 request, waits for the answer, then sends the next. Pick **Smoke** (2 users, 30 s), **Typical**
 (10 users, 2 min) or **Stress** (30 users, 3 min), or set the users, duration, ramp-up, a rate cap,
-the prompt size, `max_tokens` and streaming under **Advanced settings**. The page estimates the
+the prompt size, the output tokens and streaming under **Advanced settings**. The page estimates the
 requests and tokens first; every request is billed by Foundry like real traffic and counts against
 the deployments' rate limits. While it runs you see throughput, the success rate, latency p50/p95/
 p99, time to first token, 429s and failovers, a chart per second and which members answered; at
 the end a plain verdict (for example that the pool needs more capacity because every member
 returned 429 at once), **Export JSON / CSV** and the same test as a terminal command. A run is
 limited to 50 users, 10 minutes and 5,000 requests, one at a time, and only owners can start one.
+
+On LiteLLM it uses the virtual key from step 1 and sends `max_tokens`; the members are the ones
+LiteLLM names in `x-litellm-model-id`, and failovers come from `x-litellm-attempted-fallbacks`. On
+APIM it calls the API chosen above with its subscription key and `api-version`, and sends
+`max_completion_tokens`, because APIM forwards the body as it is and newer models refuse
+`max_tokens`. APIM doesn't say which member answered, so the table shows the regions that answered
+(Azure OpenAI's `x-ms-region`: members in one region count together), and its retries after a 429
+don't show as failovers.
 
 From a terminal, against this or any OpenAI-compatible endpoint (the key stays in an environment
 variable, out of the shell history):
@@ -273,6 +281,11 @@ $env:LITELLM_KEY = "<your-virtual-key>"
 backend\.venv\Scripts\python scripts\benchmark.py --url https://<your-gateway>/v1 --model pool-gpt-5-6-luna --preset typical
 #   --users 20 --duration 120 --ramp-up 10 --rate 15 --prompt long --max-tokens 256 --no-stream
 #   --json result.json --csv requests.csv        (macOS/Linux: backend/.venv/bin/python, export LITELLM_KEY=...)
+
+# APIM: the API's URL, the key in Ocp-Apim-Subscription-Key, api-version 2025-04-01-preview
+$env:APIM_KEY = "<your-subscription-key>"
+backend\.venv\Scripts\python scripts\benchmark.py --gateway apim --url https://<your-apim>.azure-api.net/<api path> --model gpt-5.6-luna
+#   --api-version <version> --key-header <header>   (when the API uses others)
 ```
 
 It prints a status line every second and the report at the end; Ctrl+C stops it (requests already

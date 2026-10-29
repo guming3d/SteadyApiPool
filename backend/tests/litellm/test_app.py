@@ -25,11 +25,11 @@ from pool_manager.app import (
     get_targets,
 )
 from pool_manager.arm import ArmClient
+from pool_manager.benchmark import BenchmarkRunner
 from pool_manager.config import Settings, get_settings
 from pool_manager.discovery import DeploymentDiscovery
 from pool_manager.litellm.access import LiteLLMAccessChecker
 from pool_manager.litellm.api_test import LiteLLMTester
-from pool_manager.litellm.benchmark import BenchmarkRunner
 from pool_manager.litellm.cleanup import GatewayCleanup
 from pool_manager.litellm.cost import LiteLLMCost, PlanPrices
 from pool_manager.litellm.gateway import GatewayConnection

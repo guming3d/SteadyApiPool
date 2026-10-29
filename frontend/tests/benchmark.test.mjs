@@ -3,7 +3,7 @@ import test from "node:test"
 
 import {
   chartPoints, cliCommand, DEFAULT_SPEC, estimate, invalidFields, presetOf, presetSpec, runJson, timelineCsv, verdict,
-} from "../../src/litellm/benchmark.ts"
+} from "../src/benchmark.ts"
 
 const summary = (overrides = {}) => ({
   elapsed_seconds: 30, requests: 100, successes: 100, throttled: 0, errors: {}, requests_per_second: 3.33,
@@ -85,5 +85,20 @@ test("the terminal command", () => {
   assert.equal(
     cliCommand({ url, model: "gpt-4o", spec, windows: true }).split("\n")[1],
     "backend\\.venv\\Scripts\\python scripts\\benchmark.py --url https://gw.example.com/v1 --model gpt-4o --users 10 --duration 120 --ramp-up 10 --rate 5 --prompt long --max-tokens 64 --no-stream",
+  )
+})
+
+test("the terminal command for an APIM API", () => {
+  const url = "https://apim.azure-api.net/gpt-4o"
+  const apim = { apiVersion: "2025-04-01-preview", keyHeader: "Ocp-Apim-Subscription-Key" }
+  assert.equal(
+    cliCommand({ url, model: "gpt-4o", spec: DEFAULT_SPEC, windows: false, apim }),
+    "export APIM_KEY='<your-subscription-key>'\nbackend/.venv/bin/python scripts/benchmark.py --gateway apim --url https://apim.azure-api.net/gpt-4o --model gpt-4o --users 2 --duration 30",
+  )
+  // Only what differs from the script's defaults.
+  const other = { apiVersion: "2024-10-21", keyHeader: "api-key" }
+  assert.equal(
+    cliCommand({ url, model: "gpt-4o", spec: DEFAULT_SPEC, windows: true, apim: other }),
+    '$env:APIM_KEY = "<your-subscription-key>"\nbackend\\.venv\\Scripts\\python scripts\\benchmark.py --gateway apim --url https://apim.azure-api.net/gpt-4o --model gpt-4o --api-version 2024-10-21 --key-header api-key --users 2 --duration 30',
   )
 })

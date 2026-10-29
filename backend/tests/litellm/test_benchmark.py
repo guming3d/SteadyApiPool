@@ -13,8 +13,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from pool_manager.app import app
-from pool_manager.litellm.benchmark import (
+from pool_manager.benchmark import (
     BenchmarkRunner,
+    BenchmarkTarget,
     Sample,
     prompt,
     report,
@@ -22,7 +23,7 @@ from pool_manager.litellm.benchmark import (
     summarize,
     verdict,
 )
-from pool_manager.litellm.models import BenchmarkSpec
+from pool_manager.models import BenchmarkSpec
 from tests.fake_azure import FakeAzure
 from tests.litellm.fake_litellm import URL, FakeLiteLLM
 from tests.litellm.test_app import WRITE, _client, _settings, create_pool
@@ -35,10 +36,20 @@ def _key(litellm: FakeLiteLLM, models: list[str] | None = None) -> str:
     return str(created.json()["key"])
 
 
+def _target(key: str) -> BenchmarkTarget:
+    return BenchmarkTarget(
+        url=CHAT,
+        model="gpt6",
+        headers={"Authorization": f"Bearer {key}"},
+        member_header="x-litellm-model-id",
+        fallbacks_header="x-litellm-attempted-fallbacks",
+    )
+
+
 def _run(spec: BenchmarkSpec, litellm: FakeLiteLLM, key: str, **options: Any) -> list[Sample]:
     samples: list[Sample] = []
     asyncio.run(
-        run_benchmark(spec, CHAT, key, "gpt6", samples, transport=litellm.transport(), **options)
+        run_benchmark(spec, _target(key), samples, transport=litellm.transport(), **options)
     )
     return samples
 
@@ -221,9 +232,7 @@ def test_should_stop_ends_the_run(litellm: FakeLiteLLM) -> None:
     asyncio.run(
         run_benchmark(
             BenchmarkSpec(users=2, duration_seconds=60),
-            CHAT,
-            _key(litellm),
-            "gpt6",
+            _target(_key(litellm)),
             samples,
             transport=litellm.transport(),
             should_stop=lambda: len(samples) >= 5,
@@ -240,9 +249,7 @@ def test_a_stop_does_not_wait_for_users_ramping_up(litellm: FakeLiteLLM) -> None
     asyncio.run(
         run_benchmark(
             BenchmarkSpec(users=10, duration_seconds=60, ramp_up_seconds=60),
-            CHAT,
-            _key(litellm),
-            "gpt6",
+            _target(_key(litellm)),
             samples,
             transport=litellm.transport(),
             should_stop=lambda: len(samples) >= 3,

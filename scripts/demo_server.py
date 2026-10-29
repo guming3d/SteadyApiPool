@@ -68,11 +68,11 @@ from pool_manager.app import (  # noqa: E402
     get_targets,
 )
 from pool_manager.arm import ArmClient  # noqa: E402
+from pool_manager.benchmark import BenchmarkRunner  # noqa: E402
 from pool_manager.config import Settings  # noqa: E402
 from pool_manager.discovery import DeploymentDiscovery, MemberStore  # noqa: E402
 from pool_manager.litellm.access import LiteLLMAccessChecker  # noqa: E402
 from pool_manager.litellm.api_test import LiteLLMTester  # noqa: E402
-from pool_manager.litellm.benchmark import BenchmarkRunner  # noqa: E402
 from pool_manager.litellm.cost import LiteLLMCost, PlanPrices  # noqa: E402
 from pool_manager.litellm.gateway import GatewayConnection  # noqa: E402
 from pool_manager.litellm.metrics import LiteLLMMonitor  # noqa: E402
@@ -574,16 +574,34 @@ def _wire(
 
 
 class _SlowGateway(httpx.AsyncBaseTransport):
-    """The fake gateway at a model's pace, so a load test in the demo looks like one: answers
-    take 0.4 to 1.6 s, and now and then the first member is busy and LiteLLM fails over."""
+    """The fake gateways at a model's pace, so a load test in the demo looks like one: answers
+    take 0.4 to 1.6 s, and now and then the first member is busy and LiteLLM fails over. The
+    APIM service's gateway answers from the pool's regions, mostly the primary's."""
 
     def __init__(self, litellm: FakeLiteLLM) -> None:
         self._litellm = litellm
         self._inner = litellm.transport()
         self._random = random.Random(7)
 
+    def _apim(self, request: httpx.Request) -> httpx.Response:
+        roll = self._random.random()
+        if roll < 0.02:
+            return httpx.Response(429, json={"error": {"code": "429", "message": "Rate limit"}})
+        region = "East US 2" if roll < 0.75 else "Sweden Central" if roll < 0.95 else "West US 3"
+        usage = {"prompt_tokens": 64, "completion_tokens": self._random.randint(40, 128)}
+        headers = {"x-ms-region": region, "apim-request-id": f"demo-{roll:.6f}"}
+        if not json.loads(request.content or b"{}").get("stream"):
+            return httpx.Response(200, json={"choices": [], "usage": usage}, headers=headers)
+        chunks = [{"choices": [{"delta": {"content": "Hello"}}]}, {"choices": [], "usage": usage}]
+        text = "".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks) + "data: [DONE]\n\n"
+        return httpx.Response(
+            200, text=text, headers={**headers, "Content-Type": "text/event-stream"}
+        )
+
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         await asyncio.sleep(self._random.uniform(0.4, 1.6))
+        if request.url.host.endswith(".azure-api.net"):
+            return self._apim(request)
         request.headers["x-demo-load-test"] = "1"
         response = await self._inner.handle_async_request(request)
         group = response.headers.get("x-litellm-model-group")

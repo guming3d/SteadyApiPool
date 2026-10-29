@@ -41,6 +41,7 @@ from .apim.models import APIM_NAME_PATTERN
 from .apim.service import ApimService
 from .apim.target import ApimTargets
 from .arm import ArmClient, TokenCredential
+from .benchmark import BenchmarkRunner
 from .config import Settings
 from .discovery import DeploymentDiscovery
 from .entra import EntraUser, Exchange, UserCredential
@@ -93,9 +94,12 @@ class UserSession:
     access: ApimAccessChecker
     targets: TargetChooser
     apim_targets: ApimTargets
+    # This user's load tests on this service; they stop when the session ends.
+    benchmarks: BenchmarkRunner
     last_used: float = 0.0
 
     def close(self) -> None:
+        self.benchmarks.close()
         self.arm.close()
         self.tester.close()
         self.cost.close()
@@ -117,8 +121,10 @@ class Sessions:
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
         guest_credential: TokenCredential | None = None,
+        benchmark_transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._settings = settings
+        self._benchmark_transport = benchmark_transport
         self._exchange = exchange
         self._guest_credential = guest_credential
         self._transport = transport
@@ -254,4 +260,5 @@ class Sessions:
             access=ApimAccessChecker(settings, arm, service, discovered_accounts),
             targets=targets,
             apim_targets=ApimTargets(targets),
+            benchmarks=BenchmarkRunner(self._benchmark_transport),
         )

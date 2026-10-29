@@ -1,6 +1,6 @@
 // Mirrors backend/pool_manager/litellm/models.py.
 
-import type { CostNote, GatewayKind, MonthToDate, PoolMember, ResourceGroupView } from "../types"
+import type { BenchmarkSpec, CostNote, GatewayKind, MonthToDate, PoolMember, ResourceGroupView } from "../types"
 
 /** LiteLLM's cooldown for each member: a member that fails more than allowed_fails times in a
  *  minute sits out cooldown_seconds, and its share goes to the others (or the next priority). */
@@ -373,74 +373,9 @@ export type ApiTestRequest = {
   body: Record<string, unknown>
 }
 
-export type PromptSize = "short" | "medium" | "long"
-
-export type BenchmarkSpec = {
-  users: number
-  duration_seconds: number
-  max_requests: number
-  ramp_up_seconds: number
-  rate: number | null
-  prompt_size: PromptSize
-  max_tokens: number
-  stream: boolean
-  model: string | null
-}
-
 export type BenchmarkStart = {
   spec: BenchmarkSpec
   key: string
-}
-
-export type BenchmarkMember = {
-  member: string | null
-  requests: number
-  share: number
-  latency_p50_ms: number | null
-  errors: number
-}
-
-export type BenchmarkPoint = {
-  second: number
-  requests: number
-  errors: number
-  throttled: number
-  latency_p50_ms: number | null
-  users: number
-}
-
-export type BenchmarkSummary = {
-  elapsed_seconds: number
-  requests: number
-  successes: number
-  throttled: number
-  errors: Record<string, number>
-  requests_per_second: number
-  success_rate: number | null
-  latency_p50_ms: number | null
-  latency_p90_ms: number | null
-  latency_p95_ms: number | null
-  latency_p99_ms: number | null
-  latency_max_ms: number | null
-  ttft_p50_ms: number | null
-  ttft_p95_ms: number | null
-  prompt_tokens: number
-  completion_tokens: number
-  output_tokens_per_second: number
-  failovers: number
-  members: BenchmarkMember[]
-  timeline: BenchmarkPoint[]
-}
-
-export type BenchmarkRun = {
-  id: string
-  pool_id: string
-  state: "running" | "done" | "stopped" | "failed"
-  spec: BenchmarkSpec
-  model: string
-  started_at: string
-  error: string | null
-  summary: BenchmarkSummary
 }
 
 // -- pool dashboard (mirrors pool_manager/models.py) --

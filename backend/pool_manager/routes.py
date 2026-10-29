@@ -14,10 +14,12 @@ from fastapi import APIRouter, Depends, Query, Request, Response
 
 from .access import AccessChecker, user_token
 from .auth import acting_user, caller_name, current_principal, is_owner, owner, writer
+from .benchmark import BenchmarkRunner
 from .config import Settings, get_settings
 from .deps import (
     User,
     get_access,
+    get_benchmarks,
     get_discovery,
     get_request_settings,
     get_sessions,
@@ -56,6 +58,8 @@ from .target import TargetChooser
 Discovery = Annotated[DeploymentDiscovery, Depends(get_discovery)]
 Access = Annotated[AccessChecker, Depends(get_access)]
 Targets = Annotated[TargetChooser, Depends(get_targets)]
+# Load tests, one at a time (per session in the public app).
+Benchmarks = Annotated[BenchmarkRunner, Depends(get_benchmarks)]
 # In the public app, with the gateway the caller's browser chose.
 SettingsDep = Annotated[Settings, Depends(get_request_settings)]
 AppSettings = Annotated[Settings, Depends(get_settings)]

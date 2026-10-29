@@ -2,8 +2,8 @@
 import { queryOptions } from "@tanstack/react-query"
 
 import { api as sharedApi, id, json, keys as sharedKeys, queries as sharedQueries, request, scope } from "../api"
-import type { ApiTestResult, ModelCheck, SetupCheck, TargetView } from "../types"
-import type { ApiBindingWrite, ApiTestRequest, ApiView, ApimCreate, ApimCreateOptions, ApimServiceView, BackendView, Capabilities, CleanupConfirm, DeletedServiceView, MemberBackendWrite, PolicyPreview, PolicyView, PoolApiCreate, PoolView, PoolWrite, RemovalConfirm, RemovalPlan, RemovalResult, ServiceCost, ServiceDeleteCheck, SubscriptionKeyView, TargetSelect } from "./types"
+import type { ApiTestResult, BenchmarkRun, ModelCheck, SetupCheck, TargetView } from "../types"
+import type { ApiBindingWrite, ApiTestRequest, ApiView, BenchmarkStart, ApimCreate, ApimCreateOptions, ApimServiceView, BackendView, Capabilities, CleanupConfirm, DeletedServiceView, MemberBackendWrite, PolicyPreview, PolicyView, PoolApiCreate, PoolView, PoolWrite, RemovalConfirm, RemovalPlan, RemovalResult, ServiceCost, ServiceDeleteCheck, SubscriptionKeyView, TargetSelect } from "./types"
 
 const withEtag = (path: string, etag?: string | null) =>
   etag ? `${path}?etag=${encodeURIComponent(etag)}` : path
@@ -71,6 +71,13 @@ export const api = {
   // The backend sends the request: browsers can't call the APIM gateway (no CORS).
   testApi: (apiId: string, body: ApiTestRequest) =>
     request<ApiTestResult>(`/api/apim/apis/${id(apiId)}/test`, json("POST", body)),
+  // A load test through the API, run by the backend.
+  startBenchmark: (apiId: string, body: BenchmarkStart) =>
+    request<BenchmarkRun>(`/api/apim/apis/${id(apiId)}/benchmarks`, json("POST", body)),
+  benchmark: (apiId: string, runId: string) =>
+    request<BenchmarkRun>(`/api/apim/apis/${id(apiId)}/benchmarks/${id(runId)}`),
+  stopBenchmark: (apiId: string, runId: string) =>
+    request<BenchmarkRun>(`/api/apim/apis/${id(apiId)}/benchmarks/${id(runId)}/stop`, { method: "POST" }),
 }
 
 export const keys = {
@@ -87,6 +94,7 @@ export const keys = {
   apis: ["apim", "apis"] as const,
   policy: (apiId: string) => ["apim", "apis", apiId, "policy"] as const,
   apiKeys: (apiId: string) => ["apim", "apis", apiId, "keys"] as const,
+  benchmark: (apiId: string, runId: string) => ["apim", "benchmark", apiId, runId] as const,
   services: (tenantId: string | null, subscriptionId: string) => ["apim", "target", "services", tenantId, subscriptionId] as const,
   createOptions: (tenantId: string | null, subscriptionId: string) => ["apim", "target", "create-options", tenantId, subscriptionId] as const,
   deleted: (tenantId: string | null, subscriptionId: string) => ["apim", "target", "deleted", tenantId, subscriptionId] as const,

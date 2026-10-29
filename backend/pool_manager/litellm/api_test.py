@@ -19,6 +19,7 @@ from typing import Any
 
 import httpx
 
+from ..benchmark import BenchmarkTarget
 from ..config import Settings
 from ..errors import ServiceError
 from ..models import ApiTestResult
@@ -147,6 +148,18 @@ class LiteLLMTester:
                 400, f"model must be one of the pool's names: {', '.join(endpoint.model_names)}"
             )
         return endpoint.base_url, model
+
+    def benchmark_target(self, pool_id: str, model: str | None, key: str) -> BenchmarkTarget:
+        """Where a load test of the pool sends its requests, and how LiteLLM says which member
+        answered and how often it failed over."""
+        base_url, name = self.target(pool_id, model)
+        return BenchmarkTarget(
+            url=f"{base_url}/chat/completions",
+            model=name,
+            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+            member_header="x-litellm-model-id",
+            fallbacks_header="x-litellm-attempted-fallbacks",
+        )
 
     def call(self, pool_id: str, request: ApiTestRequest, actor: str) -> ApiTestResult:
         body = dict(request.body)

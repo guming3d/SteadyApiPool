@@ -1,6 +1,6 @@
 // "How to call this pool": what a client needs to call the APIM API bound to the pool, with
 // code generated for that API, and the setup that otherwise makes the first call fail.
-import { Check, CircleAlert, Copy, Terminal } from "lucide-react"
+import { CircleAlert, Terminal } from "lucide-react"
 import { useState } from "react"
 
 import {
@@ -13,8 +13,13 @@ import {
 import { fill, useI18n } from "../i18n"
 import type { ApiView, Capabilities } from "./types"
 import { endpointUrl } from "./api-bindings"
+import { api as apimApi, keys } from "./api"
 import { KeyStep, TryIt } from "./api-tester"
+import { LoadTest } from "../components/benchmark-panel"
 import { FoundryAccessNotice, useOpenSetup } from "../components/setup"
+import { CodeBlock, CopyButton } from "../components/ui"
+
+export { CodeBlock, CopyButton }
 
 const LANGUAGE_LABEL: Record<SnippetLanguage, string> = {
   curl: "curl",
@@ -23,32 +28,13 @@ const LANGUAGE_LABEL: Record<SnippetLanguage, string> = {
   powershell: "PowerShell",
 }
 
-export function CopyButton({ text, label }: { text: string; label: string }) {
-  const { t } = useI18n("apim")
-  const [copied, setCopied] = useState(false)
-  const copy = async () => {
-    await navigator.clipboard.writeText(text)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1500)
-  }
-  return <button type="button" className="icon-button" title={copied ? t.copied : t.copy} aria-label={`${t.copy} ${label}`} onClick={() => void copy()}>
-    {copied ? <Check size={13} /> : <Copy size={13} />}
-  </button>
-}
-
-function CodeBlock({ code, label }: { code: string; label: string }) {
-  return <div className="code-block">
-    <pre><code>{code}</code></pre>
-    <CopyButton text={code} label={label} />
-  </div>
-}
-
 export function CallGuide({
   apis,
   capabilities,
   model,
   sessionAffinity,
   accountIds,
+  canWrite,
 }: {
   /** APIs bound to this pool. */
   apis: ApiView[]
@@ -58,6 +44,7 @@ export function CallGuide({
   sessionAffinity: boolean
   /** Cognitive Services accounts of the pool's Foundry members. */
   accountIds: string[]
+  canWrite: boolean
 }) {
   const { t, locale } = useI18n("apim")
   const openSetup = useOpenSetup()
@@ -121,6 +108,20 @@ export function CallGuide({
       <li>
         <b>{t.callStepTry}</b>
         <TryIt key={api.id} api={api} apiVersion={apiVersion} subscriptionKey={key} model={modelName} />
+      </li>
+      <li>
+        <b>{t.callStepLoad}</b>
+        <LoadTest key={api.id} product="apim" name={api.id} baseUrl={baseUrl} model={model} canWrite={canWrite}
+          needsKey={Boolean(keyHeader) && !key}
+          apimCli={{ apiVersion: apiVersion.trim() || DEFAULT_API_VERSION, keyHeader: api.subscription_key_header }}
+          calls={{
+            queryKey: (runId) => keys.benchmark(api.id, runId),
+            start: (spec) => apimApi.startBenchmark(api.id, {
+              spec, api_version: apiVersion.trim() || DEFAULT_API_VERSION, subscription_key: key || null,
+            }),
+            get: (runId) => apimApi.benchmark(api.id, runId),
+            stop: (runId) => apimApi.stopBenchmark(api.id, runId),
+          }} />
       </li>
       <li>
         <b>{t.callStepRequest}</b>

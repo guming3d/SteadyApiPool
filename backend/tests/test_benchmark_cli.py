@@ -9,11 +9,12 @@ import json
 from pathlib import Path
 from types import ModuleType
 
+import httpx
 import pytest
 
 from tests.litellm.fake_litellm import URL, FakeLiteLLM
 
-SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "benchmark.py"
+SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "benchmark.py"
 
 
 def _load() -> ModuleType:
@@ -113,3 +114,44 @@ def test_presets_and_options() -> None:
 )
 def test_the_url(given: str, url: str) -> None:
     assert cli.chat_url(given) == url
+
+
+def test_apim_sends_the_subscription_key_and_the_api_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[httpx.Request] = []
+
+    def gateway(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        body = {"choices": [], "usage": {"prompt_tokens": 9, "completion_tokens": 3}}
+        return httpx.Response(200, json=body, headers={"x-ms-region": "East US 2"})
+
+    monkeypatch.setenv("APIM_KEY", "sub-key")
+    monkeypatch.delenv("LITELLM_KEY", raising=False)
+    out = io.StringIO()
+    argv = ["--gateway", "apim", "--url", "https://apim.azure-api.net/gpt-4o", "--model", "gpt-4o"]
+    argv += ["--max-requests", "3", "--no-stream"]
+
+    code = cli.main(argv, transport=httpx.MockTransport(gateway), out=out)
+
+    assert code == 0
+    assert "East US 2: 3 (100%)" in out.getvalue()
+    request = seen[0]
+    assert str(request.url).startswith("https://apim.azure-api.net/gpt-4o/chat/completions?")
+    assert request.url.params["api-version"] == cli.APIM_API_VERSION
+    assert request.headers["Ocp-Apim-Subscription-Key"] == "sub-key"
+    assert "Authorization" not in request.headers
+    body = json.loads(request.content)
+    assert body["max_completion_tokens"] == 128 and "max_tokens" not in body
+
+
+def test_apim_options() -> None:
+    args = cli._parser().parse_args(
+        ["--gateway", "apim", "--url", "https://a/api/", "--model", "m"]
+        + ["--key-header", "api-key", "--api-version", "2024-10-21"]
+    )
+
+    target = cli.target(args, "k")
+
+    assert target.url == "https://a/api/chat/completions"
+    assert target.headers["api-key"] == "k" and target.params == {"api-version": "2024-10-21"}

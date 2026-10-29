@@ -343,6 +343,21 @@ def test_signing_out_forgets_the_user(public: _Public) -> None:
     assert [key for key, _ in public.exchanges].count(f"{TENANT}/oid-alice") == 2
 
 
+def test_load_tests_belong_to_the_users_session(public: _Public) -> None:
+    public.get("/api/me")
+    public.get("/api/me", "bob")
+    sessions = list(public.sessions._sessions.values())
+    alice, bob = sessions
+    assert alice.benchmarks is not bob.benchmarks
+    stopped: list[str] = []
+    alice.benchmarks.close = lambda: stopped.append("alice")  # type: ignore[method-assign]
+
+    public.client.post("/api/session/sign-out", headers=public.headers(write=True))
+
+    # Signing out ends the session, and its load tests with it.
+    assert stopped == ["alice"]
+
+
 def test_idle_sessions_end(public: _Public) -> None:
     public.get("/api/apim/capabilities")
     public.now += public.settings.session_idle_seconds + 1
@@ -462,15 +477,23 @@ def test_the_public_app_only_calls_azure_gateways(apim: FakeApim) -> None:
     )
     gateway = httpx.MockTransport(lambda _: httpx.Response(200, json={"ok": True}))
     tester = ApimTester(settings, service, gateway)
-    bound = SimpleNamespace(path="chat", subscription_key_header="Ocp-Apim-Subscription-Key")
+    bound = SimpleNamespace(
+        path="chat",
+        subscription_key_header="Ocp-Apim-Subscription-Key",
+        binding=SimpleNamespace(pool_id="pool"),
+    )
     tester._bound_api = lambda _: bound  # type: ignore[method-assign,assignment,return-value]
     request = ApiTestRequest(path="chat/completions", body={"messages": []})
     assert tester.call("chat", request, "alice").status == 200
+    assert tester.benchmark_target("chat", None, None, "k")[1].url.endswith("/chat/completions")
     for url in ("https://api.contoso.com", "https://apim.azure-api.net:8443"):
         apim.gateway_url = url
         service.forget_service()
         with pytest.raises(ServiceError, match="gateway host names"):
             tester.call("chat", request, "alice")
+        # Load tests go by the same rule.
+        with pytest.raises(ServiceError, match="gateway host names"):
+            tester.benchmark_target("chat", None, None, "k")
 
 
 def test_target_header_parts_are_decoded() -> None:
@@ -560,6 +583,8 @@ def test_guests_browse_the_configured_service_read_only(guest: _Public) -> None:
         ("POST", "/api/apim/apis/chat/keys", None),
         ("POST", "/api/apim/apis/chat/keys/k1/secret", None),
         ("POST", "/api/apim/apis/chat/test", {"path": "chat/completions", "body": {}}),
+        ("POST", "/api/apim/apis/chat/benchmarks", {"spec": {}}),
+        ("GET", "/api/apim/apis/chat/benchmarks/x", None),
         ("POST", "/api/apim/setup/apim-identity", None),
         ("GET", "/api/target/tenants", None),
         (

@@ -15,6 +15,7 @@ from ..models import (
     GUID_PATTERN,
     RESOURCE_GROUP_PATTERN,
     ApiTestRequestBase,
+    BenchmarkSpec,
     CostNote,
     GatewayKind,
     MonthToDate,
@@ -630,94 +631,10 @@ class ApiTestRequest(ApiTestRequestBase):
     key: SecretStr | None = Field(default=None, min_length=1, max_length=256)
 
 
-# Limits per run, against cost and mistakes (the CLI can lift them with --i-know).
-BENCHMARK_MAX_USERS = 50
-
-BENCHMARK_MAX_SECONDS = 600
-
-BENCHMARK_MAX_REQUESTS = 5000
-
-PromptSize = Literal["short", "medium", "long"]
-
-
-class BenchmarkSpec(StrictModel):
-    """A closed-loop load: ``users`` simulated users, each sending a request, waiting for the
-    answer and sending the next, until ``duration_seconds`` or ``max_requests``."""
-
-    users: int = Field(default=2, ge=1, le=BENCHMARK_MAX_USERS)
-    duration_seconds: int = Field(default=30, ge=1, le=BENCHMARK_MAX_SECONDS)
-    max_requests: int = Field(default=BENCHMARK_MAX_REQUESTS, ge=1, le=BENCHMARK_MAX_REQUESTS)
-    # Users join evenly over this many seconds.
-    ramp_up_seconds: int = Field(default=0, ge=0, le=BENCHMARK_MAX_SECONDS)
-    # A cap on requests started per second; None for as fast as the users go.
-    rate: float | None = Field(default=None, gt=0, le=1000)
-    prompt_size: PromptSize = "short"
-    max_tokens: int = Field(default=128, ge=1, le=4096)
-    # Streaming measures the time to the first token.
-    stream: bool = True
-    # The pool ID or one of its aliases; None for the pool ID.
-    model: str | None = Field(default=None, max_length=200)
-
-
 class BenchmarkStart(StrictModel):
     spec: BenchmarkSpec
     # The virtual key to call the pool with; never stored or returned.
     key: SecretStr = Field(min_length=1, max_length=256)
-
-
-class BenchmarkMember(StrictModel):
-    # LiteLLM's row ID (x-litellm-model-id); None when the gateway didn't say.
-    member: str | None
-    requests: int
-    share: float
-    latency_p50_ms: float | None
-    errors: int
-
-
-class BenchmarkPoint(StrictModel):
-    # Seconds since the start.
-    second: int
-    requests: int
-    errors: int
-    throttled: int
-    latency_p50_ms: float | None
-    users: int
-
-
-class BenchmarkSummary(StrictModel):
-    elapsed_seconds: float
-    requests: int
-    successes: int
-    throttled: int
-    # Other failures: HTTP status (as text) or "timeout" / "connection" -> count.
-    errors: dict[str, int]
-    requests_per_second: float
-    success_rate: float | None
-    latency_p50_ms: float | None
-    latency_p90_ms: float | None
-    latency_p95_ms: float | None
-    latency_p99_ms: float | None
-    latency_max_ms: float | None
-    ttft_p50_ms: float | None
-    ttft_p95_ms: float | None
-    prompt_tokens: int
-    completion_tokens: int
-    output_tokens_per_second: float
-    # Requests LiteLLM answered after a failed attempt on another member.
-    failovers: int
-    members: list[BenchmarkMember]
-    timeline: list[BenchmarkPoint]
-
-
-class BenchmarkRun(StrictModel):
-    id: str
-    pool_id: str
-    state: Literal["running", "done", "stopped", "failed"]
-    spec: BenchmarkSpec
-    model: str
-    started_at: str
-    error: str | None
-    summary: BenchmarkSummary
 
 
 class GatewayDeleteCheck(StrictModel):

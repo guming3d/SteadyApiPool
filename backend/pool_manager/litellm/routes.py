@@ -10,7 +10,6 @@ from fastapi import APIRouter, Depends, Query, Request, Response
 
 from ..access import user_token
 from ..deps import (
-    get_benchmarks,
     get_litellm_cost,
     get_litellm_monitor,
     get_litellm_service,
@@ -19,6 +18,7 @@ from ..deps import (
 )
 from ..models import (
     ApiTestResult,
+    BenchmarkRun,
     MetricsRange,
     ModelCheck,
     ModelCheckRequest,
@@ -28,6 +28,7 @@ from ..models import (
 from ..routes import (
     Access,
     Actor,
+    Benchmarks,
     Owner,
     Reader,
     SettingsDep,
@@ -37,7 +38,6 @@ from ..routes import (
     require_product,
 )
 from .api_test import LiteLLMTester
-from .benchmark import BenchmarkRunner
 from .cost import LiteLLMCost
 from .gateway_template import aks_bundle
 from .metrics import LiteLLMMonitor
@@ -47,7 +47,6 @@ from .models import (
     AliasWrite,
     ApiTestRequest,
     BackendView,
-    BenchmarkRun,
     BenchmarkStart,
     Capabilities,
     CleanupConfirm,
@@ -85,7 +84,6 @@ from .target import LiteLLMTargets
 
 Service = Annotated[LiteLLMService, Depends(get_litellm_service)]
 Tester = Annotated[LiteLLMTester, Depends(get_litellm_tester)]
-Benchmarks = Annotated[BenchmarkRunner, Depends(get_benchmarks)]
 Monitor = Annotated[LiteLLMMonitor, Depends(get_litellm_monitor)]
 Cost = Annotated[LiteLLMCost, Depends(get_litellm_cost)]
 Targets = Annotated[LiteLLMTargets, Depends(get_litellm_targets)]
@@ -281,15 +279,8 @@ def start_benchmark(
     benchmarks: Benchmarks,
     principal: Writer,
 ) -> BenchmarkRun:
-    base_url, model = tester.target(pool_id, body.spec.model)
-    return benchmarks.start(
-        pool_id,
-        body.spec,
-        f"{base_url}/chat/completions",
-        body.key.get_secret_value(),
-        model,
-        principal.name,
-    )
+    target = tester.benchmark_target(pool_id, body.spec.model, body.key.get_secret_value())
+    return benchmarks.start(pool_id, body.spec, target, principal.name)
 
 
 @bound.get("/pools/{pool_id}/benchmarks/{run_id}")

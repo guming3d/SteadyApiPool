@@ -15,7 +15,7 @@ import { useOpenSetup } from "../components/setup"
 import { Button, ErrorText } from "../components/ui"
 
 /** The guest view creates no keys and sends no requests (the backend refuses both). */
-export function GuestNotice() {
+function GuestNotice() {
   const { t } = useI18n("litellm")
   return <div className="state"><KeyRound size={14} />{t.guestNoKeys}</div>
 }

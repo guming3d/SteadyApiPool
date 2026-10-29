@@ -15,6 +15,7 @@ from ..models import (
     RESOURCE_GROUP_PATTERN,
     RESOURCE_ID_PATTERN,
     ApiTestRequestBase,
+    BenchmarkSpec,
     CostNote,
     MonthToDate,
     PoolMemberView,
@@ -401,6 +402,15 @@ class ApiTestRequest(ApiTestRequestBase):
         default=DEFAULT_TEST_API_VERSION, pattern=r"^[A-Za-z0-9._-]{1,40}$"
     )
     # An APIM subscription key; None calls the API without one.
+    subscription_key: SecretStr | None = Field(default=None, min_length=1, max_length=256)
+
+
+class BenchmarkStart(StrictModel):
+    spec: BenchmarkSpec
+    api_version: str | None = Field(
+        default=DEFAULT_TEST_API_VERSION, pattern=r"^[A-Za-z0-9._-]{1,40}$"
+    )
+    # The API's subscription key; None calls the API without one. Never stored or returned.
     subscription_key: SecretStr | None = Field(default=None, min_length=1, max_length=256)
 
 

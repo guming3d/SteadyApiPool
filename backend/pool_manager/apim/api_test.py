@@ -24,6 +24,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from ..arm import ArmClient, ArmError, segment
+from ..benchmark import BenchmarkTarget
 from ..config import Settings
 from ..errors import ServiceError
 from ..models import (
@@ -225,8 +226,8 @@ class ApimTester:
 
     # -- the test call ----------------------------------------------------------------
 
-    def call(self, api_id: str, request: ApiTestRequest, actor: str) -> ApiTestResult:
-        api = self._bound_api(api_id)
+    def _api_base(self, api: ApiView) -> tuple[str, str]:
+        """The gateway and the API's URL on it, where test calls and load tests may go."""
         gateway = self._service.capabilities().gateway_url
         if not gateway or not gateway.startswith("https://"):
             raise ServiceError(409, "The APIM service has no gateway URL yet")
@@ -239,6 +240,33 @@ class ApimTester:
                 409, f"The public app only calls Azure's own gateway host names, not {host}"
             )
         base = "/".join(part for part in (gateway.rstrip("/"), api.path.strip("/")) if part)
+        return gateway, base
+
+    def benchmark_target(
+        self, api_id: str, model: str | None, api_version: str | None, key: str | None
+    ) -> tuple[str, BenchmarkTarget]:
+        """The pool the API is bound to, and where a load test through the API sends its
+        requests. APIM names no member in its answer; Azure OpenAI's ``x-ms-region`` header,
+        which APIM passes on, tells members in different regions apart."""
+        api = self._bound_api(api_id)
+        assert api.binding is not None
+        _, base = self._api_base(api)
+        headers = {"Content-Type": "application/json"}
+        if key:
+            headers[api.subscription_key_header] = key
+        return api.binding.pool_id, BenchmarkTarget(
+            url=f"{base}/chat/completions",
+            # The member's URL fixes the deployment; the body still needs a model.
+            model=model or api.binding.pool_id,
+            headers=headers,
+            params={"api-version": api_version} if api_version else {},
+            member_header="x-ms-region",
+            tokens_field="max_completion_tokens",
+        )
+
+    def call(self, api_id: str, request: ApiTestRequest, actor: str) -> ApiTestResult:
+        api = self._bound_api(api_id)
+        gateway, base = self._api_base(api)
         url = f"{base}/{request.path}"
         headers = {"Content-Type": "application/json"}
         if request.subscription_key:

@@ -1,6 +1,6 @@
-// The load test's arithmetic: presets, the estimate shown before a run, the verdict after it,
-// the chart's buckets, the exports and the matching terminal command. Pure, so node --test can
-// import it. The presets and limits mirror pool_manager/benchmark.py and models.py.
+// The load test's arithmetic, for both gateways: presets, the estimate shown before a run, the
+// verdict after it, the chart's buckets, the exports and the matching terminal command. Pure, so
+// node --test can import it. The presets and limits mirror pool_manager/benchmark.py and models.py.
 import type { BenchmarkPoint, BenchmarkRun, BenchmarkSpec, BenchmarkSummary, PromptSize } from "./types"
 
 export type Preset = "smoke" | "typical" | "stress"
@@ -171,10 +171,19 @@ export function runJson(run: BenchmarkRun) {
   return JSON.stringify(run, null, 2) + "\n"
 }
 
+/** How the terminal calls an APIM API: scripts/benchmark.py's defaults are left out. */
+export type ApimCli = { apiVersion: string; keyHeader: string | null }
+export const APIM_CLI_DEFAULTS = { apiVersion: "2025-04-01-preview", keyHeader: "Ocp-Apim-Subscription-Key" } as const
+
 /** The same run from a terminal, with scripts/benchmark.py; the key goes in an environment
- * variable so it stays out of the shell history. */
-export function cliCommand({ url, model, spec, windows }: { url: string; model: string; spec: BenchmarkSpec; windows: boolean }) {
-  const args = ["--url", url, "--model", model, "--users", String(spec.users), "--duration", String(spec.duration_seconds)]
+ * variable so it stays out of the shell history. ``url`` is the gateway's /v1 on LiteLLM and the
+ * API's URL on APIM. */
+export function cliCommand({ url, model, spec, windows, apim }: { url: string; model: string; spec: BenchmarkSpec; windows: boolean; apim?: ApimCli }) {
+  const args = apim ? ["--gateway", "apim"] : []
+  args.push("--url", url, "--model", model)
+  if (apim && apim.apiVersion !== APIM_CLI_DEFAULTS.apiVersion) args.push("--api-version", apim.apiVersion)
+  if (apim?.keyHeader && apim.keyHeader !== APIM_CLI_DEFAULTS.keyHeader) args.push("--key-header", apim.keyHeader)
+  args.push("--users", String(spec.users), "--duration", String(spec.duration_seconds))
   if (spec.ramp_up_seconds) args.push("--ramp-up", String(spec.ramp_up_seconds))
   if (spec.rate !== null) args.push("--rate", String(spec.rate))
   if (spec.max_requests !== DEFAULT_SPEC.max_requests) args.push("--max-requests", String(spec.max_requests))
@@ -182,6 +191,7 @@ export function cliCommand({ url, model, spec, windows }: { url: string; model: 
   if (spec.max_tokens !== DEFAULT_SPEC.max_tokens) args.push("--max-tokens", String(spec.max_tokens))
   if (!spec.stream) args.push("--no-stream")
   const python = windows ? "backend\\.venv\\Scripts\\python scripts\\benchmark.py" : "backend/.venv/bin/python scripts/benchmark.py"
-  const key = windows ? '$env:LITELLM_KEY = "<your-virtual-key>"' : "export LITELLM_KEY='<your-virtual-key>'"
+  const [env, placeholder] = apim ? ["APIM_KEY", "<your-subscription-key>"] : ["LITELLM_KEY", "<your-virtual-key>"]
+  const key = windows ? `$env:${env} = "${placeholder}"` : `export ${env}='${placeholder}'`
   return `${key}\n${python} ${args.join(" ")}`
 }

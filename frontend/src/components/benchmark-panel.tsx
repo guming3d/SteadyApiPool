@@ -1,27 +1,30 @@
-// The call guide's load test: simulated users calling the pool through the gateway, run by the
-// app's backend (pool_manager/benchmark.py), with live numbers, two charts in the Monitor tab's
-// style, the members that answered, a verdict, exports and the same run as a terminal command.
-// The key is the one the call guide's key step holds; the backend never returns or keeps it.
-import { CircleAlert, CircleCheck, Download, LoaderCircle, OctagonAlert, Play, Square, TriangleAlert } from "lucide-react"
+// The call guide's load test, for both gateways: simulated users calling the pool through the
+// gateway, run by the app's backend (pool_manager/benchmark.py), with live numbers, two charts in
+// the Monitor tab's style, the members that answered, a verdict, exports and the same run as a
+// terminal command. Each product's call guide passes its calls and the key its key step holds;
+// the backend never returns or keeps the key.
+import { CircleAlert, CircleCheck, Download, KeyRound, LoaderCircle, OctagonAlert, Play, Square, TriangleAlert } from "lucide-react"
 import { useState } from "react"
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { useMutation, useQuery, useQueryClient, type QueryKey } from "@tanstack/react-query"
 
-import { api, keys } from "./api"
-import { memberOfRow } from "./api-test"
 import {
   chartPoints, cliCommand, DEFAULT_SPEC, estimate, invalidFields, LIMITS, presetOf, PRESETS, presetSpec, PROMPT_TOKENS,
-  runJson, timelineCsv, verdict, type ChartPoint, type Preset,
-} from "./benchmark"
-import { fill, useI18n, type LitellmMessages } from "../i18n"
+  runJson, timelineCsv, verdict, type ApimCli, type ChartPoint, type Preset,
+} from "../benchmark"
+import { fill, useI18n, type Messages } from "../i18n"
 import { formatCompact, formatMs, formatPercent, niceScale, roundedTop } from "../pool-metrics"
 import { isGuest } from "../session"
-import type { BenchmarkRun, BenchmarkSpec, PromptSize } from "./types"
-import { GuestNotice } from "./api-tester"
-import { CodeBlock } from "./call-guide"
-import { Grid, HEIGHT, Legend, PAD, PLOT_HEIGHT, Tile, Tooltip, useWidth } from "../components/pool-monitor"
-import { Button, ErrorText } from "../components/ui"
+import type { BenchmarkRun, BenchmarkSpec, Product, PromptSize } from "../types"
+import { Grid, HEIGHT, Legend, PAD, PLOT_HEIGHT, Tile, Tooltip, useWidth } from "./pool-monitor"
+import { Button, CodeBlock, ErrorText } from "./ui"
 
-type Messages = LitellmMessages
+/** A product's load test calls, bound to what it tests (LiteLLM: a pool; APIM: an API). */
+export type LoadTestCalls = {
+  queryKey: (runId: string) => QueryKey
+  start: (spec: BenchmarkSpec) => Promise<BenchmarkRun>
+  get: (runId: string) => Promise<BenchmarkRun>
+  stop: (runId: string) => Promise<BenchmarkRun>
+}
 
 const PRESET_LABEL: Record<Preset, "benchPresetSmoke" | "benchPresetTypical" | "benchPresetStress"> = {
   smoke: "benchPresetSmoke",
@@ -54,15 +57,31 @@ function download(name: string, type: string, text: string) {
 }
 
 type LoadTestProps = {
-  poolId: string
+  product: Product
+  calls: LoadTestCalls
+  /** Names the exported files. */
+  name: string
+  /** What the terminal command calls: the gateway's /v1 (LiteLLM) or the API's URL (APIM). */
   baseUrl: string
-  virtualKey: string
-  model: string
+  /** The model name sent; null lets the backend choose (the pool ID). */
+  model: string | null
   canWrite: boolean
+  /** A key is needed and the key step has none yet. */
+  needsKey: boolean
+  /** How a member is shown, e.g. LiteLLM's row ID without the pool. */
+  memberLabel?: (member: string | null) => string | null
+  /** The terminal command calls an APIM API. */
+  apimCli?: ApimCli
 }
 
 export function LoadTest(props: LoadTestProps) {
-  return isGuest() ? <GuestNotice /> : <LoadTestBody {...props} />
+  return isGuest() ? <GuestNotice product={props.product} /> : <LoadTestBody {...props} />
+}
+
+/** The guest view sends no requests (the backend refuses them). */
+function GuestNotice({ product }: { product: Product }) {
+  const { t } = useI18n(product)
+  return <div className="state"><KeyRound size={14} />{t.guestNoKeys}</div>
 }
 
 function NumberField({ label, hint, value, min, max, optional, invalid, onChange }: {
@@ -83,29 +102,30 @@ function NumberField({ label, hint, value, min, max, optional, invalid, onChange
   </label>
 }
 
-function LoadTestBody({ poolId, baseUrl, virtualKey, model, canWrite }: LoadTestProps) {
-  const { t, locale } = useI18n("litellm")
+function LoadTestBody(props: LoadTestProps) {
+  const { product, calls, model, canWrite, needsKey } = props
+  const { t, locale } = useI18n(product)
   const queryClient = useQueryClient()
   const [spec, setSpec] = useState<BenchmarkSpec>(DEFAULT_SPEC)
   const [runId, setRunId] = useState<string | null>(null)
   const set = (patch: Partial<BenchmarkSpec>) => setSpec((current) => ({ ...current, ...patch }))
 
   const run = useQuery({
-    queryKey: keys.benchmark(poolId, runId ?? ""),
-    queryFn: () => api.benchmark(poolId, runId!),
+    queryKey: calls.queryKey(runId ?? ""),
+    queryFn: () => calls.get(runId!),
     enabled: runId !== null,
     refetchInterval: (query) => query.state.data?.state === "running" ? 1000 : false,
   })
   const start = useMutation({
-    mutationFn: () => api.startBenchmark(poolId, { spec: { ...spec, model }, key: virtualKey }),
+    mutationFn: () => calls.start({ ...spec, model }),
     onSuccess: (started) => {
-      queryClient.setQueryData(keys.benchmark(poolId, started.id), started)
+      queryClient.setQueryData(calls.queryKey(started.id), started)
       setRunId(started.id)
     },
   })
   const stop = useMutation({
-    mutationFn: () => api.stopBenchmark(poolId, runId!),
-    onSuccess: (stopped) => queryClient.setQueryData(keys.benchmark(poolId, stopped.id), stopped),
+    mutationFn: () => calls.stop(runId!),
+    onSuccess: (stopped) => queryClient.setQueryData(calls.queryKey(stopped.id), stopped),
   })
 
   const bad = invalidFields(spec)
@@ -145,27 +165,27 @@ function LoadTestBody({ poolId, baseUrl, virtualKey, model, canWrite }: LoadTest
       <small className="muted">{fill(t.benchLimits, { users: LIMITS.users, seconds: LIMITS.duration_seconds, requests: formatCompact(LIMITS.max_requests) }, locale)}</small>
     </details>
     {bad.length === 0
-      ? <p>{fill(t.benchEstimate, { model, requests: formatCompact(guess.requests), input: formatCompact(guess.inputTokens), output: formatCompact(guess.outputTokens) }, locale)}</p>
+      ? <p>{fill(t.benchEstimate, { model: model ?? props.name, requests: formatCompact(guess.requests), input: formatCompact(guess.inputTokens), output: formatCompact(guess.outputTokens) }, locale)}</p>
       : <p className="warn-text">{t.benchInvalid}</p>}
     <p className="bench-cost"><CircleAlert size={13} />{t.benchCost}</p>
     {!canWrite && <p className="muted">{t.benchNeedsWrite}</p>}
-    {canWrite && !virtualKey && <p className="warn-text">{t.testNeedsKey}</p>}
+    {canWrite && needsKey && <p className="warn-text">{t.testNeedsKey}</p>}
     <div className="bench-actions">
       {running
         ? <Button variant="outline" disabled={stop.isPending} onClick={() => stop.mutate()}>
           {stop.isPending ? <LoaderCircle className="spin" size={13} /> : <Square size={13} />}{stop.isPending ? t.benchStopping : t.benchStop}
         </Button>
-        : <Button variant="primary" disabled={!canWrite || !virtualKey || bad.length > 0 || start.isPending} onClick={() => start.mutate()}>
+        : <Button variant="primary" disabled={!canWrite || needsKey || bad.length > 0 || start.isPending} onClick={() => start.mutate()}>
           {start.isPending ? <LoaderCircle className="spin" size={13} /> : <Play size={13} />}{t.benchStart}
         </Button>}
     </div>
     <ErrorText error={start.error ?? stop.error ?? run.error} />
-    {run.data && <Result run={run.data} poolId={poolId} baseUrl={baseUrl} t={t} />}
+    {run.data && <Result run={run.data} {...props} t={t} />}
   </>
 }
 
-function Verdict({ run, t }: { run: BenchmarkRun; t: Messages }) {
-  const { locale } = useI18n("litellm")
+function Verdict({ run, product, t }: { run: BenchmarkRun; product: Product; t: Messages }) {
+  const { locale } = useI18n(product)
   const { tone, parts } = verdict(run.summary)
   const Icon = tone === "ok" ? CircleCheck : tone === "warn" ? TriangleAlert : OctagonAlert
   return <div className="bench-verdict" data-tone={tone} role="status">
@@ -174,8 +194,8 @@ function Verdict({ run, t }: { run: BenchmarkRun; t: Messages }) {
   </div>
 }
 
-function Result({ run, poolId, baseUrl, t }: { run: BenchmarkRun; poolId: string; baseUrl: string; t: Messages }) {
-  const { locale } = useI18n("litellm")
+function Result({ run, product, name, baseUrl, memberLabel = (member) => member, apimCli, t }: LoadTestProps & { run: BenchmarkRun; t: Messages }) {
+  const { locale } = useI18n(product)
   const summary = run.summary
   const { tone } = verdict(summary)
   const progress = Math.min(1, Math.max(summary.elapsed_seconds / run.spec.duration_seconds, summary.requests / run.spec.max_requests))
@@ -196,7 +216,7 @@ function Result({ run, poolId, baseUrl, t }: { run: BenchmarkRun; poolId: string
       }, locale)}</span>
     </div>
     {run.error && <div className="callout warning"><CircleAlert size={15} /><div>{fill(t.benchFailedRun, { error: run.error })}</div></div>}
-    {run.state !== "running" && <Verdict run={run} t={t} />}
+    {run.state !== "running" && <Verdict run={run} product={product} t={t} />}
     <div className="kpi-row">
       <Tile t={t} label={t.benchThroughput} value={fill(t.benchPerSecond, { n: summary.requests_per_second })}
         sub={fill(t.benchThroughputSub, { requests: formatCompact(summary.requests), tokens: formatCompact(summary.output_tokens_per_second) }, locale)} />
@@ -218,9 +238,9 @@ function Result({ run, poolId, baseUrl, t }: { run: BenchmarkRun; poolId: string
     {summary.members.length > 0 && <section className="monitor-section">
       <header><b>{t.benchMembers}</b><span className="muted">{t.benchMembersHint}</span></header>
       <table className="monitor-members">
-        <thead><tr><th>{t.monMember}</th><th>{t.monShare}</th><th className="num">{t.monRequests}</th><th className="num">{t.benchP50}</th><th className="num">{t.monErrors}</th></tr></thead>
+        <thead><tr><th>{t.benchMemberColumn}</th><th>{t.monShare}</th><th className="num">{t.monRequests}</th><th className="num">{t.benchP50}</th><th className="num">{t.monErrors}</th></tr></thead>
         <tbody>{summary.members.map((member) => <tr key={member.member ?? ""}>
-          <td><b>{memberOfRow(member.member) ?? t.benchNoMember}</b></td>
+          <td><b>{memberLabel(member.member) ?? t.benchNoMember}</b></td>
           <td><div className="share"><div className="share-track"><div className="share-fill" style={{ width: `${member.share * 100}%` }} /></div>
             <span><b>{formatPercent(member.share, 0)}</b></span></div></td>
           <td className="num">{formatCompact(member.requests)}</td>
@@ -230,13 +250,13 @@ function Result({ run, poolId, baseUrl, t }: { run: BenchmarkRun; poolId: string
       </table>
     </section>}
     {run.state !== "running" && <div className="bench-actions">
-      <Button variant="outline" onClick={() => download(`load-test-${poolId}-${stamp}.json`, "application/json", runJson(run))}><Download size={13} />{t.benchExportJson}</Button>
-      <Button variant="outline" onClick={() => download(`load-test-${poolId}-${stamp}.csv`, "text/csv", timelineCsv(run))}><Download size={13} />{t.benchExportCsv}</Button>
+      <Button variant="outline" onClick={() => download(`load-test-${name}-${stamp}.json`, "application/json", runJson(run))}><Download size={13} />{t.benchExportJson}</Button>
+      <Button variant="outline" onClick={() => download(`load-test-${name}-${stamp}.csv`, "text/csv", timelineCsv(run))}><Download size={13} />{t.benchExportCsv}</Button>
     </div>}
     <details className="call-notes">
       <summary>{t.benchCli}</summary>
       <p className="muted">{t.benchCliHint}</p>
-      <CodeBlock code={cliCommand({ url: baseUrl, model: run.model, spec: run.spec, windows })} label={t.benchCli} />
+      <CodeBlock code={cliCommand({ url: baseUrl, model: run.model, spec: run.spec, windows, apim: apimCli })} label={t.benchCli} />
     </details>
   </div>
 }

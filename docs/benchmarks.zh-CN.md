@@ -6,7 +6,7 @@
 
 应用设置的每种网关能承载多少流量、增加多少延迟，以及某个部署故障时客户端看到什么。这些结果于 2026 年
 10 月在 Azure 上测得。请把它们当作选择和确定网关规模的参考，而不是保证：你的提示、模型、区域和网络都不同，
-请用[规模计算器](getting-started.zh-CN.md#确定网关规模)和[对你自己的后端池做性能测试](getting-started.zh-CN.md#对后端池进行性能测试可选litellm)
+请用[规模计算器](getting-started.zh-CN.md#确定网关规模)和[对你自己的后端池做性能测试](getting-started.zh-CN.md#对后端池进行性能测试可选)
 来确认你的情况。测试方法以及如何重新测试见 [perf/README.md](../perf/README.md)；每次测试的每一步都在
 [perf/results-2026-10/report.md](../perf/results-2026-10/report.md) 中。
 

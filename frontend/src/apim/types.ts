@@ -1,6 +1,6 @@
 // Mirrors backend/pool_manager/apim/models.py.
 
-import type { CostNote, MonthToDate, PoolMember, ResourceGroupView } from "../types"
+import type { BenchmarkSpec, CostNote, MonthToDate, PoolMember, ResourceGroupView } from "../types"
 
 export type FailureStatusCodeRange = { minimum: number; maximum: number }
 
@@ -227,6 +227,13 @@ export type ApiTestRequest = {
   api_version: string | null
   subscription_key: string | null
   body: Record<string, unknown>
+}
+
+export type BenchmarkStart = {
+  spec: BenchmarkSpec
+  api_version: string | null
+  /** Never stored or returned by the backend. */
+  subscription_key: string | null
 }
 
 /** The tier's retail price, before discounts and tax. */

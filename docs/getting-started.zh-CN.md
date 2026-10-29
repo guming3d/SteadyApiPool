@@ -217,15 +217,21 @@ response = client.chat.completions.create(
 print(response.choices[0].message.content)
 ```
 
-## 对后端池进行性能测试（可选，LiteLLM）
+## 对后端池进行性能测试（可选）
 
 **在这里测试**下方的**性能测试**模拟多个用户同时调用后端池：每个用户发送请求、等待响应后再发下一个。可以选择
 **快速检查**（2 个用户、30 秒）、**典型负载**（10 个用户、2 分钟）或**压力测试**（30 个用户、3 分钟），也可以在
-**高级设置**中设置用户数、持续时间、逐步加压时间、速率上限、提示长度、`max_tokens` 和流式传输。页面会先估算请求数
+**高级设置**中设置用户数、持续时间、逐步加压时间、速率上限、提示长度、输出令牌数和流式传输。页面会先估算请求数
 和令牌数；每个请求都像真实流量一样由 Foundry 计费，也会占用部署的速率限制。运行期间可以看到吞吐量、成功率、
 p50/p95/p99 延迟、首令牌时间、429 和故障转移、每秒图表以及响应的成员；结束后给出一句结论（例如所有成员同时返回
 429，说明后端池需要更多容量），并可以**导出 JSON / CSV**，或复制在终端中运行同样测试的命令。每次测试最多 50 个
 用户、10 分钟、5,000 个请求，同一时间只能运行一个，并且只有所有者可以启动。
+
+在 LiteLLM 上，它使用第 1 步的虚拟密钥并发送 `max_tokens`；成员来自 LiteLLM 的响应头
+`x-litellm-model-id`，故障转移来自 `x-litellm-attempted-fallbacks`。在 APIM 上，它用订阅密钥和
+`api-version` 调用上面选择的 API，并发送 `max_completion_tokens`：APIM 按原样转发请求正文，较新的模型不接受
+`max_tokens`。APIM 不报告由哪个成员响应，所以表格显示响应的区域（Azure OpenAI 的 `x-ms-region`，同一区域的
+成员合并统计），APIM 在 429 后的重试也不会显示为故障转移。
 
 在终端中运行（可用于此网关或任何兼容 OpenAI 的终结点；密钥放在环境变量中，不会留在命令历史里）：
 
@@ -234,6 +240,11 @@ $env:LITELLM_KEY = "<your-virtual-key>"
 backend\.venv\Scripts\python scripts\benchmark.py --url https://<your-gateway>/v1 --model pool-gpt-5-6-luna --preset typical
 #   --users 20 --duration 120 --ramp-up 10 --rate 15 --prompt long --max-tokens 256 --no-stream
 #   --json result.json --csv requests.csv        （macOS/Linux：backend/.venv/bin/python，export LITELLM_KEY=...）
+
+# APIM：API 的 URL，密钥放在 Ocp-Apim-Subscription-Key 中，api-version 为 2025-04-01-preview
+$env:APIM_KEY = "<your-subscription-key>"
+backend\.venv\Scripts\python scripts\benchmark.py --gateway apim --url https://<your-apim>.azure-api.net/<api path> --model gpt-5.6-luna
+#   --api-version <version> --key-header <header>   （API 使用其他值时）
 ```
 
 它每秒打印一行状态，结束时打印报告；按 Ctrl+C 会停止测试（已发送的请求会完成），并仍然打印报告。`--i-know`

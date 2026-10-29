@@ -1,41 +1,26 @@
 // "How to call this pool": what a client needs to call the pool through the gateway, with code
 // generated for it, and the setup that otherwise makes the first call fail.
-import { Check, CircleAlert, Copy, Terminal } from "lucide-react"
+import { CircleAlert, Terminal } from "lucide-react"
 import { useState } from "react"
 
 import { callSnippet, KEY_PLACEHOLDER, SNIPPET_LANGUAGES, type SnippetLanguage } from "./call-snippets"
 import { fill, useI18n } from "../i18n"
 import type { Capabilities, PoolEndpoint } from "./types"
+import { api, keys } from "./api"
+import { memberOfRow } from "./api-test"
 import { KeyStep, TryIt } from "./api-tester"
-import { LoadTest } from "./benchmark-panel"
+import { LoadTest } from "../components/benchmark-panel"
 import { baseUrlOf } from "./pool-endpoint"
 import { FoundryAccessNotice, useOpenSetup } from "../components/setup"
+import { CodeBlock, CopyButton } from "../components/ui"
+
+export { CodeBlock, CopyButton }
 
 const LANGUAGE_LABEL: Record<SnippetLanguage, string> = {
   curl: "curl",
   python: "Python",
   javascript: "JavaScript",
   powershell: "PowerShell",
-}
-
-export function CopyButton({ text, label }: { text: string; label: string }) {
-  const { t } = useI18n("litellm")
-  const [copied, setCopied] = useState(false)
-  const copy = async () => {
-    await navigator.clipboard.writeText(text)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1500)
-  }
-  return <button type="button" className="icon-button" title={copied ? t.copied : t.copy} aria-label={`${t.copy} ${label}`} onClick={() => void copy()}>
-    {copied ? <Check size={13} /> : <Copy size={13} />}
-  </button>
-}
-
-export function CodeBlock({ code, label }: { code: string; label: string }) {
-  return <div className="code-block">
-    <pre><code>{code}</code></pre>
-    <CopyButton text={code} label={label} />
-  </div>
 }
 
 export function CallGuide({
@@ -104,7 +89,13 @@ export function CallGuide({
       </li>
       <li>
         <b>{t.callStepLoad}</b>
-        <LoadTest poolId={endpoint.pool_id} baseUrl={baseUrl} virtualKey={key} model={modelName} canWrite={canWrite} />
+        <LoadTest product="litellm" name={endpoint.pool_id} baseUrl={baseUrl} model={modelName} canWrite={canWrite} needsKey={!key}
+          memberLabel={memberOfRow} calls={{
+            queryKey: (runId) => keys.benchmark(endpoint.pool_id, runId),
+            start: (spec) => api.startBenchmark(endpoint.pool_id, { spec, key }),
+            get: (runId) => api.benchmark(endpoint.pool_id, runId),
+            stop: (runId) => api.stopBenchmark(endpoint.pool_id, runId),
+          }} />
       </li>
       <li>
         <b>{t.callStepRequest}</b>

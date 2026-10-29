@@ -486,6 +486,7 @@ export function PoolEditor({
           model={poolModel}
           sessionAffinity={pool.data.session_affinity}
           accountIds={memberAccounts}
+          canWrite={me.data?.can_write === true}
         />}
       </div>
       <div className="tab-panel" role="tabpanel" id={`${tabIdPrefix}-settings-panel`} aria-labelledby={`${tabIdPrefix}-settings`} hidden={tab !== "settings"}>{settingsPanel}</div>

@@ -1,5 +1,5 @@
-import { CircleHelp, X } from "lucide-react"
-import { useEffect, useRef, type ButtonHTMLAttributes, type ReactNode, type Ref } from "react"
+import { Check, CircleHelp, Copy, X } from "lucide-react"
+import { useEffect, useRef, useState, type ButtonHTMLAttributes, type ReactNode, type Ref } from "react"
 
 import { useI18n } from "../i18n"
 
@@ -101,4 +101,24 @@ export function Field({ label, hint, children }: { label: ReactNode; hint?: Reac
 export function ErrorText({ error }: { error: unknown }) {
   if (!error) return null
   return <div className="state error" role="alert">{error instanceof Error ? error.message : String(error)}</div>
+}
+
+export function CopyButton({ text, label }: { text: string; label: string }) {
+  const { t } = useI18n()
+  const [copied, setCopied] = useState(false)
+  const copy = async () => {
+    await navigator.clipboard.writeText(text)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1500)
+  }
+  return <button type="button" className="icon-button" title={copied ? t.copied : t.copy} aria-label={`${t.copy} ${label}`} onClick={() => void copy()}>
+    {copied ? <Check size={13} /> : <Copy size={13} />}
+  </button>
+}
+
+export function CodeBlock({ code, label }: { code: string; label: string }) {
+  return <div className="code-block">
+    <pre><code>{code}</code></pre>
+    <CopyButton text={code} label={label} />
+  </div>
 }

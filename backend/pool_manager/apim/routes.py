@@ -1,6 +1,6 @@
 """APIM's routes, under ``/api/apim``: pools and members (backends), APIs and their policy
-binding, subscription keys and the test call, the dashboard, cost, removal, the identity fix,
-and choosing, creating, deleting and restoring a service."""
+binding, subscription keys, the test call and load test, the dashboard, cost, removal, the
+identity fix, and choosing, creating, deleting and restoring a service."""
 
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ from ..deps import (
 from ..errors import ServiceError
 from ..models import (
     ApiTestResult,
+    BenchmarkRun,
     MetricsRange,
     ModelCheck,
     ModelCheckRequest,
@@ -29,6 +30,8 @@ from ..models import (
 from ..routes import (
     Access,
     Actor,
+    Benchmarks,
+    Owner,
     Reader,
     SubscriptionQuery,
     TenantQuery,
@@ -47,6 +50,7 @@ from .models import (
     ApiTestRequest,
     ApiView,
     BackendView,
+    BenchmarkStart,
     Capabilities,
     CleanupConfirm,
     DeletedServiceView,
@@ -254,6 +258,30 @@ def read_key(
 @bound.post("/apis/{api_id}/test")
 def test_api(api_id: str, body: ApiTestRequest, tester: Tester, principal: Actor) -> ApiTestResult:
     return tester.call(api_id, body, principal.name)
+
+
+# A load test sends real, billed traffic through the API, so only owners start one.
+@bound.post("/apis/{api_id}/benchmarks")
+def start_benchmark(
+    api_id: str,
+    body: BenchmarkStart,
+    tester: Tester,
+    benchmarks: Benchmarks,
+    principal: Writer,
+) -> BenchmarkRun:
+    key = body.subscription_key.get_secret_value() if body.subscription_key else None
+    pool_id, target = tester.benchmark_target(api_id, body.spec.model, body.api_version, key)
+    return benchmarks.start(pool_id, body.spec, target, principal.name, api_id=api_id)
+
+
+@bound.get("/apis/{api_id}/benchmarks/{run_id}")
+def get_benchmark(api_id: str, run_id: str, benchmarks: Benchmarks, _: Owner) -> BenchmarkRun:
+    return benchmarks.get(None, run_id, api_id=api_id)
+
+
+@bound.post("/apis/{api_id}/benchmarks/{run_id}/stop")
+def stop_benchmark(api_id: str, run_id: str, benchmarks: Benchmarks, _: Writer) -> BenchmarkRun:
+    return benchmarks.stop(None, run_id, api_id=api_id)
 
 
 @bound.post("/setup/apim-identity")

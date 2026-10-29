@@ -3,16 +3,22 @@
     set LITELLM_KEY=sk-...           (PowerShell: $env:LITELLM_KEY="sk-..."; POSIX: export ...)
     backend/.venv/Scripts/python scripts/benchmark.py --url https://<gateway>/v1 --model <pool>
 
-It uses the same engine as the pool's Test call tab (backend/pool_manager/litellm/benchmark.py) and
-works against any OpenAI-compatible chat completions endpoint. Presets: smoke (2 users, 30 s,
-the default), typical (10 users, 2 min) and stress (30 users, 3 min); --users, --duration and
-the other options change them. It prints a status line while it runs and a report at the end;
-Ctrl+C stops it (requests already sent finish) and still prints the report, a second Ctrl+C
-quits at once. Every request is billed by Foundry like real traffic.
+    set APIM_KEY=<subscription key>
+    backend/.venv/Scripts/python scripts/benchmark.py --gateway apim \
+        --url https://<apim>.azure-api.net/<api path> --model <model>
 
-The key comes from LITELLM_KEY (or --key, or a prompt), is only sent to the gateway and is
-never written to the JSON or CSV files. Exit code: 0 when the run finished and some requests
-succeeded, 1 when none did, 2 for a usage error.
+It uses the same engine as the pool's call guide (backend/pool_manager/benchmark.py) and works
+against any OpenAI-compatible chat completions endpoint. With --gateway apim the URL is the
+API's, the key goes in APIM's subscription key header (--key-header), the api-version query is
+added (--api-version) and the answering member is the x-ms-region Azure OpenAI sends. Presets:
+smoke (2 users, 30 s, the default), typical (10 users, 2 min) and stress (30 users, 3 min);
+--users, --duration and the other options change them. It prints a status line while it runs
+and a report at the end; Ctrl+C stops it (requests already sent finish) and still prints the
+report, a second Ctrl+C quits at once. Every request is billed by Foundry like real traffic.
+
+The key comes from LITELLM_KEY or APIM_KEY (or --key, or a prompt), is only sent to the
+gateway and is never written to the JSON or CSV files. Exit code: 0 when the run finished and
+some requests succeeded, 1 when none did, 2 for a usage error.
 """
 
 from __future__ import annotations
@@ -37,32 +43,67 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 from pydantic import ValidationError  # noqa: E402
 
-from pool_manager.litellm.benchmark import (  # noqa: E402
+from pool_manager.benchmark import (  # noqa: E402
     PRESETS,
     PROMPT_TOKENS,
+    BenchmarkTarget,
     Sample,
     report,
     run_benchmark,
     summarize,
 )
-from pool_manager.litellm.models import (  # noqa: E402
+from pool_manager.models import (  # noqa: E402
     BENCHMARK_MAX_REQUESTS,
     BENCHMARK_MAX_SECONDS,
     BENCHMARK_MAX_USERS,
     BenchmarkSpec,
 )
 
-KEY_ENV = "LITELLM_KEY"
+KEY_ENVS = {"litellm": "LITELLM_KEY", "apim": "APIM_KEY"}
+# APIM's defaults: its subscription key header and the api-version the call guide uses.
+APIM_KEY_HEADER = "Ocp-Apim-Subscription-Key"
+APIM_API_VERSION = "2025-04-01-preview"
 
 
-def chat_url(url: str) -> str:
-    """The chat completions URL, from the gateway's root, its /v1 or the full URL."""
+def chat_url(url: str, gateway: str = "litellm") -> str:
+    """The chat completions URL, from the gateway's root, its /v1 or the full URL (APIM: from
+    the API's URL)."""
     url = url.rstrip("/")
     if url.endswith("/chat/completions"):
         return url
-    if url.endswith("/v1"):
+    if url.endswith("/v1") or gateway == "apim":
         return f"{url}/chat/completions"
     return f"{url}/v1/chat/completions"
+
+
+def target(args: argparse.Namespace, key: str) -> BenchmarkTarget:
+    """Where the requests go and how the gateway is called."""
+    url = chat_url(args.url, args.gateway)
+    if args.gateway == "apim":
+        return BenchmarkTarget(
+            url=url,
+            model=args.model,
+            headers={
+                "Content-Type": "application/json",
+                args.key_header or APIM_KEY_HEADER: key,
+            },
+            params={"api-version": args.api_version or APIM_API_VERSION},
+            member_header="x-ms-region",
+            tokens_field="max_completion_tokens",
+        )
+    headers = {"Content-Type": "application/json"}
+    if args.key_header:
+        headers[args.key_header] = key
+    else:
+        headers["Authorization"] = f"Bearer {key}"
+    return BenchmarkTarget(
+        url=url,
+        model=args.model,
+        headers=headers,
+        params={"api-version": args.api_version} if args.api_version else {},
+        member_header="x-litellm-model-id",
+        fallbacks_header="x-litellm-attempted-fallbacks",
+    )
 
 
 def _positive(kind: type[int] | type[float], zero: bool = False) -> Any:
@@ -79,10 +120,33 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="benchmark.py",
         description="Load-test a gateway pool with simulated users.",
-        epilog=f"The virtual key comes from {KEY_ENV}, --key or a prompt.",
+        epilog="The key comes from "
+        + " or ".join(f"{env} ({gateway})" for gateway, env in KEY_ENVS.items())
+        + ", --key or a prompt.",
     )
-    parser.add_argument("--url", required=True, help="the gateway, e.g. https://<gateway>/v1")
-    parser.add_argument("--model", required=True, help="the pool ID or one of its aliases")
+    parser.add_argument(
+        "--gateway",
+        choices=list(KEY_ENVS),
+        default="litellm",
+        help="the kind of gateway (default litellm)",
+    )
+    parser.add_argument(
+        "--url",
+        required=True,
+        help="the gateway, e.g. https://<gateway>/v1; APIM: https://<apim>.azure-api.net/<api>",
+    )
+    parser.add_argument(
+        "--model",
+        required=True,
+        help="the pool ID or one of its aliases; APIM: the pool's model",
+    )
+    parser.add_argument(
+        "--key-header",
+        help=f"send the key in this header (APIM default {APIM_KEY_HEADER}; else Bearer)",
+    )
+    parser.add_argument(
+        "--api-version", help=f"the api-version query (APIM default {APIM_API_VERSION})"
+    )
     parser.add_argument("--preset", choices=sorted(PRESETS), default="smoke")
     parser.add_argument("--users", type=_positive(int), help="simulated users at once")
     parser.add_argument("--duration", type=_positive(int), help="seconds to run")
@@ -96,7 +160,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--prompt", choices=list(PROMPT_TOKENS), default="short")
     parser.add_argument("--max-tokens", type=_positive(int), default=128)
     parser.add_argument("--no-stream", action="store_true", help="no streaming (no TTFT)")
-    parser.add_argument("--key", help=f"the virtual key (prefer {KEY_ENV}: no shell history)")
+    parser.add_argument("--key", help="the key (prefer the environment variable: no shell history)")
     parser.add_argument("--json", type=Path, help="write the summary to this file")
     parser.add_argument("--csv", type=Path, help="write one row per request to this file")
     parser.add_argument(
@@ -133,9 +197,10 @@ def _spec(args: argparse.Namespace) -> BenchmarkSpec:
 
 
 def _key(args: argparse.Namespace) -> str | None:
-    key = args.key or os.environ.get(KEY_ENV)
+    key = args.key or os.environ.get(KEY_ENVS[args.gateway])
     if not key and sys.stdin.isatty():
-        key = getpass.getpass("Virtual key (input hidden): ")
+        kind = "Subscription key" if args.gateway == "apim" else "Virtual key"
+        key = getpass.getpass(f"{kind} (input hidden): ")
     return key.strip() if key else None
 
 
@@ -176,8 +241,9 @@ def main(
         parser.error(f"{problems} (--i-know lifts the limits)")
     key = _key(args)
     if not key:
-        parser.error(f"no key: set {KEY_ENV} or pass --key")
-    url = chat_url(args.url)
+        parser.error(f"no key: set {KEY_ENVS[args.gateway]} or pass --key")
+    destination = target(args, key)
+    url = destination.url
     if args.i_know:
         print(
             "Limits lifted (--i-know): mind the cost and the rate limits.",
@@ -188,7 +254,7 @@ def main(
     print(
         f"Load test of {spec.model} at {url}: {spec.users} users for {spec.duration_seconds} s"
         f"{ramp}{every}, {args.prompt} prompts (~{PROMPT_TOKENS[spec.prompt_size]} tokens), "
-        f"max_tokens {spec.max_tokens}. Every request is billed like real traffic. "
+        f"{destination.tokens_field} {spec.max_tokens}. Every request is billed like real traffic. "
         "Ctrl+C stops.",
         file=out,
     )
@@ -227,9 +293,7 @@ def main(
         try:
             return await run_benchmark(
                 spec,
-                url,
-                key,
-                spec.model or args.model,
+                destination,
                 samples,
                 transport=transport,
                 should_stop=lambda: stop["asked"],

@@ -318,3 +318,74 @@ export type PoolMetrics = {
 export type MonthToDate = { amount: number; currency: string | null; since: string }
 
 export type CostNote = "no_token" | "forbidden" | "unsupported" | "unavailable" | "external"
+
+// -- the load test (mirrors pool_manager/models.py) --
+
+export type PromptSize = "short" | "medium" | "long"
+
+export type BenchmarkSpec = {
+  users: number
+  duration_seconds: number
+  max_requests: number
+  ramp_up_seconds: number
+  rate: number | null
+  prompt_size: PromptSize
+  max_tokens: number
+  stream: boolean
+  model: string | null
+}
+
+export type BenchmarkMember = {
+  /** LiteLLM's row ID (x-litellm-model-id); on APIM the answering region (x-ms-region). */
+  member: string | null
+  requests: number
+  share: number
+  latency_p50_ms: number | null
+  errors: number
+}
+
+export type BenchmarkPoint = {
+  second: number
+  requests: number
+  errors: number
+  throttled: number
+  latency_p50_ms: number | null
+  users: number
+}
+
+export type BenchmarkSummary = {
+  elapsed_seconds: number
+  requests: number
+  successes: number
+  throttled: number
+  errors: Record<string, number>
+  requests_per_second: number
+  success_rate: number | null
+  latency_p50_ms: number | null
+  latency_p90_ms: number | null
+  latency_p95_ms: number | null
+  latency_p99_ms: number | null
+  latency_max_ms: number | null
+  ttft_p50_ms: number | null
+  ttft_p95_ms: number | null
+  prompt_tokens: number
+  completion_tokens: number
+  output_tokens_per_second: number
+  /** Where the gateway says so (LiteLLM); always 0 on APIM. */
+  failovers: number
+  members: BenchmarkMember[]
+  timeline: BenchmarkPoint[]
+}
+
+export type BenchmarkRun = {
+  id: string
+  pool_id: string
+  /** The API the run called (APIM); null on LiteLLM. */
+  api_id: string | null
+  state: "running" | "done" | "stopped" | "failed"
+  spec: BenchmarkSpec
+  model: string
+  started_at: string
+  error: string | null
+  summary: BenchmarkSummary
+}
