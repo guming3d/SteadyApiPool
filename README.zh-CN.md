@@ -2,20 +2,16 @@
 
 [English](README.md) | **简体中文**
 
-一个独立的 Web 应用，为你的 Azure OpenAI / Foundry 模型部署提供一个**带故障转移的 AI 网关**，无需先学习网关
-或 Foundry。它会找到你的模型部署，并把同一模型的部署组合成一个**后端池**。客户端在一个终结点上调用后端池；
-网关把请求分配给各个成员（故障转移、轮询或加权），让持续失败的成员暂停一段时间，并在另一个成员上重试。
+本Solution是一个可以本地运行的Web应用，用户无需预先了解API网关的技术细节就能为你的Azure OpenAI/Foundry模型部署搭建一个**支持故障转移的 AI 网关**。应用会自动发现你的模型部署，并将同一模型的多个部署组合成一个**后端池**。客户端只需通过单一API Endpoint调用后端池，网关就会按策略（故障转移、轮询或加权）将请求分发给池中API节点；当某个API节点持续失败时，网关会将其暂时隔离，并按照策略把导入a。到其他后端节点。
 
-你在设置页上选择网关：
+Solution支持两种网关类型：
 
-- **[Azure API 管理](https://learn.microsoft.com/azure/api-management/)（APIM）**，使用它原生的后端池、断路器和
-  会话感知。应用使用你已有的 APIM 服务，或新建一个，并把每个后端池绑定到一个 API。
-- **[LiteLLM](https://github.com/BerriAI/litellm) 网关**，一个开源的 AI 网关。应用把它部署到 Azure 容器应用或
-  AKS 上，或连接你已在运行的网关，并为客户端提供 OpenAI 风格的模型名、别名和虚拟密钥。
+- **[Azure API Management](https://learn.microsoft.com/azure/api-management/)（APIM）**，微软Azure原生的API管理服务使用它原生的后端池，无需维护API网关本身的infra。
+- **[LiteLLM](https://github.com/BerriAI/litellm) 网关**，一个开源的 AI 网关。Solution根据用户选择部署到 Azure容器应用或AKS(Azure kubernets Service)上，连接你已在运行的网关，并为客户端提供 OpenAI 风格的模型名、别名和虚拟密钥。
 
 ![后端池的路由预览选项卡：客户端用一个模型名调用网关，后端池把请求分配到多个区域的 Foundry 部署，并带有冷却和重试](docs/images/pool-routing.png)
 
-*客户端只用一个终结点，后面是多个模型部署：路由预览选项卡展示网关如何在后端池中分配流量；点击某个部署，就能
+*客户端只看到一个API Endpoint，后面是多个模型部署：路由预览选项卡展示网关如何在后端池中分配流量；点击某个部署，就能
 看到它故障或被限流时会发生什么。*
 
 ## 选择哪种网关？
@@ -26,20 +22,20 @@
     <th width="50%">LiteLLM（容器应用或 AKS）</th>
   </tr>
   <tr>
-    <td><a href="images/apim-architecture.gif"><img src="images/apim-architecture.gif" alt="APIM：管理应用发布一个包含三个部署的后端池；主部署返回 429 时断路器跳变 60 秒，重试发往下一个成员" width="100%"></a></td>
-    <td><a href="images/litellm-architecture.gif"><img src="images/litellm-architecture.gif" alt="LiteLLM：管理应用发布一个包含三个部署的后端池（模型组）；主部署返回 429 时冷却 60 秒，LiteLLM 在下一个成员上重试" width="100%"></a></td>
+    <td><a href="images/apim-architecture.gif"><img src="images/apim-architecture.gif" alt="APIM：Solution发布一个包含三个部署的后端池；主部署返回 429 时断路器跳变 60 秒，重试发往下一个API节点" width="100%"></a></td>
+    <td><a href="images/litellm-architecture.gif"><img src="images/litellm-architecture.gif" alt="LiteLLM：Solution发布一个包含三个部署的后端池（模型组）；主部署返回 429 时冷却 60 秒，LiteLLM 在下一个API节点上重试" width="100%"></a></td>
   </tr>
 </table>
 
-*同一个后端池在两种网关上：主部署返回 429，网关在下一个成员上重试，并让主部署暂停 60 秒，之后再把流量交还给它。
+*同一个后端池在两种网关上：主部署返回 429，网关在下一个API节点上重试，并让主部署暂停 60 秒，之后再把流量交还给它。
 动画中的文字为英文。*
 
 | | Azure API 管理 | LiteLLM |
 | --- | --- | --- |
-| 何时选择 | 你的组织已经在运行 APIM，或想要一个带有策略、产品和门户的 Azure 托管服务 | 你想要一个带有模型名、别名和按密钥限制的 OpenAI 风格终结点，或一个可以在任何地方运行的开源网关 |
+| 何时选择 | 你的组织已经在运行 APIM，或想要一个带有策略、产品和门户的 Azure 托管服务 | 你想要一个开源网关，可以自主做定制 |
 | 应用会设置什么 | 一个 APIM 服务（你已有的，或新建的基本 v2 服务），每个后端池一个 `Pool` 后端，以及一个绑定到它的 API | 容器应用上带 PostgreSQL 的 LiteLLM 代理（一步完成）或新的 AKS 群集，或连接你已有的网关；每个后端池一个模型组 |
 | 客户端如何调用 | `https://<apim>.azure-api.net/<api-path>/chat/completions?api-version=…`，带上 `Ocp-Apim-Subscription-Key` | `https://<gateway>/v1/chat/completions`，使用虚拟密钥，并把后端池 ID（或别名）作为模型 |
-| 失败处理 | 每个成员一个断路器，API 策略中的重试，可选的会话感知 | 每个成员的冷却，在另一个成员上重试，Responses API 的后续请求固定发往最初响应的部署 |
+| 失败处理 | 每个API节点一个断路器，API 策略中的重试，可选的会话感知 | 每个API节点的冷却，在另一个API节点上重试，Responses API 的后续请求固定发往最初响应的部署 |
 | 费用 | 服务所选的层（建议从基本 v2 开始；开发人员层没有 SLA），按小时计费 | 一个容器应用副本起价约每月 $46；部署前，规模计算器会按你的流量和区域为规模计算价格（标价） |
 | 其他形式 | [公开应用](docs/deploy.zh-CN.md#公开部署到-azure-容器应用)：任何人都可以用自己的 Azure 帐户登录 | — |
 
@@ -48,7 +44,7 @@
 
 ### 能承载多少流量？
 
-在 Azure 上测得（2026 年 10 月），每种网关都按应用的设置创建，由同一区域的一台虚拟机施加负载；表中是它承载的
+在Azure上测得（2026 年 10 月），每种网关都按应用的设置创建，由同一区域的一台虚拟机施加负载；下表中是它承载的
 每分钟请求数，以及在每分钟 600 个请求时增加的中位数延迟：
 
 | | APIM 基本 v2 | APIM 标准 v2 | 容器应用上的 LiteLLM | AKS 上的 LiteLLM |
@@ -65,7 +61,7 @@
 ## 快速开始
 
 应用在你自己的电脑上运行，只需要 **Python**：不需要 Azure CLI、Node.js、Docker 或配置文件，也不需要任何 APIM
-或 LiteLLM 经验。应用会检查缺少什么，并和你一起补上。整个过程需要十分钟到半小时，如果还没有网关，大部分时间是
+或 LiteLLM 经验。应用会检查缺少什么，并帮用户安装依赖的工具和lib。整个过程需要十分钟到半小时，如果还没有网关，大部分时间是
 等待 Azure 创建它。每一步的所有选项都在[分步指南](docs/getting-started.zh-CN.md)中。
 
 **你需要准备**
