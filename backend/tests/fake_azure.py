@@ -215,6 +215,8 @@ class FakeAzure:
     )
     # Azure Monitor series by (lower-case resource ID, metric name); see add_metric.
     metric_data: dict[tuple[str, str], list[dict[str, Any]]] = field(default_factory=dict)
+    # Metric names Azure answers 400 for, as for a metric the resource's tier doesn't emit.
+    metrics_unsupported: set[str] = field(default_factory=set)
     # Month-to-date cost by gateway tag value (LiteLLM) or lower-case resource ID (APIM);
     # callers Cost Management refuses, and an error (status, code) every cost query fails with.
     costs: dict[str, tuple[float, str]] = field(default_factory=dict)
@@ -586,6 +588,10 @@ class FakeAzure:
         if len(parts) == 4 and parts[2].casefold() == "resourcegroups":
             return self._resource_group(request, caller, path, parts[3], body)
         if len(parts) == 5 and parts[2].casefold() == "resourcegroups" and parts[4] == "resources":
+            if not self._may(
+                caller, path, "Microsoft.Resources/subscriptions/resourceGroups/resources/read"
+            ):
+                return _error(403, "AuthorizationFailed")
             return self._group_resources(request, path.rpartition("/")[0])
         if len(parts) >= 4 and parts[2] == "providers" and parts[3] in PROVIDERS:
             return self._provider(request, subscription, parts[3], parts[4:])
@@ -1298,6 +1304,8 @@ class FakeAzure:
             return _error(403, "AuthorizationFailed")
         params = request.url.params
         aggregation = params["aggregation"].casefold()
+        if self.metrics_unsupported & set(params["metricnames"].split(",")):
+            return _error(400, "BadRequest")
         conditions: dict[str, str] = {}
         for clause in filter(None, params.get("$filter", "").split(" and ")):
             name, _, value = clause.partition(" eq ")

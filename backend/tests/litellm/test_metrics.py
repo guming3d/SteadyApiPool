@@ -206,3 +206,97 @@ def test_the_queries_avoid_kql_pitfalls() -> None:
     assert "by ['time'] = bin(" in query and "by time" not in query
     # A name on arg_max goes to the column it maximizes, not the one it returns.
     assert "= arg_max(" not in query and "arg_max(timestamp, last_code)" in query
+
+
+GROUP = "/subscriptions/sub/resourceGroups/rg/providers"
+GATEWAY_APP = f"{GROUP}/Microsoft.App/containerApps/gw"
+POSTGRES = f"{GROUP}/Microsoft.DBforPostgreSQL/flexibleServers/psql-gw-x1"
+
+
+def test_gateway_dashboard_reads_the_container_app_and_database(
+    client: TestClient, azure: FakeAzure
+) -> None:
+    _spans(azure)
+    azure.add_metric(GATEWAY_APP, "Replicas", [(T1, 1), (T2, 1)])
+    # A dev gateway's replica has 1.25 cores and 2.5 GiB (LiteLLM and the collector).
+    azure.add_metric(GATEWAY_APP, "UsageNanoCores", [(T1, 0.25e9), (T2, 0.625e9)])
+    azure.add_metric(GATEWAY_APP, "WorkingSetBytes", [(T1, 1.25 * 2**30)])
+    azure.add_metric(POSTGRES, "cpu_percent", [(T1, 12)])
+    azure.add_metric(POSTGRES, "active_connections", [(T1, 7), (T2, 9)])
+
+    response = client.get("/api/litellm/metrics")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["traffic"]["requests"] == 12
+    # Every model's spans: the query names none.
+    assert "model in" not in azure.log_queries[-1]["query"]
+    series = {(s["resource"], s["metric"]): s for s in body["series"]}
+    assert set(series) == {
+        ("gw", "replicas"),
+        ("gw", "cpu"),
+        ("gw", "memory"),
+        ("psql-gw-x1", "db_cpu"),
+        ("psql-gw-x1", "db_connections"),
+    }
+    assert series[("gw", "replicas")]["limit"] == 1
+    assert series[("gw", "cpu")]["peak"] == pytest.approx(50)
+    assert series[("gw", "cpu")]["average"] == pytest.approx(35)
+    assert series[("gw", "memory")]["latest"] == pytest.approx(50)
+    assert series[("psql-gw-x1", "db_connections")]["unit"] == "count"
+    assert body["problems"] == []
+
+
+def test_gateway_dashboard_reads_an_aks_cluster(azure: FakeAzure) -> None:
+    outputs = azure.add_aks_gateway("gw-aks", group="rg-aks", subscription="sub")
+    cluster = outputs["clusterId"]
+    database = cluster.replace(
+        "Microsoft.ContainerService/managedClusters/gw-aks",
+        "Microsoft.DBforPostgreSQL/flexibleServers/psql-gw-aks-x1",
+    )
+    azure.add_metric(cluster, "node_cpu_usage_percentage", [(T1, 70)])
+    azure.add_metric(cluster, "node_memory_working_set_percentage", [(T1, 55)])
+    azure.add_metric(database, "memory_percent", [(T1, 30)])
+    client = _client(
+        azure,
+        _settings(
+            resource_group="rg-aks",
+            gateway_name="gw-aks",
+            gateway_url="https://gw-aks.swedencentral.cloudapp.azure.com",
+            gateway_master_key=MASTER_KEY,
+            gateway_cluster_id=cluster,
+        ),
+    )
+    try:
+        body = client.get("/api/litellm/metrics").json()
+    finally:
+        app.dependency_overrides.clear()
+
+    assert {(s["resource"], s["metric"]) for s in body["series"]} == {
+        ("gw-aks", "node_cpu"),
+        ("gw-aks", "node_memory"),
+        ("psql-gw-aks-x1", "db_memory"),
+    }
+
+
+def test_a_connected_gateway_has_only_its_traffic(azure: FakeAzure) -> None:
+    settings = _settings(resource_group="", gateway_url=URL, gateway_master_key=MASTER_KEY)
+    client = _client(azure, settings)
+    try:
+        body = client.get("/api/litellm/metrics").json()
+    finally:
+        app.dependency_overrides.clear()
+
+    assert (body["traffic"], body["traffic_error"]) == (None, "no_app_insights")
+    assert (body["series"], body["problems"]) == ([], [])
+
+
+def test_no_access_to_the_database_is_a_note(client: TestClient, azure: FakeAzure) -> None:
+    # As the deployed app's role: the Container App and its metrics, nothing else in the group.
+    azure.allow("app", GATEWAY_APP, "Microsoft.App/*", "Microsoft.Insights/metrics/read")
+    azure.add_metric(GATEWAY_APP, "Replicas", [(T1, 2)])
+
+    body = client.get("/api/litellm/metrics", params={"refresh": "true"}).json()
+
+    assert [s["metric"] for s in body["series"]] == ["replicas"]
+    assert body["problems"] == [{"resource": "rg", "error": "forbidden_resources"}]

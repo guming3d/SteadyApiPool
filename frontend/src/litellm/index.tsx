@@ -16,6 +16,10 @@ export const litellmUi: ProductUi = {
       principalId: capabilities.gateway_principal_id,
       idPrefix: capabilities.id_prefix,
       discoverySubscriptions: capabilities.discovery_subscriptions,
+      // The Container App's metrics; a connected gateway has at most its traces.
+      metricsUrl: capabilities.gateway_resource_id
+        ? `https://portal.azure.com/#resource${capabilities.gateway_resource_id}/metrics`
+        : capabilities.app_insights_id ? `https://portal.azure.com/#resource${capabilities.app_insights_id}/logs` : null,
     }
   },
   usePools: () => useQuery(queries.pools()),

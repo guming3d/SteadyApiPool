@@ -388,6 +388,7 @@ def _pool_in_use(azure: DemoAzure, accounts: list[str], product: Product) -> Non
         return [(t, value(i, base, swing, phase)) for t, i in stamps]
 
     _member_metrics(azure, refs, series)
+    _gateway_load(azure, product, series)
     if product == "apim":
         api = {"path": "gpt-5.6-luna", "display_name": "gpt-5.6-luna"}
         client.post(f"/api/apim/pools/{POOL}/api", json=api, headers=WRITE).raise_for_status()
@@ -441,6 +442,34 @@ def _pool_in_use(azure: DemoAzure, accounts: list[str], product: Product) -> Non
             "throttled": 0,
         },
     ]
+
+
+def _gateway_load(azure: DemoAzure, product: Product, series: Any) -> None:
+    """The Gateway metrics tab: traffic of another client beside the pool's, and the load on the
+    gateway's resources (a BasicV2 APIM's CPU and memory; the Container App and its database)."""
+    if product == "apim":
+        azure.add_metric(
+            azure.service_id,
+            "Requests",
+            series(40, 10, 3.0),
+            ApiId="echo",
+            GatewayResponseCode="200",
+        )
+        azure.add_metric(azure.service_id, "Duration", series(1700, 220, 1.0))
+        azure.add_metric(azure.service_id, "BackendDuration", series(1600, 200, 1.0))
+        azure.add_metric(azure.service_id, "CpuPercent_Gateway", series(38, 14, 0.5))
+        azure.add_metric(azure.service_id, "MemoryPercent_Gateway", series(52, 4, 2.0))
+        return
+    group = f"/subscriptions/{SUBSCRIPTION}/resourceGroups/{GROUP}/providers"
+    app = f"{group}/Microsoft.App/containerApps/{GATEWAY_NAME}"
+    database = f"{group}/Microsoft.DBforPostgreSQL/flexibleServers/psql-{GATEWAY_NAME}-x1"
+    azure.add_metric(app, "Replicas", [(t, 1.0) for t, _ in series(1, 0)])
+    # A dev gateway's replica has 1.25 cores and 2.5 GiB (LiteLLM and the collector).
+    azure.add_metric(app, "UsageNanoCores", [(t, v * 1e7) for t, v in series(46, 18, 0.5)])
+    azure.add_metric(app, "WorkingSetBytes", [(t, v * 2**24) for t, v in series(96, 6, 2.0)])
+    azure.add_metric(database, "cpu_percent", series(14, 6, 1.5))
+    azure.add_metric(database, "memory_percent", series(41, 2, 0.2))
+    azure.add_metric(database, "active_connections", series(18, 3, 1.0))
 
 
 def _member_metrics(azure: DemoAzure, refs: list[tuple[str, str]], series: Any) -> None:

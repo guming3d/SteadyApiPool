@@ -170,7 +170,7 @@ export type GatewayCreateOptions = {
   unregistered_providers: string[]
 }
 
-export type TargetSelect = { tenant_id: string | null; subscription_id: string; resource_group: string; gateway_name: string }
+export type TargetSelect = { tenant_id: string | null; subscription_id: string; resource_group: string; gateway_name: string; force?: boolean }
 
 export type ModelSpeed = "fast" | "standard" | "reasoning"
 

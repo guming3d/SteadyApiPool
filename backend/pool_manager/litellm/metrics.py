@@ -1,11 +1,17 @@
-"""The gateway's half of a pool's dashboard, from LiteLLM's OpenTelemetry spans.
+"""The gateway's half of a pool's dashboard, and the gateway dashboard, from LiteLLM's
+OpenTelemetry spans and its resources' platform metrics.
 
 The gateway's collector sends them to Application Insights: one span per attempt on a member
 (``chat <model>``), with the member's host and deployment, the outcome and the tokens. Spans of
 one client request share a trace (``operation_Id``), so the requests clients saw, and those a
 failover saved, are counted from them. LiteLLM's own spend logs are not used: they drop rows.
 
-Reading them needs Log Analytics read on the Application Insights component.
+The gateway dashboard counts the spans of every model, and adds the load on what LiteLLM runs on:
+the Container App's replicas and their CPU and memory against each replica's allocation, or the
+AKS cluster's nodes, and the PostgreSQL server deployed with it (found by the gateway's tags).
+
+Reading the spans needs Log Analytics read on the Application Insights component; the load,
+``Microsoft.Insights/metrics/read`` on each resource and reading the resource group's resources.
 """
 
 from __future__ import annotations
@@ -20,8 +26,18 @@ import httpx
 from ..arm import ArmClient, ArmError
 from ..config import Settings
 from ..errors import ServiceError
-from ..metrics import GatewayReading, MonitoredPool, PoolMonitor, Window, weighted
-from ..models import GatewayMetrics, LatencyPoint, TrafficPoint
+from ..metrics import (
+    GatewayReading,
+    LoadSpec,
+    MonitoredPool,
+    PoolMonitor,
+    Window,
+    resource_load,
+    weighted,
+)
+from ..models import GatewayMetrics, LatencyPoint, LoadProblem, LoadSeries, TrafficPoint
+from .cleanup import tagged_resources
+from .gateway import GatewayInfo, GatewayUnavailable
 from .resources import member_target
 from .service import LiteLLMService
 
@@ -32,21 +48,35 @@ LOGS_SCOPE = "https://api.loganalytics.io/.default"
 _LOGS_TIMEOUT = httpx.Timeout(60.0, connect=10.0)
 # Span names LiteLLM gives model calls.
 _MODEL_SPANS = ("chat ", "responses ", "embeddings ", "text_completion ", "completion ")
+_POSTGRES_TYPE = "microsoft.dbforpostgresql/flexibleservers"
+# AKS: the nodes LiteLLM's pods run on (shared with the cluster's own pods).
+NODE_SPECS = (
+    LoadSpec("node_cpu_usage_percentage", "node_cpu", "percent"),
+    LoadSpec("node_memory_working_set_percentage", "node_memory", "percent"),
+)
+POSTGRES_SPECS = (
+    LoadSpec("cpu_percent", "db_cpu", "percent"),
+    LoadSpec("memory_percent", "db_memory", "percent"),
+    LoadSpec("active_connections", "db_connections", "count"),
+)
 
 
 def _kql_string(value: str) -> str:
     return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
-def spans_query(names: list[str], start: str, end: str) -> str:
-    """The pool's attempts: LiteLLM's model-call spans for its model names."""
-    listed = ", ".join(_kql_string(name.casefold()) for name in names)
+def spans_query(names: list[str] | None, start: str, end: str) -> str:
+    """The pool's attempts: LiteLLM's model-call spans for its model names (``None``: every
+    model's, the whole gateway's)."""
     prefixes = " or ".join(f"name startswith {_kql_string(p)}" for p in _MODEL_SPANS)
+    models = ""
+    if names is not None:
+        listed = ", ".join(_kql_string(name.casefold()) for name in names)
+        models = f"\n| where model in ({listed})"
     return f"""union isfuzzy=true dependencies, requests
 | where timestamp between (datetime({start}) .. datetime({end}))
 | where {prefixes}
-| extend model = tolower(tostring(customDimensions["gen_ai.request.model"]))
-| where model in ({listed})
+| extend model = tolower(tostring(customDimensions["gen_ai.request.model"])){models}
 | extend host = tolower(tostring(customDimensions["server.address"])),
     target = tostring(customDimensions["litellm.provider.model"]),
     code = tostring(customDimensions["litellm.provider.error.code"]),
@@ -54,7 +84,7 @@ def spans_query(names: list[str], start: str, end: str) -> str:
 | extend failed = success == false or isnotempty(tostring(customDimensions["error.type"]))"""
 
 
-def requests_query(names: list[str], start: str, end: str, interval: str) -> str:
+def requests_query(names: list[str] | None, start: str, end: str, interval: str) -> str:
     """Client requests per time bin, from the attempts of each trace. ``time`` is a KQL keyword,
     so the column is quoted."""
     # arg_max names its outputs after the columns it takes: the last attempt's code arrives as
@@ -162,6 +192,84 @@ class LiteLLMMonitor(PoolMonitor):
             },
         )
 
+    def traffic(self, window: Window) -> GatewayReading:
+        app_insights = self._app_insights()
+        if not app_insights:
+            return GatewayReading(None, "no_app_insights")
+        try:
+            return GatewayReading(
+                self._requests(
+                    app_insights, None, window.start_text, window.end_text, window.interval
+                )
+            )
+        except ArmError as error:
+            logger.info("Gateway metrics: %s", error.message)
+            return GatewayReading(
+                None,
+                "forbidden"
+                if error.status in {401, 403}
+                else f"Cannot read the gateway's spans: {error.message}",
+            )
+
+    def resources(self, window: Window) -> tuple[list[LoadSeries], list[LoadProblem]]:
+        settings = self._settings
+        try:
+            info = self._service.gateway.info()
+        except GatewayUnavailable as error:
+            return [], [LoadProblem(resource=settings.gateway_name, error=error.message)]
+        found: list[tuple[str, tuple[LoadSpec, ...]]] = []
+        # Where the template put the gateway's database: only gateways this app deployed.
+        group: tuple[str, str] | None = None
+        if info.kind == "aca" and info.resource_id:
+            found.append((info.resource_id, self._replica_specs(info)))
+            if info.managed:
+                group = (settings.subscription_id, settings.resource_group)
+        cluster = settings.gateway_cluster_id
+        if cluster:
+            found.append((cluster, NODE_SPECS))
+            parts = cluster.split("/")
+            if len(parts) > 4:
+                group = (parts[2], parts[4])
+        problems: list[LoadProblem] = []
+        if group:
+            try:
+                found.extend(
+                    (str(item["id"]), POSTGRES_SPECS)
+                    for item in tagged_resources(self._arm, *group, settings.gateway_name)
+                    if str(item.get("type") or "").casefold() == _POSTGRES_TYPE
+                )
+            except ArmError as error:
+                logger.info("Cannot list the gateway's resources: %s", error.message)
+                problems.append(
+                    LoadProblem(
+                        resource=group[1],
+                        error="forbidden_resources"
+                        if error.status in {401, 403}
+                        else error.message,
+                    )
+                )
+        series: list[LoadSeries] = []
+        for resource_id, specs in found:
+            read, problem = resource_load(self._arm, resource_id, specs, window)
+            series.extend(read)
+            if problem:
+                problems.append(problem)
+        return series, problems
+
+    @staticmethod
+    def _replica_specs(info: GatewayInfo) -> tuple[LoadSpec, ...]:
+        """Replicas, and each replica's CPU and memory as a share of what it is given."""
+        specs = [LoadSpec("Replicas", "replicas", "count", limit=info.max_replicas)]
+        if info.cpu:
+            specs.append(LoadSpec("UsageNanoCores", "cpu", "percent", scale=100 / (info.cpu * 1e9)))
+        if info.memory_gib:
+            specs.append(
+                LoadSpec(
+                    "WorkingSetBytes", "memory", "percent", scale=100 / (info.memory_gib * 2**30)
+                )
+            )
+        return tuple(specs)
+
     def _app_insights(self) -> str | None:
         try:
             return self._service.capabilities().app_insights_id
@@ -191,13 +299,28 @@ class LiteLLMMonitor(PoolMonitor):
     def _gateway(
         self, app_insights: str, names: list[str], start: str, end: str, interval: str
     ) -> tuple[GatewayMetrics, dict[tuple[str, str], dict[str, int]]]:
+        gateway = self._requests(app_insights, names, start, end, interval)
+        per_member = self._logs(app_insights, members_query(names, start, end), start, end)
+        attempts = {
+            (str(row.get("host") or ""), str(row.get("target") or "").casefold()): {
+                "attempts": int(_number(row.get("attempts")) or 0),
+                "failures": int(_number(row.get("failures")) or 0),
+                "throttled": int(_number(row.get("throttled")) or 0),
+            }
+            for row in per_member
+        }
+        return gateway, attempts
+
+    def _requests(
+        self, app_insights: str, names: list[str] | None, start: str, end: str, interval: str
+    ) -> GatewayMetrics:
+        """Client requests to these model names (``None``: to every model)."""
         bins = self._logs(
             app_insights,
             requests_query(names, start, end, _KQL_BINS.get(interval, "5m")),
             start,
             end,
         )
-        per_member = self._logs(app_insights, members_query(names, start, end), start, end)
         traffic = [
             TrafficPoint(
                 time=_stamp(row.get("time")),
@@ -224,7 +347,7 @@ class LiteLLMMonitor(PoolMonitor):
                 ]
             )
 
-        gateway = GatewayMetrics(
+        return GatewayMetrics(
             requests=requests,
             success=totals["success"],
             throttled=totals["throttled"],
@@ -244,15 +367,6 @@ class LiteLLMMonitor(PoolMonitor):
                 for row in bins
             ],
         )
-        attempts = {
-            (str(row.get("host") or ""), str(row.get("target") or "").casefold()): {
-                "attempts": int(_number(row.get("attempts")) or 0),
-                "failures": int(_number(row.get("failures")) or 0),
-                "throttled": int(_number(row.get("throttled")) or 0),
-            }
-            for row in per_member
-        }
-        return gateway, attempts
 
     @staticmethod
     def _attempts(member: Any, attempts: dict[tuple[str, str], dict[str, int]]) -> dict[str, int]:

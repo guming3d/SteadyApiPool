@@ -17,6 +17,8 @@ export type GatewayFacts = {
   /** Prefix for the IDs this app gives pools and members. */
   idPrefix: string
   discoverySubscriptions: string[]
+  /** The gateway's own metrics in the Azure portal; null when it has no Azure resource. */
+  metricsUrl: string | null
 }
 
 /** Prefills a new pool, e.g. from imported deployments. */
@@ -49,8 +51,8 @@ export type ProductUi = {
   membersKey: QueryKey
   // Each editor has its own follow-up type; the Pools tab only hands it back.
   PoolEditor: ComponentType<PoolEditorProps<any>>
-  /** The gateway panel behind the gateway's name in the top bar. */
-  ServicePanel: ComponentType<{ onClose: () => void }>
+  /** The gateway panel behind the gateway's name in the top bar; onSwitch opens the picker. */
+  ServicePanel: ComponentType<{ onClose: () => void; onSwitch: () => void }>
   /** Setup's gateway step: choose, create or delete this product's gateways. */
   Picker: ComponentType<{ target: TargetView; user: SetupIdentity | null }>
 }

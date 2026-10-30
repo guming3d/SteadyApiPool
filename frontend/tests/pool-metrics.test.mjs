@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
-  actualShares, availabilityTone, formatCompact, formatMs, formatPercent, niceScale, perMinute,
+  actualShares, availabilityTone, formatCompact, formatLoad, formatMs, formatPercent, loadTone, niceScale, perMinute,
   roundedTop, shareTone, throttleTone,
 } from "../src/pool-metrics.ts"
 
@@ -61,4 +61,23 @@ test("rates and shapes", () => {
   assert.equal(roundedTop(0, 10, 20, 30), "M0,40V14Q0,10 4,10H16Q20,10 20,14V40Z")
   // Too short for the full radius: the corner shrinks instead of overshooting.
   assert.equal(roundedTop(0, 10, 20, 2), "M0,12V12Q0,10 2,10H18Q20,10 20,12V12Z")
+})
+
+test("load values: whole percentages, counts with a decimal for small averages", () => {
+  assert.equal(formatLoad(42.6, "percent"), "43%")
+  assert.equal(formatLoad(1.5, "count"), "1.5")
+  assert.equal(formatLoad(3, "count"), "3")
+  assert.equal(formatLoad(12_400, "count"), "12.4K")
+  assert.equal(formatLoad(null, "percent"), "—")
+})
+
+test("load tone: busy above 70%, saturated above 90%, replicas against their maximum", () => {
+  assert.equal(loadTone({ unit: "percent", latest: 69, limit: null }), "ok")
+  assert.equal(loadTone({ unit: "percent", latest: 70, limit: null }), "warn")
+  assert.equal(loadTone({ unit: "percent", latest: 95, limit: null }), "bad")
+  assert.equal(loadTone({ unit: "count", latest: 8, limit: 10 }), "warn")
+  assert.equal(loadTone({ unit: "count", latest: 10, limit: 10 }), "bad")
+  assert.equal(loadTone({ unit: "count", latest: 400, limit: null }), "ok")
+  assert.equal(loadTone({ unit: "count", latest: 1, limit: 1 }), "ok")
+  assert.equal(loadTone({ unit: "percent", latest: null, limit: null }), "ok")
 })

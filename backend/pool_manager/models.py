@@ -570,6 +570,70 @@ class PoolMetrics(StrictModel):
     members: list[MemberMetrics]
 
 
+# -- gateway dashboard -----------------------------------------------------------------------
+
+# What a load series measures. APIM: ``capacity`` (classic tiers), ``cpu`` and ``memory`` (v2
+# tiers). LiteLLM: ``replicas``, ``cpu`` and ``memory`` of each replica's allocation (Container
+# Apps), ``node_cpu`` and ``node_memory`` (AKS), and its database's ``db_cpu``, ``db_memory``
+# and ``db_connections``.
+LoadMetric = Literal[
+    "capacity",
+    "cpu",
+    "memory",
+    "replicas",
+    "node_cpu",
+    "node_memory",
+    "db_cpu",
+    "db_memory",
+    "db_connections",
+]
+LoadUnit = Literal["percent", "count"]
+
+
+class LoadPoint(StrictModel):
+    time: str
+    average: float | None
+    # The highest value in the time bin; None where Azure reports no maximum.
+    peak: float | None
+
+
+class LoadSeries(StrictModel):
+    metric: LoadMetric
+    unit: LoadUnit
+    # The resource's name: the APIM service, the Container App, the cluster or the database.
+    resource: str
+    average: float | None
+    peak: float | None
+    # The last bin with a value.
+    latest: float | None
+    # Where it stops: the most replicas the gateway may scale to; None when there is none.
+    limit: float | None = None
+    points: list[LoadPoint]
+
+
+class LoadProblem(StrictModel):
+    resource: str
+    # "forbidden": its metrics; "forbidden_resources": listing the resource group (LiteLLM, to
+    # find the database); else Azure's message.
+    error: str
+
+
+class GatewayLoad(StrictModel):
+    """The gateway's own dashboard: every client's traffic through it, and the load on the
+    infrastructure it runs on."""
+
+    range: MetricsRange
+    interval: str
+    start: str
+    end: str
+    # All its traffic: APIM's metrics of the whole service, or LiteLLM's spans of every model.
+    traffic: GatewayMetrics | None
+    # As ``PoolMetrics.gateway_error``.
+    traffic_error: str | None
+    series: list[LoadSeries]
+    problems: list[LoadProblem]
+
+
 # Limits per run, against cost and mistakes (the CLI can lift them with --i-know).
 BENCHMARK_MAX_USERS = 50
 

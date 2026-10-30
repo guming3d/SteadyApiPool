@@ -5,7 +5,7 @@ import { CheckCircle2, CircleAlert, Download, ExternalLink, Link2, LoaderCircle,
 import { useEffect, useRef, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 
-import { ApiError } from "../api"
+import { ApiError, gatewaySwitched } from "../api"
 import { api, keys, queries } from "./api"
 import { formatMoney } from "../cost"
 import { isGatewayName, suggestGatewayName } from "./gateway-choice"
@@ -17,6 +17,7 @@ import { isPublic, signIn as publicSignIn } from "../session"
 import type { SetupIdentity, TargetView } from "../types"
 import type { AksBundle, DeployCleanup, GatewayCreate, GatewayDeployStatus, GatewayPlatform, GatewaySizing, GatewayView } from "./types"
 import { CopyButton } from "./call-guide"
+import { SwitchRefused } from "../components/setup"
 import { Button, Dialog, ErrorText, Field } from "../components/ui"
 
 const RESOURCE_GROUP = /^[-\w.()]{0,89}[-\w()]$/
@@ -24,10 +25,10 @@ const PREFERRED_LOCATIONS = ["eastus2", "swedencentral", "eastus", "westeurope",
 const GUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/
 const APP_INSIGHTS_ID = /^\/subscriptions\/[^/]+\/resourceGroups\/[^/]+\/providers\/Microsoft\.Insights\/components\/[^/]+$/i
 
-/** Everything shown depends on the gateway, so reload it all after a switch. */
+/** Everything shown depends on the gateway: drop it and check the new one from scratch. */
 function useSwitched() {
   const queryClient = useQueryClient()
-  return () => queryClient.invalidateQueries()
+  return () => gatewaySwitched(queryClient)
 }
 
 type Mode = "list" | "deploy" | "connect"
@@ -44,16 +45,21 @@ export function GatewayPicker({ target: chosen, user }: { target: TargetView; us
   const subscriptions = useQuery(queries.subscriptions(tenantId))
   const gateways = useQuery(queries.gateways(tenantId, subscriptionId))
   const switched = useSwitched()
+  const queryClient = useQueryClient()
   const signIn = useMutation({
     mutationFn: (tenant: string | null) => isPublic() ? publicSignIn({ tenantId: tenant }) : api.signIn(tenant ?? undefined),
-    onSuccess: switched,
+    // Another tenant's subscriptions to list; the gateway stays.
+    onSuccess: () => queryClient.invalidateQueries(),
   })
+  // The backend checks the gateway first and refuses one the app can't work with (424);
+  // force chooses it anyway, to fix it in setup.
   const select = useMutation({
-    mutationFn: (gateway: GatewayView) => api.selectTarget({
+    mutationFn: ({ gateway, force = false }: { gateway: GatewayView; force?: boolean }) => api.selectTarget({
       tenant_id: tenantId,
       subscription_id: subscriptionId,
       resource_group: gateway.resource_group,
       gateway_name: gateway.name,
+      force,
     }),
     onSuccess: switched,
   })
@@ -156,8 +162,8 @@ export function GatewayPicker({ target: chosen, user }: { target: TargetView; us
               </Button>}
               {current
                 ? <span className="tag" data-tone="ok">{t.targetInUse}</span>
-                : <Button disabled={select.isPending} onClick={() => select.mutate(gateway)}>
-                  {select.isPending && select.variables?.id === gateway.id && <LoaderCircle className="spin" size={13} />}{t.targetUse}
+                : <Button disabled={select.isPending} onClick={() => select.mutate({ gateway })}>
+                  {select.isPending && select.variables?.gateway.id === gateway.id && <LoaderCircle className="spin" size={13} />}{t.targetUse}
                 </Button>}
             </div>
           </li>
@@ -178,7 +184,10 @@ export function GatewayPicker({ target: chosen, user }: { target: TargetView; us
         name={target.gateway_name!}
         onCleanUp={() => setDeleting({ id: `deployment:${target.resource_group}/${target.gateway_name}`, name: target.gateway_name!, resource_group: target.resource_group! })}
       />}
-      <ErrorText error={select.error ?? signIn.error ?? disconnect.error} />
+      {select.error
+        ? <SwitchRefused error={select.error} name={select.variables?.gateway.name} busy={select.isPending}
+          onForce={() => select.variables && select.mutate({ gateway: select.variables.gateway, force: true })} />
+        : <ErrorText error={signIn.error ?? disconnect.error} />}
       <div className="picker-actions">
         <Button variant={gateways.data?.length ? "outline" : "primary"} onClick={() => setMode("deploy")}><Plus size={13} />{t.targetCreate}</Button>
         <Button variant="ghost" onClick={() => { setConnectName(undefined); setMode("connect") }}><Link2 size={13} />{t.targetConnect}</Button>

@@ -59,12 +59,13 @@ class LiteLLMClient:
         master_key: str,
         transport: httpx.BaseTransport | None = None,
         sleep: Any = time.sleep,
+        timeout: float = _TIMEOUT_SECONDS,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self._sleep = sleep
         self._http = httpx.Client(
             base_url=self.base_url,
-            timeout=_TIMEOUT_SECONDS,
+            timeout=timeout,
             transport=transport,
             # Never follow a redirect with the master key to another host.
             follow_redirects=False,

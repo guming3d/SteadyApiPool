@@ -708,8 +708,8 @@ td > b + .tag { margin: 0 0 0 8px; font-size: 11px; }
 .key-box[data-series="success"], .key-line[data-series="success"] { background: var(--viz-success); }
 .key-box[data-series="throttled"], .key-line[data-series="throttled"] { background: var(--viz-throttled); }
 .key-box[data-series="errors"], .key-line[data-series="errors"] { background: var(--viz-errors); }
-.key-line[data-series="overall"] { background: var(--viz-overall); }
-.key-line[data-series="backend"] { background: var(--viz-backend); }
+.key-line[data-series="overall"], .key-line[data-series="average"] { background: var(--viz-overall); }
+.key-line[data-series="backend"], .key-line[data-series="peak"] { background: var(--viz-backend); }
 .viz-plot { position: relative; min-width: 0; height: 168px; }
 .viz-plot svg { display: block; overflow: visible; }
 .viz-grid line { stroke: var(--border); stroke-width: 1; shape-rendering: crispEdges; }
@@ -720,11 +720,17 @@ td > b + .tag { margin: 0 0 0 8px; font-size: 11px; }
 .viz-dim { opacity: 0.45; }
 .viz-hit { fill: transparent; }
 .viz-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
-.viz-line[data-series="overall"] { stroke: var(--viz-overall); }
-.viz-line[data-series="backend"] { stroke: var(--viz-backend); }
+.viz-line[data-series="overall"], .viz-line[data-series="average"] { stroke: var(--viz-overall); }
+.viz-line[data-series="backend"], .viz-line[data-series="peak"] { stroke: var(--viz-backend); }
 .viz-dot { stroke: var(--card); stroke-width: 2; }
-.viz-dot[data-series="overall"] { fill: var(--viz-overall); }
-.viz-dot[data-series="backend"] { fill: var(--viz-backend); }
+.viz-dot[data-series="overall"], .viz-dot[data-series="average"] { fill: var(--viz-overall); }
+.viz-dot[data-series="backend"], .viz-dot[data-series="peak"] { fill: var(--viz-backend); }
+/* The Gateway metrics tab's load charts (gateway-monitor.tsx): what and where, then the value now. */
+.load-title { display: grid; gap: 2px; min-width: 0; }
+.load-title > span:first-child { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.load-title .muted { font-size: 12px; }
+.load-now { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; font-size: 12px; }
+.load-now b { font-variant-numeric: tabular-nums; }
 .viz-crosshair { stroke: var(--muted-foreground); stroke-width: 1; opacity: 0.5; }
 .viz-tooltip { position: absolute; top: 4px; z-index: 2; display: grid; gap: 3px; min-width: 140px; border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 10px; background: var(--card); box-shadow: var(--shadow-md); font-size: 12px; pointer-events: none; }
 .viz-tooltip-title { color: var(--muted-foreground); }

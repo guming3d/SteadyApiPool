@@ -255,6 +255,8 @@ backend\.venv\Scripts\python scripts\benchmark.py --gateway apim --url https://<
 
 **指标监控**选项卡显示请求数、可用性、返回给客户端的 429（在 LiteLLM 上，还有故障转移挽回了多少）和延迟，以及
 每个API节点承担的流量份额和令牌数。**路由预览**可以模拟API节点故障，让你在真正发生之前看到故障转移的过程。
+**后端池**和**模型部署**旁边的**网关指标**选项卡显示整个网关：它的全部流量，以及它所运行资源的负载（APIM 的容量，
+或 v2 层级的 CPU 和内存；LiteLLM 的副本数及其 CPU 和内存，或 AKS 节点，以及它的数据库）。
 
 ![指标监控选项卡：请求数、可用性、429、延迟和每个API节点的流量份额](images/onboarding-8-metrics.png)
 

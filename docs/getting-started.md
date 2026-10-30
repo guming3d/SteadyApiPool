@@ -297,6 +297,9 @@ sent finish) and still prints the report. `--i-know` lifts the limits for the te
 The **Metrics** tab shows requests, availability, the 429s that reached clients (on LiteLLM, also
 how many a failover saved) and latency, plus each member's share of the traffic and tokens.
 **Routing** simulates a member failing, so you can see the failover before it happens for real.
+The **Gateway metrics** tab beside **Pools** and **Deployments** shows the whole gateway: all its
+traffic, and the load on what it runs on (APIM's capacity, or CPU and memory on the v2 tiers;
+LiteLLM's replicas, their CPU and memory, or the AKS nodes, and its database).
 
 ![Metrics tab: requests, availability, 429s, latency and each member's traffic share](images/onboarding-8-metrics.png)
 

@@ -1,6 +1,7 @@
-// Opened from the APIM name in the top bar: the service the app manages, what it costs, and how
-// to remove what the app created in it, or (locally, for services the app created) the service.
-import { Eraser, ExternalLink, LoaderCircle, RefreshCw, Server, Trash2 } from "lucide-react"
+// Opened from the APIM name in the top bar: the service the app manages, switching to another
+// gateway, what it costs, and how to remove what the app created in it, or (locally, for services
+// the app created) the service.
+import { ArrowLeftRight, Eraser, ExternalLink, LoaderCircle, RefreshCw, Server, Trash2 } from "lucide-react"
 import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 
@@ -63,7 +64,7 @@ function ServiceCostSection() {
   </section>
 }
 
-export function ServicePanel({ onClose }: { onClose: () => void }) {
+export function ServicePanel({ onClose, onSwitch }: { onClose: () => void; onSwitch: () => void }) {
   const { t } = useI18n("apim")
   const me = useQuery(queries.me())
   const capabilities = useQuery(queries.capabilities())
@@ -97,6 +98,10 @@ export function ServicePanel({ onClose }: { onClose: () => void }) {
         <div><dt>{t.createGroup}</dt><dd>{service.resource_group}</dd></div>
         {service.gateway_url && <div><dt>{t.serviceGateway}</dt><dd><code>{service.gateway_url}</code></dd></div>}
       </dl>
+      {target.data?.source !== "guest" && <section className="service-action">
+        <div><b>{t.serviceSwitch}</b><span className="muted">{target.data?.can_change ? t.serviceSwitchHint : t.serviceSwitchFixed}</span></div>
+        {target.data?.can_change && <Button onClick={onSwitch}><ArrowLeftRight size={13} />{t.serviceSwitchOpen}</Button>}
+      </section>}
       <ServiceCostSection />
       <section className="service-action">
         <div><b>{t.serviceCleanup}</b><span className="muted">{me.data?.can_write ? t.serviceCleanupHint : t.serviceReadOnly}</span></div>

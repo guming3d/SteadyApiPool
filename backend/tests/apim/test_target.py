@@ -170,6 +170,32 @@ def test_select_saves_the_service(wizard: _Wizard, apim: FakeApim) -> None:
     assert wizard.changes == 1
 
 
+def test_select_refuses_a_service_still_being_created(wizard: _Wizard, apim: FakeApim) -> None:
+    """It doesn't replace the current service; force chooses it to follow it in setup."""
+    apim.add_service("apim-new", properties={"provisioningState": "Activating"})
+    apim.add_service("apim-broken", properties={"provisioningState": "Failed"})
+    apim.add_service("apim-scaling", properties={"provisioningState": "Updating"})
+    body = {"tenant_id": TENANT, "subscription_id": SUBSCRIPTION, "resource_group": "rg-apim"}
+
+    new = wizard.client.put(
+        "/api/apim/target", json={**body, "apim_name": "apim-new"}, headers=WRITE
+    )
+    broken = wizard.client.put(
+        "/api/apim/target", json={**body, "apim_name": "apim-broken"}, headers=WRITE
+    )
+
+    assert (new.status_code, broken.status_code) == (424, 424)
+    assert "still being created (Activating)" in new.json()["detail"]
+    assert "apim-broken is Failed" in broken.json()["detail"]
+    assert wizard.changes == 0
+    # An existing service keeps working while Azure updates it.
+    scaling = {**body, "apim_name": "apim-scaling"}
+    assert wizard.client.put("/api/apim/target", json=scaling, headers=WRITE).status_code == 200
+    forced = {**body, "apim_name": "apim-new", "force": True}
+    assert wizard.client.put("/api/apim/target", json=forced, headers=WRITE).status_code == 200
+    assert wizard.saved()["apim_name"] == "apim-new"
+
+
 def test_select_needs_the_write_header_and_an_existing_service(wizard: _Wizard) -> None:
     body = {"subscription_id": SUBSCRIPTION, "resource_group": "rg", "apim_name": "missing"}
     assert wizard.client.put("/api/apim/target", json=body).status_code == 403

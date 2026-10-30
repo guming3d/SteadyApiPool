@@ -4,7 +4,7 @@ import { Check, CheckCircle2, CircleAlert, Copy, ExternalLink, KeyRound, LoaderC
 import { createContext, useContext, useState, type ReactNode } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 
-import { api, keys, queries } from "../api"
+import { api, ApiError, keys, queries } from "../api"
 import { fill, useI18n } from "../i18n"
 import { attentionCount, grantable, resourceName } from "../setup-steps"
 import type { AdminRequest, SetupCheck } from "../types"
@@ -148,5 +148,26 @@ export function FoundryAccessNotice({ accountIds }: { accountIds: string[] }) {
       <div className="code-block"><pre><code>{commands}</code></pre><CopyText text={commands} label="az role assignment" /></div>
     </details>}
     <ErrorText error={actions.grant.error} />
+  </div>
+}
+
+/** A gateway the check before switching refused (424): why, and a way to choose it anyway and
+ *  fix it in setup; the current gateway stays until then. Any other error is shown as it is. */
+export function SwitchRefused({ error, name, busy, onForce }: {
+  error: unknown
+  name: string | undefined
+  busy: boolean
+  onForce: () => void
+}) {
+  const { t } = useI18n()
+  if (!(error instanceof ApiError && error.status === 424)) return <ErrorText error={error} />
+  return <div className="callout warning" role="alert">
+    <CircleAlert size={15} />
+    <div>
+      <b>{fill(t.switchRefused, { name: name ?? "" })}</b>
+      <span>{error.message}</span>
+      <small className="muted">{t.switchRefusedHint}</small>
+    </div>
+    <Button disabled={busy} onClick={onForce}>{busy && <LoaderCircle className="spin" size={13} />}{t.switchAnyway}</Button>
   </div>
 }

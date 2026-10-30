@@ -1,5 +1,7 @@
 """Choosing the APIM service to manage, or creating one, from the setup wizard (locally and in
-the public app). ``TargetChooser`` (target.py) saves the choice.
+the public app). ``TargetChooser`` (target.py) saves the choice, once the service is one the app
+can work with now (``_check_service``: not still being created, not failed); else the switch is
+refused with 424 and the reason, unless the user chooses it anyway (``force``).
 
 Every change here uses the signed-in user's own Azure rights:
 
@@ -62,6 +64,20 @@ def _service_path(subscription_id: str, resource_group: str, name: str) -> str:
         f"/subscriptions/{segment(subscription_id)}/resourceGroups/{segment(resource_group)}"
         f"/providers/{PROVIDER}/service/{segment(name)}"
     )
+
+
+def _check_service(service: Mapping[str, Any]) -> None:
+    """A service the app can work with now; else 424 with what is wrong. An existing service
+    keeps working while it is Updating (e.g. scaling); a new one doesn't until it is up."""
+    name = str(service.get("name") or "")
+    state = str((service.get("properties") or {}).get("provisioningState") or "")
+    if state.casefold() in {"created", "activating"}:
+        raise ServiceError(
+            424,
+            f"{name} is still being created ({state}); v2 tiers take minutes, Developer 30-40.",
+        )
+    if state.casefold() in {"failed", "deleting", "terminating"}:
+        raise ServiceError(424, f"{name} is {state} in Azure, so the app can't work with it.")
 
 
 class ApimTargets:
@@ -165,6 +181,8 @@ class ApimTargets:
             raise ServiceError(
                 404, f"APIM service {body.apim_name} not found in {body.resource_group}"
             )
+        if not body.force:
+            _check_service(found)
         # ARM's casing, so the saved target matches the resource IDs ARM returns.
         resource_id = str(found.get("id") or path)
         target = {

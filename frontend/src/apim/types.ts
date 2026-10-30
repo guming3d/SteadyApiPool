@@ -194,7 +194,7 @@ export type ApimCreateOptions = {
   provider_registered: boolean
 }
 
-export type TargetSelect = { tenant_id: string | null; subscription_id: string; resource_group: string; apim_name: string }
+export type TargetSelect = { tenant_id: string | null; subscription_id: string; resource_group: string; apim_name: string; force?: boolean }
 
 export type ApimCreate = {
   tenant_id: string | null

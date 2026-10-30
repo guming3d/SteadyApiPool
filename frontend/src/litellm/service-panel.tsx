@@ -1,9 +1,11 @@
-// Opened from the gateway name in the top bar: the gateway the app manages, what it costs, and
-// how to remove what the app created on it, or (locally, for gateways the app deployed) the gateway.
-import { Eraser, ExternalLink, Gauge, LoaderCircle, RefreshCw, Server, Trash2 } from "lucide-react"
+// Opened from the gateway name in the top bar: the gateway the app manages, switching to another
+// one, what it costs, and how to remove what the app created on it, or (locally, for gateways the
+// app deployed) the gateway.
+import { ArrowLeftRight, Eraser, ExternalLink, Gauge, LoaderCircle, RefreshCw, Server, Trash2 } from "lucide-react"
 import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 
+import { containerAppPortalUrl, masterKeyCommand } from "./aca-maintenance"
 import { clusterPortalUrl, maintenanceCommands } from "./aks-maintenance"
 import { api, keys, queries } from "./api"
 import { COST_NOTE, formatMoney } from "../cost"
@@ -98,7 +100,28 @@ function MaintainCluster({ clusterId }: { clusterId: string }) {
   </section>
 }
 
-export function ServicePanel({ onClose }: { onClose: () => void }) {
+/** A Container Apps gateway's master key: the app never shows it, so the user reads it with their
+ * own Azure rights, for LiteLLM's admin UI. (On AKS, MaintainCluster has the kubectl command.) */
+function ContainerAppMasterKey({ appId }: { appId: string }) {
+  const { t } = useI18n("litellm")
+  const command = masterKeyCommand(appId)
+  if (!command) return null
+  return <section className="service-maintain">
+    <div>
+      <b>{t.serviceMasterKeyTitle}</b>
+      <span className="muted">{t.serviceMasterKeyHint}</span>
+      <a href={containerAppPortalUrl(appId)} target="_blank" rel="noreferrer"><ExternalLink size={13} />{t.serviceMasterKeyPortal}</a>
+    </div>
+    <ul className="maintain-commands">
+      <li>
+        <span>{t.maintainMasterKey}</span>
+        <div className="code-block"><pre><code>{command}</code></pre><CopyButton text={command} label={t.maintainMasterKey} /></div>
+      </li>
+    </ul>
+  </section>
+}
+
+export function ServicePanel({ onClose, onSwitch }: { onClose: () => void; onSwitch: () => void }) {
   const { t } = useI18n("litellm")
   const me = useQuery(queries.me())
   const capabilities = useQuery(queries.capabilities())
@@ -143,6 +166,11 @@ export function ServicePanel({ onClose }: { onClose: () => void }) {
         {service.litellm_version && <div><dt>{t.serviceVersion}</dt><dd>LiteLLM {service.litellm_version}</dd></div>}
         {service.gateway_url && <div><dt>{t.serviceAdminUi}</dt><dd><a href={`${service.gateway_url}/ui`} target="_blank" rel="noreferrer"><ExternalLink size={13} />{t.serviceAdminUiOpen}</a></dd></div>}
       </dl>
+      {target.data?.source !== "guest" && <section className="service-action">
+        <div><b>{t.serviceSwitch}</b><span className="muted">{target.data?.can_change ? t.serviceSwitchHint : t.serviceSwitchFixed}</span></div>
+        {target.data?.can_change && <Button onClick={onSwitch}><ArrowLeftRight size={13} />{t.serviceSwitchOpen}</Button>}
+      </section>}
+      {service.gateway_kind === "aca" && service.gateway_resource_id && <ContainerAppMasterKey appId={service.gateway_resource_id} />}
       <ServiceCostSection />
       {clusterId && <MaintainCluster clusterId={clusterId} />}
       {canResize && <section className="service-action">

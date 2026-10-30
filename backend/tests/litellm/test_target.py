@@ -166,6 +166,42 @@ def test_select_refuses_what_isnt_a_gateway(wizard: _Wizard, azure: FakeAzure) -
     assert web.status_code == 409
 
 
+def test_select_checks_the_gateway_before_switching(wizard: _Wizard, azure: FakeAzure) -> None:
+    """A gateway the app can't work with doesn't replace the current one; force switches."""
+    assert (
+        wizard.client.put("/api/litellm/target", json=_select(), headers=WRITE).status_code == 200
+    )
+    azure.add_gateway("gw-busy", group="rg-ai-gw", subscription=SUBSCRIPTION, state="InProgress")
+    azure.add_gateway("gw-nodb", group="rg-ai-gw", subscription=SUBSCRIPTION)
+
+    busy = wizard.client.put("/api/litellm/target", json=_select("gw-busy"), headers=WRITE)
+    azure.litellm.db = "Not connected"
+    no_db = wizard.client.put("/api/litellm/target", json=_select("gw-nodb"), headers=WRITE)
+
+    assert (busy.status_code, no_db.status_code) == (424, 424)
+    assert "gw-busy is InProgress in Azure" in busy.json()["detail"]
+    assert "has no database (Not connected)" in no_db.json()["detail"]
+    # Still on the gateway that worked.
+    assert wizard.saved()["gateway_name"] == "gw-dev"
+
+    forced = wizard.client.put(
+        "/api/litellm/target", json={**_select("gw-nodb"), "force": True}, headers=WRITE
+    )
+    assert forced.status_code == 200, forced.text
+    assert wizard.saved()["gateway_name"] == "gw-nodb"
+
+
+def test_select_needs_the_master_key_readable(wizard: _Wizard, azure: FakeAzure) -> None:
+    azure.callers["token"] = "user"
+    # Can read the Container App, not its secrets.
+    azure.allow("user", f"/subscriptions/{SUBSCRIPTION}", "*/read")
+
+    response = wizard.client.put("/api/litellm/target", json=_select(), headers=WRITE)
+
+    assert response.status_code == 424
+    assert "listSecrets/action" in response.json()["detail"]
+
+
 # -- deploying ------------------------------------------------------------------------------
 
 

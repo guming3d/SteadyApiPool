@@ -80,14 +80,53 @@ def _ref_key(account_id: str, deployment: str) -> tuple[str, str]:
     return account_id.casefold(), deployment
 
 
+class ScanCache:
+    """Scans by the subscriptions they cover. A scan depends on those, not on the gateway, so
+    locally one cache outlives gateway switches (deps.py): switching within a subscription, or
+    back, doesn't scan again. The public app keeps one per session (each user's own)."""
+
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self._scans: dict[tuple[str, ...], tuple[float, list[DeploymentView]]] = {}
+
+    def get(self, key: tuple[str, ...]) -> list[DeploymentView] | None:
+        with self._lock:
+            found = self._scans.get(key)
+        if found is None or time.monotonic() - found[0] > _CACHE_SECONDS:
+            return None
+        return found[1]
+
+    def put(self, key: tuple[str, ...], views: list[DeploymentView]) -> None:
+        with self._lock:
+            self._scans[key] = (time.monotonic(), views)
+
+    def forget(self, key: tuple[str, ...]) -> None:
+        with self._lock:
+            self._scans.pop(key, None)
+
+
 class DeploymentDiscovery:
-    def __init__(self, settings: Settings, arm: ArmClient, pools: MemberStore | None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        arm: ArmClient,
+        pools: MemberStore | None,
+        scans: ScanCache | None = None,
+    ) -> None:
         # None until a gateway is chosen: deployments can be listed, not imported.
         self._settings = settings
         self._arm = arm
         self._pools = pools
         self._lock = Lock()
-        self._cache: tuple[float, list[DeploymentView]] | None = None
+        self._scans = scans or ScanCache()
+
+    @property
+    def _scan_key(self) -> tuple[str, ...]:
+        # The prefix is in the suggested member IDs.
+        subscriptions = sorted(
+            item.casefold() for item in self._settings.discovery_subscription_list
+        )
+        return (self._settings.id_prefix, *subscriptions)
 
     def accounts(self) -> list[dict[str, Any]]:
         """Foundry / Azure OpenAI accounts in the discovery subscriptions (ARM bodies)."""
@@ -95,8 +134,7 @@ class DeploymentDiscovery:
 
     def forget(self) -> None:
         """Drops the cached scan, e.g. after a deployment was created here."""
-        with self._lock:
-            self._cache = None
+        self._scans.forget(self._scan_key)
 
     def _accounts(self) -> list[dict[str, Any]]:
         accounts: list[dict[str, Any]] = []
@@ -190,17 +228,19 @@ class DeploymentDiscovery:
         return self._pools.known_members() if self._pools is not None else []
 
     def list(self, *, refresh: bool = False) -> list[DeploymentView]:
+        key = self._scan_key
+        # One scan at a time; whoever waited reads the one that just finished.
         with self._lock:
-            cached = self._cache
-            if refresh or cached is None or time.monotonic() - cached[0] > _CACHE_SECONDS:
-                cached = (time.monotonic(), self._scan())
-                self._cache = cached
+            views = None if refresh else self._scans.get(key)
+            if views is None:
+                views = self._scan()
+                self._scans.put(key, views)
         # Members change independently of deployments, so match them on every call; only
         # members of saved pools count, others are pending imports.
         by_url = {_url_key(member.url): member.id for member in self._known() if member.imported}
         return [
             view.model_copy(update={"backend_id": by_url.get(_url_key(view.backend_url))})
-            for view in cached[1]
+            for view in views
         ]
 
     def import_deployments(self, request: DeploymentImport, actor: str) -> DeploymentImportResult:

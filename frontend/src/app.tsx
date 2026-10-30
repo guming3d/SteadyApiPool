@@ -4,13 +4,15 @@ import { useQuery } from "@tanstack/react-query"
 
 import { queries } from "./api"
 import { DeploymentsPage } from "./components/deployments-page"
+import { GatewayMonitor } from "./components/gateway-monitor"
 import { PoolsPage } from "./components/pools-page"
 import { ProductTour } from "./components/product-tour"
-import { SetupButton, SetupProvider, SetupWizard } from "./components/setup-wizard"
+import { SetupButton, SetupProvider, SetupWizard, SwitchGatewayDialog } from "./components/setup-wizard"
 import { StartupProgress } from "./components/startup-progress"
 import { ThemeToggle } from "./components/theme-toggle"
 import { ErrorText } from "./components/ui"
 import { useI18n } from "./i18n"
+import { SETUP_SEEN_KEY } from "./gateway-switch"
 import { displayUser } from "./identity"
 import { ProductProvider, useProductUi, type PoolAddRequest, type PoolCreateRequest } from "./product"
 import { PRODUCTS } from "./products"
@@ -18,10 +20,8 @@ import { isGuest, isPublic, leaveGuest, signOut } from "./session"
 import { shouldAutoStart, TOUR_STORAGE_KEY, TOUR_VERSION } from "./tour-steps"
 
 // Members are managed inside their pool; an old ?tab=backends link lands on Pools.
-type Tab = "pools" | "deployments"
-const TABS: Tab[] = ["pools", "deployments"]
-// Opened automatically once per browser session; the top-bar button reopens it.
-const SETUP_SEEN_KEY = "ai-gateway-pool:setup-seen"
+type Tab = "pools" | "deployments" | "gateway"
+const TABS: Tab[] = ["pools", "deployments", "gateway"]
 
 export function App() {
   const me = useQuery(queries.me())
@@ -34,6 +34,8 @@ export function App() {
   const user = me.data && (me.data.authenticated || setup.data) ? displayUser(me.data, setup.data?.user) : undefined
   const [setupOpen, setSetupOpen] = useState(false)
   const [serviceOpen, setServiceOpen] = useState(false)
+  // The gateway panel's Switch gateway: the setup step's picker on its own.
+  const [switchOpen, setSwitchOpen] = useState(false)
   const openSetup = useCallback(() => setSetupOpen(true), [])
   const autoOpened = useRef(false)
   // Set together with setSetupOpen(true), so the tour can tell in the same render that setup
@@ -41,7 +43,12 @@ export function App() {
   const setupAuto = useRef(false)
   const wasBlocked = useRef(false)
   useEffect(() => {
-    if (!setup.data) return
+    // A gateway switch checks the new gateway from scratch (gatewaySwitched): open setup again
+    // if that one needs attention.
+    if (!setup.data) {
+      autoOpened.current = false
+      return
+    }
     if (!setup.data.can_operate) {
       wasBlocked.current = true
       return
@@ -98,6 +105,7 @@ export function App() {
       <div className="tabs" role="tablist">
         <button type="button" role="tab" aria-selected={tab === "pools"} className={tab === "pools" ? "active" : ""} data-tour="tab-pools" onClick={() => selectTab("pools")}>{t.pools}</button>
         <button type="button" role="tab" aria-selected={tab === "deployments"} className={tab === "deployments" ? "active" : ""} data-tour="tab-deployments" onClick={() => selectTab("deployments")}>{t.deployments}</button>
+        <button type="button" role="tab" aria-selected={tab === "gateway"} className={tab === "gateway" ? "active" : ""} data-tour="tab-gateway" onClick={() => selectTab("gateway")}>{t.tabGateway}</button>
       </div>
       <div className="topbar-end">
         {!blocked && setup.data && <button type="button" className="tour-button" title={t.tourButtonHint} onClick={() => setTourOpen(true)}>
@@ -122,6 +130,7 @@ export function App() {
         : me.error ? <ErrorText error={me.error} />
         : ui && <ProductProvider key={ui.product} ui={ui}>
           {tab === "pools" ? <PoolsPage createRequest={createRequest} onCreateRequestHandled={clearCreateRequest} addRequest={addRequest} onAddRequestHandled={clearAddRequest} />
+            : tab === "gateway" ? <GatewayMonitor />
             : <DeploymentsPage
               onCreatePool={(request) => { setCreateRequest(request); selectTab("pools") }}
               onAddToPool={(request) => { setAddRequest(request); selectTab("pools") }}
@@ -129,7 +138,10 @@ export function App() {
         </ProductProvider>}
     </main>
     {setupOpen && !blocked && <SetupWizard onClose={closeSetup} />}
-    {serviceOpen && !blocked && ui && <ProductProvider key={ui.product} ui={ui}><ui.ServicePanel onClose={() => setServiceOpen(false)} /></ProductProvider>}
+    {serviceOpen && !blocked && ui && <ProductProvider key={ui.product} ui={ui}>
+      <ui.ServicePanel onClose={() => setServiceOpen(false)} onSwitch={() => { setServiceOpen(false); setSwitchOpen(true) }} />
+    </ProductProvider>}
+    {switchOpen && !blocked && <SwitchGatewayDialog onClose={() => setSwitchOpen(false)} />}
     {tourOpen && !blocked && !setupOpen && <ProductTour product={product} onClose={closeTour} />}
   </div></SetupProvider>
 }

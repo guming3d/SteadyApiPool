@@ -4,7 +4,7 @@ import { CircleAlert, ExternalLink, LoaderCircle, Plus, RotateCcw, Server, Trash
 import { useEffect, useMemo, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 
-import { ApiError } from "../api"
+import { ApiError, gatewaySwitched } from "../api"
 import { api, queries } from "./api"
 import { fill, useI18n } from "../i18n"
 import { targetFor } from "../product"
@@ -12,6 +12,7 @@ import { targetFromServiceId, targetFromView } from "../public-target"
 import { chooseTarget, isPublic, signIn as publicSignIn } from "../session"
 import type { SetupIdentity, TargetView } from "../types"
 import type { ApimServiceView, ApimSku, DeletedServiceView } from "./types"
+import { SwitchRefused } from "../components/setup"
 import { Button, Dialog, ErrorText } from "../components/ui"
 
 const SKUS: ApimSku[] = ["BasicV2", "StandardV2", "Developer"]
@@ -21,10 +22,10 @@ const RESOURCE_GROUP = /^[-\w.()]{0,89}[-\w()]$/
 const EMAIL = /^[^@\s]+@[^@\s]+\.[^@\s]+$/
 const PREFERRED_LOCATIONS = ["eastus2", "swedencentral", "eastus", "westeurope"]
 
-/** Everything shown depends on the APIM service, so reload it all after a switch. */
+/** Everything shown depends on the APIM service: drop it and check the new one from scratch. */
 function useSwitched() {
   const queryClient = useQueryClient()
-  return () => queryClient.invalidateQueries()
+  return () => gatewaySwitched(queryClient)
 }
 
 export function ApimPicker({ target: chosen, user }: { target: TargetView; user: SetupIdentity | null }) {
@@ -38,17 +39,22 @@ export function ApimPicker({ target: chosen, user }: { target: TargetView; user:
   const subscriptions = useQuery(queries.subscriptions(tenantId))
   const services = useQuery(queries.services(tenantId, subscriptionId))
   const switched = useSwitched()
+  const queryClient = useQueryClient()
   const signIn = useMutation({
     // The public app signs in to that tenant with a full-page redirect.
     mutationFn: (tenant: string | null) => isPublic() ? publicSignIn({ tenantId: tenant }) : api.signIn(tenant ?? undefined),
-    onSuccess: switched,
+    // Another tenant's subscriptions to list; the service stays.
+    onSuccess: () => queryClient.invalidateQueries(),
   })
+  // The backend refuses a service still being created or failed (424); force chooses it
+  // anyway, to follow it in setup.
   const select = useMutation({
-    mutationFn: (service: ApimServiceView) => api.selectTarget({
+    mutationFn: ({ service, force = false }: { service: ApimServiceView; force?: boolean }) => api.selectTarget({
       tenant_id: tenantId,
       subscription_id: subscriptionId,
       resource_group: service.resource_group,
       apim_name: service.name,
+      force,
     }),
     onSuccess: (view) => { chooseTarget(targetFromView(view)); return switched() },
   })
@@ -118,14 +124,17 @@ export function ApimPicker({ target: chosen, user }: { target: TargetView; user:
               </Button>}
               {current
                 ? <span className="tag" data-tone="ok">{t.targetInUse}</span>
-                : <Button disabled={select.isPending} onClick={() => select.mutate(service)}>
-                  {select.isPending && select.variables?.id === service.id && <LoaderCircle className="spin" size={13} />}{t.targetUse}
+                : <Button disabled={select.isPending} onClick={() => select.mutate({ service })}>
+                  {select.isPending && select.variables?.service.id === service.id && <LoaderCircle className="spin" size={13} />}{t.targetUse}
                 </Button>}
             </div>
           </li>
         })}</ul>
         : <div className="state">{t.targetNoServices}</div>)}
-      <ErrorText error={select.error ?? signIn.error} />
+      {select.error
+        ? <SwitchRefused error={select.error} name={select.variables?.service.name} busy={select.isPending}
+          onForce={() => select.variables && select.mutate({ service: select.variables.service, force: true })} />
+        : <ErrorText error={signIn.error} />}
       {services.data && <div><Button onClick={() => setCreating(true)}><Plus size={13} />{t.targetCreate}</Button></div>}
       <DeletedServices tenantId={tenantId} subscriptionId={subscriptionId} />
     </>}

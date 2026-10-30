@@ -2,7 +2,7 @@
 // the Azure access the user, the app and the gateway's identity need, fixes what the user's own
 // rights allow, and turns the rest into a ready-to-send admin request.
 import { Check, CheckCircle2, CircleAlert, CircleDashed, Clock, ExternalLink, KeyRound, LoaderCircle, Network, RefreshCw, Server, ShieldAlert, ShieldCheck } from "lucide-react"
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 
 import { api, keys, queries } from "../api"
@@ -301,12 +301,38 @@ export function SetupWizard({ open = true, page = false, onClose }: { open?: boo
   </Dialog>
 }
 
+/** The gateway panel's Switch gateway: the setup step's picker on its own, for either kind of
+ *  gateway. It closes once another gateway is chosen; the page behind then shows that one. */
+export function SwitchGatewayDialog({ onClose }: { onClose: () => void }) {
+  const { t } = useSetupI18n()
+  const setup = useQuery(queries.setup())
+  const target = useQuery(queries.target())
+  const current = target.data && targetKey(target.data)
+  const opened = useRef(current)
+  useEffect(() => {
+    if (!current) return
+    if (!opened.current) opened.current = current
+    else if (current !== opened.current) onClose()
+  }, [current])
+  return <Dialog open wide onClose={onClose} title={t.switchTitle} description={t.switchHint} footer={<Button onClick={onClose}>{t.close}</Button>}>
+    {target.data && setup.data
+      ? <TargetPanel target={target.data} report={setup.data} initiallyOpen />
+      : target.isLoading || setup.isLoading
+        ? <div className="state"><LoaderCircle className="spin" size={14} />{t.loading}</div>
+        : <ErrorText error={target.error ?? setup.error} />}
+  </Dialog>
+}
+
+function targetKey(target: TargetView) {
+  return [target.product, target.subscription_id, target.resource_group, target.gateway_name, target.gateway_url].join("|")
+}
+
 /** Where the gateway comes from, and the picker when it can be changed here. */
-function TargetPanel({ target, report }: { target: TargetView; report: SetupReport }) {
+function TargetPanel({ target, report, initiallyOpen = false }: { target: TargetView; report: SetupReport; initiallyOpen?: boolean }) {
   const { t } = useSetupI18n()
   // Open straight away when there is nothing to manage yet, the gateway can't be reached, or
   // a new AKS gateway is being installed (the picker's progress drives that on).
-  const [open, setOpen] = useState(target.provisioning || report.checks.some((item) =>
+  const [open, setOpen] = useState(initiallyOpen || target.provisioning || report.checks.some((item) =>
     (item.kind === "gateway_target" || item.kind === "gateway_health")
     && (item.status === "action" || item.status === "blocked")))
   // The kind of gateway to pick from: the chosen one's, else the user picks (the public app

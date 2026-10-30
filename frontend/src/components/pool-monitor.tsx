@@ -1,7 +1,7 @@
 // The pool's Monitor tab: what its clients saw (APIM's metrics for the pool's APIs, or LiteLLM's
 // spans in Application Insights) and how each member is doing (its own Azure OpenAI metrics, and
 // on LiteLLM the gateway's attempts on it). Deliberately small: four tiles, two charts and one
-// table.
+// table. The Gateway metrics tab (gateway-monitor.tsx) shares the tiles and charts.
 import { CircleAlert, ExternalLink, LoaderCircle, OctagonAlert, RefreshCw, TriangleAlert } from "lucide-react"
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
@@ -12,7 +12,7 @@ import {
   actualShares, availabilityTone, formatCompact, formatMs, formatPercent, formatTime,
   niceScale, perMinute, RANGES, roundedTop, shareTone, throttleTone, type Tone,
 } from "../pool-metrics"
-import type { LatencyPoint, MemberMetrics, MetricsRange, PoolMetrics, Product, TrafficPoint } from "../types"
+import type { GatewayMetrics, LatencyPoint, MemberMetrics, MetricsRange, Product, TrafficPoint } from "../types"
 import { Button, ErrorText } from "./ui"
 
 type Messages = ReturnType<typeof useI18n>["t"]
@@ -65,7 +65,7 @@ export function Grid({ width, ticks, max, format }: { width: number; ticks: numb
   </g>
 }
 
-function TimeAxis({ width, times, range }: { width: number; times: string[]; range: MetricsRange }) {
+export function TimeAxis({ width, times, range }: { width: number; times: string[]; range: MetricsRange }) {
   if (!times.length) return null
   const plot = width - PAD.left - PAD.right
   const picks = [...new Set([0, Math.floor((times.length - 1) / 2), times.length - 1])]
@@ -99,7 +99,7 @@ export function Legend({ items }: { items: Array<{ key: string; label: string; l
 
 const TRAFFIC_SERIES = ["success", "throttled", "errors"] as const
 
-function TrafficChart({ points, range, t }: { points: TrafficPoint[]; range: MetricsRange; t: Messages }) {
+export function TrafficChart({ points, range, t }: { points: TrafficPoint[]; range: MetricsRange; t: Messages }) {
   const [ref, width] = useWidth<HTMLDivElement>()
   const [hover, setHover] = useState<number | null>(null)
   const labels = { success: t.monSuccess, throttled: t.monThrottled429, errors: t.monErrors }
@@ -146,58 +146,75 @@ function TrafficChart({ points, range, t }: { points: TrafficPoint[]; range: Met
   </figure>
 }
 
-const LATENCY_SERIES = ["overall", "backend"] as const
+export type LineSeries = { key: string; label: string; values: (number | null)[] }
 
-function LatencyChart({ points, range, t }: { points: LatencyPoint[]; range: MetricsRange; t: Messages }) {
+/** Lines over time, one per series; a bin without a value breaks its line. */
+export function LineChart({ title, times, series, range, format, axisMax = 0 }: {
+  title: ReactNode
+  times: string[]
+  series: LineSeries[]
+  range: MetricsRange
+  format: (value: number | null) => string
+  /** The axis reaches at least this, e.g. 100 for percentages. */
+  axisMax?: number
+}) {
   const [ref, width] = useWidth<HTMLDivElement>()
   const [hover, setHover] = useState<number | null>(null)
-  const labels = { overall: t.monLatencyOverall, backend: t.monLatencyBackend }
-  const value = (point: LatencyPoint, key: (typeof LATENCY_SERIES)[number]) => key === "overall" ? point.overall_ms : point.backend_ms
-  const values = points.flatMap((point) => LATENCY_SERIES.map((key) => value(point, key) ?? 0))
-  const scale = niceScale(Math.max(0, ...values))
+  const { t } = useI18n()
+  const scale = niceScale(Math.max(axisMax, 0, ...series.flatMap((line) => line.values.map((value) => value ?? 0))))
   const plot = Math.max(0, width - PAD.left - PAD.right)
-  const x = (index: number) => PAD.left + (points.length > 1 ? (index / (points.length - 1)) * plot : plot / 2)
-  const y = (ms: number) => PAD.top + PLOT_HEIGHT - (ms / scale.max) * PLOT_HEIGHT
-  // Minutes without traffic have no latency: the line breaks instead of dropping to zero.
-  const path = (key: (typeof LATENCY_SERIES)[number]) => points.reduce((d, point, index) => {
-    const ms = value(point, key)
-    if (ms === null) return d
-    const previous = index > 0 ? value(points[index - 1]!, key) : null
-    return `${d}${previous === null ? "M" : "L"}${x(index).toFixed(1)},${y(ms).toFixed(1)}`
+  const x = (index: number) => PAD.left + (times.length > 1 ? (index / (times.length - 1)) * plot : plot / 2)
+  const y = (value: number) => PAD.top + PLOT_HEIGHT - (value / scale.max) * PLOT_HEIGHT
+  const path = (values: (number | null)[]) => values.reduce<string>((d, value, index) => {
+    if (value === null) return d
+    const previous = index > 0 ? values[index - 1] : null
+    return `${d}${previous === null || previous === undefined ? "M" : "L"}${x(index).toFixed(1)},${y(value).toFixed(1)}`
   }, "")
-  const last = (key: (typeof LATENCY_SERIES)[number]) => {
-    for (let index = points.length - 1; index >= 0; index--) if (value(points[index]!, key) !== null) return index
+  const last = (values: (number | null)[]) => {
+    for (let index = values.length - 1; index >= 0; index--) if (values[index] !== null) return index
     return null
   }
   const track = (clientX: number, element: Element) => {
     const offset = clientX - element.getBoundingClientRect().left
-    const index = points.length > 1 ? Math.round(((offset - PAD.left) / plot) * (points.length - 1)) : 0
-    setHover(Math.max(0, Math.min(points.length - 1, index)))
+    const index = times.length > 1 ? Math.round(((offset - PAD.left) / plot) * (times.length - 1)) : 0
+    setHover(Math.max(0, Math.min(times.length - 1, index)))
   }
-  const hovered = hover === null ? null : points[hover]
   return <figure className="viz-card">
-    <figcaption><b>{t.monLatency}</b><Legend items={LATENCY_SERIES.map((key) => ({ key, label: labels[key], line: true }))} /></figcaption>
+    <figcaption>{title}<Legend items={series.map((line) => ({ key: line.key, label: line.label, line: true }))} /></figcaption>
     <div className="viz-plot" ref={ref} onPointerLeave={() => setHover(null)}>
       {width > 0 && <svg width={width} height={HEIGHT} aria-hidden="true" onPointerMove={(event) => track(event.clientX, event.currentTarget)}>
-        <Grid width={width} ticks={scale.ticks} max={scale.max} format={(ms) => ms ? formatMs(ms) : "0"} />
+        <Grid width={width} ticks={scale.ticks} max={scale.max} format={(value) => value ? format(value) : "0"} />
         {hover !== null && <line className="viz-crosshair" x1={x(hover)} x2={x(hover)} y1={PAD.top} y2={PAD.top + PLOT_HEIGHT} />}
-        {LATENCY_SERIES.map((key) => <path key={key} className="viz-line" d={path(key)} data-series={key} />)}
-        {LATENCY_SERIES.map((key) => {
-          const index = hover ?? last(key)
-          const ms = index === null ? null : value(points[index]!, key)
-          return index !== null && ms !== null && <circle key={key} className="viz-dot" cx={x(index)} cy={y(ms)} r={4} data-series={key} />
+        {series.map((line) => <path key={line.key} className="viz-line" d={path(line.values)} data-series={line.key} />)}
+        {series.map((line) => {
+          const index = hover ?? last(line.values)
+          const value = index === null ? null : line.values[index] ?? null
+          return index !== null && value !== null && <circle key={line.key} className="viz-dot" cx={x(index)} cy={y(value)} r={4} data-series={line.key} />
         })}
-        <TimeAxis width={width} times={points.map((point) => point.time)} range={range} />
+        <TimeAxis width={width} times={times} range={range} />
       </svg>}
-      {hovered && hover !== null && <Tooltip left={x(hover)} width={width} title={formatTime(hovered.time, range)}
-        rows={LATENCY_SERIES.map((key) => ({ key, label: labels[key], value: formatMs(value(hovered, key)) }))} />}
+      {hover !== null && times[hover] && <Tooltip left={x(hover)} width={width} title={formatTime(times[hover]!, range)}
+        rows={series.map((line) => ({ key: line.key, label: line.label, value: format(line.values[hover] ?? null) }))} />}
     </div>
     <table className="sr-only">
-      <caption>{t.monLatency}</caption>
-      <thead><tr><th>{t.monTime}</th>{LATENCY_SERIES.map((key) => <th key={key}>{labels[key]}</th>)}</tr></thead>
-      <tbody>{points.map((point) => <tr key={point.time}><td>{formatTime(point.time, range)}</td>{LATENCY_SERIES.map((key) => <td key={key}>{formatMs(value(point, key))}</td>)}</tr>)}</tbody>
+      <caption>{title}</caption>
+      <thead><tr><th>{t.monTime}</th>{series.map((line) => <th key={line.key}>{line.label}</th>)}</tr></thead>
+      <tbody>{times.map((time, index) => <tr key={time}><td>{formatTime(time, range)}</td>{series.map((line) => <td key={line.key}>{format(line.values[index] ?? null)}</td>)}</tr>)}</tbody>
     </table>
   </figure>
+}
+
+export function LatencyChart({ points, range, t }: { points: LatencyPoint[]; range: MetricsRange; t: Messages }) {
+  return <LineChart
+    title={<b>{t.monLatency}</b>}
+    times={points.map((point) => point.time)}
+    series={[
+      { key: "overall", label: t.monLatencyOverall, values: points.map((point) => point.overall_ms) },
+      { key: "backend", label: t.monLatencyBackend, values: points.map((point) => point.backend_ms) },
+    ]}
+    range={range}
+    format={formatMs}
+  />
 }
 
 function ShareMeter({ actual, expected, t }: { actual: number | null; expected: number; t: Messages }) {
@@ -243,12 +260,12 @@ function MemberTable({ members, withAttempts, t }: { members: MemberMetrics[]; w
   </table>
 }
 
-function Tiles({ data, t }: { data: PoolMetrics; t: Messages }) {
-  const gateway = data.gateway!
+/** Requests, availability, 429s and latency of what the gateway saw between start and end. */
+export function Tiles({ gateway, start, end, t }: { gateway: GatewayMetrics; start: string; end: string; t: Messages }) {
   const throttle = throttleTone(gateway.throttled, gateway.requests)
   const availability = availabilityTone(gateway.availability)
   return <div className="kpi-row">
-    <Tile t={t} label={t.monRequests} value={formatCompact(gateway.requests)} sub={fill(t.monPerMinute, { rate: formatCompact(perMinute(gateway.requests, data.start, data.end)) })} />
+    <Tile t={t} label={t.monRequests} value={formatCompact(gateway.requests)} sub={fill(t.monPerMinute, { rate: formatCompact(perMinute(gateway.requests, start, end)) })} />
     <Tile t={t} label={t.monAvailability} value={formatPercent(gateway.availability, 2)} tone={availability}
       sub={fill(t.monErrorsSub, { server: formatCompact(gateway.server_errors), client: formatCompact(gateway.client_errors) })} />
     <Tile t={t} label={t.monThrottled} value={formatCompact(gateway.throttled)} tone={throttle}
@@ -303,7 +320,7 @@ export function PoolMonitor({ product, poolId, active, portalUrl, external = fal
             : data.gateway_error && <div className="callout warning"><CircleAlert size={15} /><div><span>{data.gateway_error}</span>{product === "apim" && <small className="muted">{t.monPermissionHint}</small>}</div></div>}
         {product === "apim" && !data.names.length && <div className="state">{t.monNoApi}</div>}
         {gateway && <>
-          <Tiles data={data} t={t} />
+          <Tiles gateway={gateway} start={data.start} end={data.end} t={t} />
           {gateway.requests
             ? <div className="monitor-charts">
               <TrafficChart points={gateway.traffic} range={data.range} t={t} />

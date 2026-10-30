@@ -312,6 +312,45 @@ export type PoolMetrics = {
   members: MemberMetrics[]
 }
 
+// -- the gateway dashboard (mirrors pool_manager/models.py) --
+
+/** APIM: capacity (classic tiers), cpu and memory (v2 tiers). LiteLLM: replicas, and cpu and
+ *  memory of each replica's allocation (Container Apps), node_cpu and node_memory (AKS), and its
+ *  database's db_*. */
+export type LoadMetric = "capacity" | "cpu" | "memory" | "replicas" | "node_cpu" | "node_memory" | "db_cpu" | "db_memory" | "db_connections"
+
+export type LoadPoint = { time: string; average: number | null; peak: number | null }
+
+export type LoadSeries = {
+  metric: LoadMetric
+  unit: "percent" | "count"
+  /** The resource's name: the APIM service, the Container App, the cluster or the database. */
+  resource: string
+  average: number | null
+  peak: number | null
+  latest: number | null
+  /** The most replicas the gateway may scale to; null when there is none. */
+  limit?: number | null
+  points: LoadPoint[]
+}
+
+/** "forbidden" (its metrics), "forbidden_resources" (listing its resource group, LiteLLM), or
+ *  Azure's message. */
+export type LoadProblem = { resource: string; error: string }
+
+export type GatewayLoad = {
+  range: MetricsRange
+  interval: string
+  start: string
+  end: string
+  /** All its traffic: APIM's whole service, or LiteLLM's spans of every model. */
+  traffic: GatewayMetrics | null
+  /** As PoolMetrics.gateway_error. */
+  traffic_error: string | null
+  series: LoadSeries[]
+  problems: LoadProblem[]
+}
+
 // -- what the gateway costs (mirrors pool_manager/models.py) --
 
 /** This month so far, from Cost Management (it lags a few hours). */

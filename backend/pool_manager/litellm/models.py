@@ -327,6 +327,8 @@ class TargetSelect(StrictModel):
     subscription_id: str = Field(pattern=GUID_PATTERN)
     resource_group: str = Field(pattern=RESOURCE_GROUP_PATTERN)
     gateway_name: str = Field(min_length=2, max_length=32, pattern=r"^[a-z0-9-]+$")
+    # Choose it even though the check before switching refused it (424), to fix it in setup.
+    force: bool = False
 
 
 # How fast the models behind the gateway answer (sizing.SPEEDS), unless the scenario gives the

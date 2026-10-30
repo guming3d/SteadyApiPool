@@ -169,3 +169,84 @@ def test_expected_shares_follow_priority_and_weight() -> None:
     zero = [PoolMemberView(backend_id=x, priority=2, weight=0) for x in "ab"]
     assert expected_shares(zero) == [0.5, 0.5]
     assert expected_shares([]) == []
+
+
+def test_gateway_dashboard_covers_the_whole_service(client: TestClient, apim: FakeApim) -> None:
+    apim.add_metric(SERVICE, "Requests", [(T1, 10), (T2, 20)], ApiId=API, GatewayResponseCode="200")
+    apim.add_metric(SERVICE, "Requests", [(T1, 5)], ApiId="other", GatewayResponseCode="429")
+    apim.add_metric(SERVICE, "Duration", [(T1, 800), (T2, 1000)])
+    apim.add_metric(SERVICE, "BackendDuration", [(T1, 700), (T2, 900)])
+    apim.add_metric(SERVICE, "Capacity", [(T1, 20), (T2, 60)])
+
+    response = client.get("/api/apim/metrics", params={"range": "6h"})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    traffic = body["traffic"]
+    assert (body["range"], body["interval"]) == ("6h", "PT5M")
+    # Every API's requests, not only those of a pool.
+    assert (traffic["requests"], traffic["success"], traffic["throttled"]) == (35, 30, 5)
+    assert traffic["duration_ms"] == pytest.approx((800 * 15 + 1000 * 20) / 35)
+    requests = [p for p in _metrics_requests(apim) if p["metricnames"] == "Requests"]
+    assert [p["$filter"] for p in requests] == ["GatewayResponseCode eq '*'"]
+    # The classic tiers' Capacity; a v2 tier's CPU and memory have no points here.
+    [capacity] = body["series"]
+    assert (capacity["metric"], capacity["unit"], capacity["resource"]) == (
+        "capacity",
+        "percent",
+        SERVICE.rpartition("/")[2],
+    )
+    # Capacity's Maximum is 0 below Premium: its peak is the busiest bin's average.
+    assert (capacity["average"], capacity["peak"], capacity["latest"]) == (40, 60, 60)
+    assert [p["peak"] for p in capacity["points"]] == [None, None]
+    assert not any(
+        p["metricnames"] == "Capacity" and p["aggregation"] == "Maximum"
+        for p in _metrics_requests(apim)
+    )
+    assert body["problems"] == []
+
+
+def test_gateway_dashboard_reads_v2_cpu_and_memory(client: TestClient, apim: FakeApim) -> None:
+    apim.add_metric(SERVICE, "CpuPercent_Gateway", [(T1, 30), (T2, 50)])
+    apim.add_metric(SERVICE, "MemoryPercent_Gateway", [(T1, 40)])
+
+    body = client.get("/api/apim/metrics").json()
+
+    series = {s["metric"]: s for s in body["series"]}
+    assert set(series) == {"cpu", "memory"}
+    assert (series["cpu"]["average"], series["cpu"]["peak"]) == (40, 50)
+    assert series["memory"]["latest"] == 40
+
+
+def test_gateway_dashboard_without_metrics_access(client: TestClient, apim: FakeApim) -> None:
+    apim.callers["token"] = "app"
+    apim.allow(
+        "app", "/subscriptions/sub", "Microsoft.ApiManagement/*", "Microsoft.CognitiveServices/*"
+    )
+
+    body = client.get("/api/apim/metrics", params={"refresh": "true"}).json()
+
+    assert body["traffic"] is None
+    assert "Microsoft.Insights/metrics/read" in body["traffic_error"]
+    assert body["series"] == []
+    assert body["problems"] == [{"resource": SERVICE.rpartition("/")[2], "error": "forbidden"}]
+
+
+def test_gateway_dashboard_is_cached_per_range(client: TestClient, apim: FakeApim) -> None:
+    client.get("/api/apim/metrics")
+    first = len(_metrics_requests(apim))
+    client.get("/api/apim/metrics")
+    assert len(_metrics_requests(apim)) == first
+    client.get("/api/apim/metrics", params={"refresh": "true"})
+    assert len(_metrics_requests(apim)) == first * 2
+    assert client.get("/api/apim/metrics", params={"range": "1y"}).status_code == 422
+
+
+def test_a_metric_the_tier_lacks_is_left_out(client: TestClient, apim: FakeApim) -> None:
+    apim.metrics_unsupported.add("Capacity")
+    apim.add_metric(SERVICE, "CpuPercent_Gateway", [(T1, 30)])
+
+    body = client.get("/api/apim/metrics").json()
+
+    assert [s["metric"] for s in body["series"]] == ["cpu"]
+    assert body["problems"] == []

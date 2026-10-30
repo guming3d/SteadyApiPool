@@ -1,7 +1,8 @@
 // Least-privilege custom role for the pool manager on one LiteLLM gateway on Azure Container
 // Apps. Reading the Container App gives the gateway's URL and identity, and listSecrets its
 // master key: every pool change then goes through LiteLLM's admin API, not ARM. The logs read on
-// the gateway's Application Insights component feeds the Monitor tab. The app can't change the
+// the gateway's Application Insights component feeds the Monitor tab, and the Container App's
+// metrics the Gateway metrics tab (its database's need Monitoring Reader there). The app can't change the
 // Container App, its environment, database or anything else here. Mirrors GATEWAY_ACTIONS in
 // backend/pool_manager/access.py.
 targetScope = 'resourceGroup'
@@ -36,6 +37,8 @@ resource poolManagerRole 'Microsoft.Authorization/roleDefinitions@2022-04-01' = 
           // The Monitor tab queries the gateway's OpenTelemetry spans in resource context.
           'Microsoft.Insights/components/read'
           'Microsoft.Insights/logs/*/read'
+          // The Gateway metrics tab reads the Container App's replicas, CPU and memory.
+          'Microsoft.Insights/metrics/read'
         ]
         notActions: []
         dataActions: []

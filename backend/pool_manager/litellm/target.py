@@ -17,6 +17,10 @@ Every change here uses the signed-in user's own Azure rights:
   spend) goes with it.
 - Connecting checks the URL and master key against the gateway itself and keeps the key in the
   OS-encrypted local store (secret_store.py), never in the state file.
+- Choosing one checks it the same way before it replaces the current gateway (``_check``): the
+  Container App finished provisioning and runs, its master key is readable, and LiteLLM answers
+  with its database. A gateway that fails is refused with 424 and the reason, unless the user
+  chooses it anyway (``force``) to fix it in setup.
 """
 
 from __future__ import annotations
@@ -39,9 +43,15 @@ from ..target import TargetChooser, resource_group_of
 from .access import GATEWAY_ACTIONS
 from .aks_deploy import CONTAINER_SERVICE_API_VERSION, AksDeployer, cluster_path
 from .cleanup import GatewayCleanup, delete_resources, tagged_resources
-from .client import LiteLLMClient, LiteLLMError
 from .cost import PlanPrices
-from .gateway import MANAGED_TAG, MANAGED_TAG_VALUE, container_app_info
+from .gateway import (
+    MANAGED_TAG,
+    MANAGED_TAG_VALUE,
+    MASTER_KEY_SECRET,
+    container_app_info,
+    master_key_secret,
+    probe_gateway,
+)
 from .gateway_deploy import (
     DEPLOYMENTS_API_VERSION,
     RESOURCES_API_VERSION,
@@ -72,6 +82,11 @@ logger = logging.getLogger(__name__)
 
 _WORKERS = 8
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def _refused(reason: str) -> ServiceError:
+    """A gateway the switch won't move to as it is (424), with what is wrong."""
+    return ServiceError(424, reason)
 
 
 def _is_litellm(app: Mapping[str, Any]) -> bool:
@@ -279,6 +294,8 @@ class LiteLLMTargets:
             raise ServiceError(409, f"{body.gateway_name} doesn't run LiteLLM")
         # ARM's casing, so the saved target matches the resource IDs ARM returns.
         resource_id = str(found.get("id") or path)
+        if not body.force:
+            self._check_app(arm, found, resource_id)
         target = {
             "subscription_id": body.subscription_id,
             "resource_group": resource_group_of(resource_id) or body.resource_group,
@@ -288,6 +305,40 @@ class LiteLLMTargets:
         self._save(target)
         logger.info("%s chose gateway %s", actor, resource_id)
         return self._view(target)
+
+    def _check_app(self, arm: ArmClient, app: Mapping[str, Any], resource_id: str) -> None:
+        """A Container App the app can work with now; else 424 with what is wrong."""
+        info = container_app_info(app, str(app.get("name") or ""))
+        state = info.provisioning_state or ""
+        if state.casefold() != "succeeded":
+            raise _refused(
+                f"{info.name} is {state or 'not provisioned'} in Azure; wait until it has finished."
+            )
+        running = str((app.get("properties") or {}).get("runningStatus") or "")
+        if running.casefold() in {"stopped", "suspended"}:
+            raise _refused(f"{info.name} is {running}. Start it in the Azure portal first.")
+        if not info.url:
+            raise _refused(f"{info.name} has no ingress URL, so the app can't reach LiteLLM.")
+        try:
+            response = arm.request(
+                "POST",
+                arm.arm_url(f"{resource_id}/listSecrets"),
+                api_version=self._settings.container_apps_api_version,
+            )
+        except ArmError as error:
+            raise _refused(
+                f"Cannot read the master key of {info.name} (it needs "
+                f"Microsoft.App/containerApps/listSecrets/action): {error.message}"
+            ) from error
+        key = master_key_secret(response.json())
+        if not key:
+            raise _refused(f"{info.name} has no {MASTER_KEY_SECRET} secret.")
+        self._probe(info.url, key)
+
+    def _probe(self, url: str, master_key: str) -> None:
+        problem = probe_gateway(url, master_key, self._gateway_transport)
+        if problem:
+            raise _refused(problem[1])
 
     def _managed_cluster(self, arm: ArmClient, body: TargetSelect) -> dict[str, Any] | None:
         """The AKS cluster of that name, when this app deployed LiteLLM on it."""
@@ -308,13 +359,16 @@ class LiteLLMTargets:
         """Chooses an AKS gateway this app deployed, with the master key it keeps for it."""
         name = str(cluster.get("name") or body.gateway_name)
         url = f"https://{aks_fqdn(name, str(cluster.get('location') or ''))}"
-        if self._secrets is None or not self._secrets.get(url):
+        key = self._secrets.get(url) if self._secrets is not None else None
+        if not key:
             raise ServiceError(
                 409,
                 f"This machine doesn't have {name}'s master key. Choose Connect a gateway, enter "
                 f"{url} and the key, which you can read with: kubectl -n litellm get secret "
                 "litellm-masterkey -o jsonpath='{.data.masterkey}' | base64 -d",
             )
+        if not body.force:
+            self._probe(url, key)
         cluster_id = str(cluster.get("id") or "")
         group = resource_group_of(cluster_id) or body.resource_group
         try:
@@ -508,22 +562,12 @@ class LiteLLMTargets:
         if parts.path not in {"", "/"} or parts.query:
             raise ServiceError(400, "Use the gateway's base URL, without a path")
         master_key = body.master_key.get_secret_value()
-        client = LiteLLMClient(url, master_key, transport=self._gateway_transport)
-        try:
-            health = client.readiness()
-            client.models()
-        except LiteLLMError as error:
-            if error.status in {401, 403}:
-                raise ServiceError(400, "The gateway refused that master key") from error
+        problem = probe_gateway(url, master_key, self._gateway_transport)
+        if problem:
+            kind, message = problem
             raise ServiceError(
-                502, f"Cannot reach a LiteLLM gateway at {url}: {error.message}"
-            ) from error
-        finally:
-            client.close()
-        if str(health.get("db") or "").casefold() not in {"connected", ""}:
-            raise ServiceError(
-                409,
-                f"{url} has no database ({health.get('db')}); pools need STORE_MODEL_IN_DB",
+                400 if kind == "key" else 409 if kind == "database" else 502,
+                "The gateway refused that master key" if kind == "key" else message,
             )
         if self._secrets is None:
             raise ServiceError(500, "The app has no store for gateway keys")

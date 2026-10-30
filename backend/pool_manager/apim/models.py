@@ -361,6 +361,8 @@ class TargetSelect(StrictModel):
     subscription_id: str = Field(pattern=GUID_PATTERN)
     resource_group: str = Field(pattern=RESOURCE_GROUP_PATTERN)
     apim_name: str = Field(pattern=APIM_NAME_PATTERN)
+    # Choose it even though the check before switching refused it (424), to fix it in setup.
+    force: bool = False
 
 
 class ApimCreate(StrictModel):

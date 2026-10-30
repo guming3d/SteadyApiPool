@@ -14,7 +14,7 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from threading import Lock
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 
@@ -116,6 +116,45 @@ def container_app_info(app: Mapping[str, Any], name: str) -> GatewayInfo:
     )
 
 
+def master_key_secret(secrets: Mapping[str, Any]) -> str:
+    """The master key in a Container App's ``listSecrets`` answer; empty when it has none."""
+    return next(
+        (
+            str(item.get("value"))
+            for item in secrets.get("value") or []
+            if isinstance(item, Mapping) and item.get("name") == MASTER_KEY_SECRET
+        ),
+        "",
+    )
+
+
+ProbeProblem = Literal["key", "unreachable", "database"]
+# Long enough for a replica that is just starting, short enough that a gateway nobody can reach
+# is reported within seconds rather than after the admin client's 30 s per call.
+PROBE_TIMEOUT_SECONDS = 10.0
+
+
+def probe_gateway(
+    url: str, master_key: str, transport: httpx.BaseTransport | None = None
+) -> tuple[ProbeProblem, str] | None:
+    """Whether LiteLLM answers at ``url`` with its database connected and accepts the key;
+    else what is wrong, and why."""
+    client = LiteLLMClient(url, master_key, transport=transport, timeout=PROBE_TIMEOUT_SECONDS)
+    try:
+        health = client.readiness()
+        client.models()  # Needs the master key; readiness does not.
+    except LiteLLMError as error:
+        if error.status in {401, 403}:
+            return "key", "The gateway refused the master key"
+        return "unreachable", f"Cannot reach a LiteLLM gateway at {url}: {error.message}"
+    finally:
+        client.close()
+    database = str(health.get("db") or "")
+    if database.casefold() not in {"connected", ""}:
+        return "database", f"{url} has no database ({database}); pools need STORE_MODEL_IN_DB"
+    return None
+
+
 class GatewayConnection:
     def __init__(
         self,
@@ -206,15 +245,7 @@ class GatewayConnection:
                 f"Cannot read the master key of {info.name} (it needs "
                 f"Microsoft.App/containerApps/listSecrets/action): {error.message}",
             ) from error
-        secrets = response.json().get("value") or []
-        key = next(
-            (
-                str(item.get("value"))
-                for item in secrets
-                if isinstance(item, Mapping) and item.get("name") == MASTER_KEY_SECRET
-            ),
-            "",
-        )
+        key = master_key_secret(response.json())
         if not key:
             raise GatewayUnavailable(
                 409, f"{info.name} has no {MASTER_KEY_SECRET} secret; is it a LiteLLM gateway?"

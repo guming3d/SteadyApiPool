@@ -1,6 +1,6 @@
-// The pool dashboard's arithmetic: formatting, chart scales and health thresholds. Pure, so
-// node --test can import it.
-import type { GatewayMetrics, MemberMetrics, MetricsRange } from "./types"
+// The pool and gateway dashboards' arithmetic: formatting, chart scales and health thresholds.
+// Pure, so node --test can import it.
+import type { GatewayMetrics, LoadSeries, MemberMetrics, MetricsRange } from "./types"
 
 export const RANGES: MetricsRange[] = ["1h", "6h", "24h", "7d"]
 
@@ -90,4 +90,23 @@ export function perMinute(requests: number, start: string, end: string) {
 export function roundedTop(x: number, y: number, width: number, height: number, radius = 4) {
   const r = Math.max(0, Math.min(radius, width / 2, height))
   return `M${x},${y + height}V${y + r}Q${x},${y} ${x + r},${y}H${x + width - r}Q${x + width},${y} ${x + width},${y + r}V${y + height}Z`
+}
+
+/** A load value: whole percentages; counts compact, with a decimal for small averages (1.5
+ *  replicas). */
+export function formatLoad(value: number | null | undefined, unit: LoadSeries["unit"]) {
+  if (value === null || value === undefined) return "—"
+  if (unit === "percent") return `${Math.round(value)}%`
+  return value < 10 && !Number.isInteger(value) ? value.toFixed(1) : formatCompact(value)
+}
+
+/** How loaded a resource is now: a share above 70% is busy, above 90% saturated; replicas at
+ *  80% of their maximum leave little room, at the maximum none (unless it is one replica, as
+ *  on a dev gateway, which never scales). */
+export function loadTone(series: Pick<LoadSeries, "unit" | "latest" | "limit">): Tone {
+  const latest = series.latest
+  if (latest === null) return "ok"
+  if (series.unit === "percent") return latest >= 90 ? "bad" : latest >= 70 ? "warn" : "ok"
+  if (!series.limit || series.limit <= 1) return "ok"
+  return latest >= series.limit ? "bad" : latest >= 0.8 * series.limit ? "warn" : "ok"
 }

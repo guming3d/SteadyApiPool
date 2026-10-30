@@ -19,6 +19,7 @@ from ..deps import (
 from ..models import (
     ApiTestResult,
     BenchmarkRun,
+    GatewayLoad,
     MetricsRange,
     ModelCheck,
     ModelCheckRequest,
@@ -165,6 +166,17 @@ def pool_metrics(
     refresh: bool = False,
 ) -> PoolMetrics:
     return monitor.get(pool_id, range, refresh=refresh)
+
+
+# Read-only: all of the gateway's traffic and the load on what it runs on.
+@bound.get("/metrics")
+def gateway_metrics(
+    monitor: Monitor,
+    _: Reader,
+    range: MetricsRange = "1h",  # noqa: A002 - the query parameter's name
+    refresh: bool = False,
+) -> GatewayLoad:
+    return monitor.load(range, refresh=refresh)
 
 
 # How clients call the pool: base URL and model names.

@@ -1,6 +1,8 @@
 // The API both gateways share: sign-in and setup, the chosen gateway, Foundry deployments.
 // Each product's own calls are in apim/api.ts and litellm/api.ts, which include these.
-import { keepPreviousData, queryOptions } from "@tanstack/react-query"
+import { keepPreviousData, queryOptions, type QueryClient } from "@tanstack/react-query"
+
+import { keptAcrossSwitch, SETUP_SEEN_KEY } from "./gateway-switch"
 
 import type {
   DeployableModel,
@@ -12,6 +14,7 @@ import type {
   FoundryAccountView,
   FoundryDeploymentCreate,
   FoundryDeploymentStatus,
+  GatewayLoad,
   MetricsRange,
   ModelCapacity,
   PoolMetrics,
@@ -113,6 +116,9 @@ export const api = {
   // The server caches it for a minute unless refresh is set.
   poolMetrics: (product: Product, poolId: string, range: MetricsRange, refresh = false) =>
     request<PoolMetrics>(`/api/${product}/pools/${id(poolId)}/metrics?range=${range}${refresh ? "&refresh=true" : ""}`),
+  // The Gateway metrics tab: all the gateway's traffic and its resources' load, cached as above.
+  gatewayLoad: (product: Product, range: MetricsRange, refresh = false) =>
+    request<GatewayLoad>(`/api/${product}/metrics?range=${range}${refresh ? "&refresh=true" : ""}`),
   target: () => request<TargetView>("/api/target"),
   tenants: () => request<TenantView[]>("/api/target/tenants"),
   subscriptions: (tenantId: string | null) =>
@@ -130,6 +136,7 @@ export const keys = {
   setupProgress: ["setup-progress"] as const,
   foundryAccess: (accountIds: string[]) => ["setup", "foundry", ...accountIds] as const,
   poolMetrics: (product: Product, poolId: string, range: MetricsRange) => [product, "pools", poolId, "metrics", range] as const,
+  gatewayLoad: (product: Product, range: MetricsRange) => [product, "metrics", range] as const,
   target: ["target"] as const,
   tenants: ["target", "tenants"] as const,
   subscriptions: (tenantId: string | null) => ["target", "subscriptions", tenantId] as const,
@@ -182,6 +189,13 @@ export const queries = {
     placeholderData: keepPreviousData,
     staleTime: 30_000,
   }),
+  gatewayLoad: (product: Product, range: MetricsRange) => queryOptions({
+    queryKey: keys.gatewayLoad(product, range),
+    queryFn: () => api.gatewayLoad(product, range),
+    refetchInterval: 60_000,
+    placeholderData: keepPreviousData,
+    staleTime: 30_000,
+  }),
   target: () => queryOptions({ queryKey: keys.target, queryFn: api.target }),
   tenants: () => queryOptions({ queryKey: keys.tenants, queryFn: api.tenants, staleTime: 300_000 }),
   subscriptions: (tenantId: string | null) => queryOptions({
@@ -191,4 +205,16 @@ export const queries = {
     // A tenant that needs another sign-in fails the same way on every retry.
     retry: false,
   }),
+}
+
+/** After the gateway changed: forget what was read from the old one and check the new one from
+ *  scratch. Returns at once rather than waiting for every query to refetch, which kept the
+ *  picker's button spinning while the old gateway's pages refetched (and failed) against the
+ *  new one. The shell shows the setup report's progress while it runs, then the new gateway,
+ *  or setup when it needs attention. */
+export function gatewaySwitched(queryClient: QueryClient) {
+  sessionStorage.removeItem(SETUP_SEEN_KEY)
+  void queryClient.resetQueries({ queryKey: keys.setup, exact: true })
+  void queryClient.invalidateQueries({ queryKey: keys.target, exact: true })
+  queryClient.removeQueries({ predicate: (query) => !keptAcrossSwitch(query.queryKey) })
 }

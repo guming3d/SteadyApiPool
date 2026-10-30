@@ -28,6 +28,7 @@ from pool_manager.litellm.gateway_template import (
 )
 from pool_manager.secret_store import SecretStore
 from tests.fake_azure import SUBSCRIPTION, TENANT, FakeAzure
+from tests.litellm.fake_litellm import MASTER_KEY
 from tests.litellm.test_app import PRODUCTION, TRIAL, WRITE, _client, _settings
 
 NO_TARGET = {"subscription_id": "", "resource_group": "", "gateway_name": ""}
@@ -319,13 +320,20 @@ def test_aks_gateways_are_listed_and_chosen_with_their_key(
         "/api/litellm/target/gateways", params={"subscription_id": SUBSCRIPTION}
     )
     no_key = wizard.client.put("/api/litellm/target", json=body, headers=WRITE)
-    wizard.secrets.put(URL, "sk-aks-key")
+    # A stale key: LiteLLM refuses it, so the switch does too.
+    wizard.secrets.put(URL, "sk-stale")
+    stale = wizard.client.put("/api/litellm/target", json=body, headers=WRITE)
+    wizard.secrets.put(URL, MASTER_KEY)
     chosen = wizard.client.put("/api/litellm/target", json=body, headers=WRITE)
 
     [view] = [item for item in listed.json() if item["platform"] == "aks"]
     assert (view["name"], view["url"], view["managed"]) == ("gw-aks", URL, True)
     assert no_key.status_code == 409
     assert "kubectl -n litellm get secret litellm-masterkey" in no_key.json()["detail"]
+    assert (stale.status_code, stale.json()["detail"]) == (
+        424,
+        "The gateway refused the master key",
+    )
     assert chosen.status_code == 200, chosen.text
     saved = wizard.saved()
     assert (saved["gateway_url"], saved["gateway_principal_id"]) == (URL, "gw-aks-mi")

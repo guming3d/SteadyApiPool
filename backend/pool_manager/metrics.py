@@ -1,4 +1,5 @@
-"""The pool dashboard: the gateway's own view of a pool, and its Foundry members' metrics.
+"""The pool dashboard: the gateway's own view of a pool, and its Foundry members' metrics; and
+the gateway dashboard: all of the gateway's traffic and the load on what it runs on.
 
 ``PoolMonitor`` collects both for a pool and a time range. The gateway's view is the product's
 (``apim/metrics.py``: APIM's platform metrics of the APIs bound to the pool;
@@ -6,7 +7,10 @@
 is an Azure OpenAI / Foundry deployment adds that deployment's metrics
 (``ModelDeploymentName``); those count every caller of the deployment, not only this gateway.
 
-Everything here is read-only. Results are cached for a minute per pool and range.
+The gateway dashboard (``PoolMonitor.load``) is the product's traffic over every pool, and the
+platform metrics of the gateway's resources (``LoadSpec`` per metric, read by ``resource_load``).
+
+Everything here is read-only. Results are cached for a minute per pool (or the gateway) and range.
 """
 
 from __future__ import annotations
@@ -14,7 +18,7 @@ from __future__ import annotations
 import logging
 import time
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -24,7 +28,13 @@ from typing import Any, Protocol
 from .arm import ArmClient, ArmError
 from .config import Settings
 from .models import (
+    GatewayLoad,
     GatewayMetrics,
+    LoadMetric,
+    LoadPoint,
+    LoadProblem,
+    LoadSeries,
+    LoadUnit,
     MemberMetrics,
     MetricsRange,
     ModelCheck,
@@ -195,9 +205,98 @@ def weighted(values: list[tuple[float, float]]) -> float | None:
     return sum(v * w for v, w in values) / weight if weight else None
 
 
+@dataclass(frozen=True)
+class LoadSpec:
+    """One platform metric of a gateway's resource, read as a load series."""
+
+    # Azure Monitor's name for it, e.g. ``CpuPercent_Gateway``.
+    azure: str
+    metric: LoadMetric
+    unit: LoadUnit
+    # Turns Azure's value into the series' unit, e.g. nanocores into a share of the replica's.
+    scale: float = 1.0
+    # Whether Azure's Maximum is the busiest moment (APIM's Capacity reads 0 below Premium).
+    peaks: bool = True
+    limit: float | None = None
+
+
+def _by_stamp(found: list[Series], combine: Callable[[list[float]], float]) -> dict[str, float]:
+    """One value per time bin over every series Azure returned (one, unsplit)."""
+    values: dict[str, list[float]] = defaultdict(list)
+    for series in found:
+        for stamp, value in series.points:
+            if value is not None:
+                values[stamp].append(float(value))
+    return {stamp: combine(present) for stamp, present in values.items()}
+
+
+def _mean(values: list[float]) -> float:
+    return sum(values) / len(values)
+
+
+def resource_load(
+    arm: ArmClient, resource_id: str, specs: Iterable[LoadSpec], window: Window
+) -> tuple[list[LoadSeries], LoadProblem | None]:
+    """The resource's load series, each metric on its own: a metric this tier or SKU doesn't
+    emit (Azure answers 400, or only empty bins) is left out rather than failing the rest."""
+    name = resource_id.rpartition("/")[2]
+    result: list[LoadSeries] = []
+    for spec in specs:
+
+        def read(aggregation: str, spec: LoadSpec = spec) -> list[Series]:
+            return query(
+                arm, resource_id, [spec.azure], aggregation, window.timespan, window.interval
+            )
+
+        try:
+            averages = _by_stamp(read("Average"), _mean)
+            peaks = _by_stamp(read("Maximum"), max) if spec.peaks else {}
+        except ArmError as error:
+            if error.status in {401, 403}:
+                return result, LoadProblem(resource=name, error="forbidden")
+            if error.status == 400:
+                logger.info("No %s for %s: %s", spec.azure, name, error.message)
+                continue
+            return result, LoadProblem(
+                resource=name, error=f"Cannot read metrics of {name}: {error.message}"
+            )
+        if not averages:
+            continue
+        points = [
+            LoadPoint(
+                time=stamp,
+                average=averages[stamp] * spec.scale if stamp in averages else None,
+                peak=peaks[stamp] * spec.scale if stamp in peaks else None,
+            )
+            for stamp in sorted({*averages, *peaks})
+        ]
+        present = [point.average for point in points if point.average is not None]
+        highs = [point.peak for point in points if point.peak is not None] or present
+        result.append(
+            LoadSeries(
+                metric=spec.metric,
+                unit=spec.unit,
+                resource=name,
+                average=_mean(present),
+                peak=max(highs),
+                latest=present[-1],
+                limit=spec.limit,
+                points=points,
+            )
+        )
+    return result, None
+
+
+def _window(range_: MetricsRange) -> Window:
+    span, interval = RANGES[range_]
+    end = datetime.now(UTC).replace(second=0, microsecond=0)
+    return Window(end - span, end, interval)
+
+
 class PoolMonitor:
     """Each product says which pool and names to report on (``pool``) and what its gateway
-    saw (``gateway``); the Foundry half is the same for both."""
+    saw (``gateway``); the Foundry half is the same for both. For the gateway dashboard it
+    gives all its traffic (``traffic``) and its resources' load (``resources``)."""
 
     def __init__(self, settings: Settings, arm: ArmClient, service: ModelChecks) -> None:
         self._settings = settings
@@ -205,6 +304,7 @@ class PoolMonitor:
         self._models = service
         self._lock = Lock()
         self._cache: dict[tuple[str, str], tuple[float, PoolMetrics]] = {}
+        self._loads: dict[str, tuple[float, GatewayLoad]] = {}
 
     # -- what each product reports ----------------------------------------------------
 
@@ -214,6 +314,14 @@ class PoolMonitor:
 
     def gateway(self, pool: MonitoredPool, names: list[str], window: Window) -> GatewayReading:
         """What the gateway saw of the pool's traffic; runs beside the Foundry reads."""
+        raise NotImplementedError
+
+    def traffic(self, window: Window) -> GatewayReading:
+        """All of the gateway's traffic, every pool's and any other client's."""
+        raise NotImplementedError
+
+    def resources(self, window: Window) -> tuple[list[LoadSeries], list[LoadProblem]]:
+        """The load on what the gateway runs on; runs beside ``traffic``."""
         raise NotImplementedError
 
     # -- the dashboard ----------------------------------------------------------------
@@ -231,9 +339,8 @@ class PoolMonitor:
 
     def _collect(self, pool_id: str, range_: MetricsRange) -> PoolMetrics:
         pool, names = self.pool(pool_id)
-        span, interval = RANGES[range_]
-        end = datetime.now(UTC).replace(second=0, microsecond=0)
-        window = Window(end - span, end, interval)
+        window = _window(range_)
+        interval = window.interval
         models = (
             self._models.check_models([member.backend_id for member in pool.members])
             if pool.members
@@ -308,6 +415,32 @@ class PoolMonitor:
             gateway_error=reading.error,
             members=members,
         )
+
+    # -- the gateway dashboard ------------------------------------------------------------
+
+    def load(self, range_: MetricsRange, *, refresh: bool = False) -> GatewayLoad:
+        with self._lock:
+            cached = self._loads.get(range_)
+        if cached and not refresh and time.monotonic() - cached[0] < _CACHE_SECONDS:
+            return cached[1]
+        window = _window(range_)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            traffic = executor.submit(self.traffic, window)
+            series, problems = self.resources(window)
+            reading = traffic.result()
+        load = GatewayLoad(
+            range=range_,
+            interval=window.interval,
+            start=window.start_text,
+            end=window.end_text,
+            traffic=reading.metrics,
+            traffic_error=reading.error,
+            series=series,
+            problems=problems,
+        )
+        with self._lock:
+            self._loads[range_] = (time.monotonic(), load)
+        return load
 
     # -- Foundry -------------------------------------------------------------------------
 

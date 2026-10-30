@@ -16,6 +16,7 @@ export const apimUi: ProductUi = {
       principalId: capabilities.apim_principal_id,
       idPrefix: capabilities.id_prefix,
       discoverySubscriptions: capabilities.discovery_subscriptions,
+      metricsUrl: `https://portal.azure.com/#resource${capabilities.apim_resource_id}/metrics`,
     }
   },
   usePools: () => useQuery(queries.pools()),

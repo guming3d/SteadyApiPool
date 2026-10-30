@@ -25,7 +25,7 @@ from .arm import ArmClient
 from .benchmark import BenchmarkRunner
 from .config import Settings, get_settings
 from .credentials import LocalCredential
-from .discovery import DeploymentDiscovery, MemberStore
+from .discovery import DeploymentDiscovery, MemberStore, ScanCache
 from .entra import EntraUser, OboExchanger, TokenVerifier
 from .errors import ServiceError
 from .litellm.access import LiteLLMAccessChecker
@@ -161,7 +161,13 @@ def _members() -> MemberStore | None:
 
 @lru_cache
 def _discovery() -> DeploymentDiscovery:
-    return DeploymentDiscovery(get_settings(), _arm(), _members())
+    return DeploymentDiscovery(get_settings(), _arm(), _members(), _scans())
+
+
+@lru_cache
+def _scans() -> ScanCache:
+    """Deployment scans, kept across gateway switches (not in reset_target)."""
+    return ScanCache()
 
 
 @lru_cache
