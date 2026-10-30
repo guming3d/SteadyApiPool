@@ -100,6 +100,8 @@ scripts/start-local.sh         # macOS、Linux、WSL
   性能测试、问题排查，以及不用 Azure 的演示。
 - [功能与工作原理](docs/features.zh-CN.md)：应用的全部功能、后端池在 APIM 和 LiteLLM 中的对应关系，以及 LiteLLM
   网关部署会创建什么、如何维护。
+- [估算 LiteLLM 网关的规模](docs/sizing.zh-CN.md)：从客户的 RPM 和 token 数逐步算出容器应用副本、PostgreSQL、
+  Redis 或 AKS 节点，附计算示例。
 - [性能测试](docs/benchmarks.zh-CN.md)：每种网关能承载多少流量、增加多少延迟，以及部署故障时客户端看到什么，均在 Azure
   上测得。
 - [托管到 Azure](docs/deploy.zh-CN.md)：用 `azd` 为团队部署到 App Service，以及公开的多租户应用。

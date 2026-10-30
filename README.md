@@ -118,6 +118,8 @@ screenshot of each step.
   runs without Azure.
 - [Features and how it works](docs/features.md): everything the app does, how a pool maps to APIM
   and to LiteLLM, and what a LiteLLM gateway deployment creates and how it's maintained.
+- [Sizing a LiteLLM gateway](docs/sizing.md): from a customer's RPM and tokens to Container Apps
+  replicas, PostgreSQL, Redis or AKS nodes, step by step, with worked examples.
 - [Benchmarks](docs/benchmarks.md): how much each gateway carries, the latency it adds and what
   clients see when a deployment fails, measured on Azure.
 - [Host it in Azure](docs/deploy.md): App Service for a team with `azd`, and the public

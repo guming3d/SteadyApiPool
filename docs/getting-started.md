@@ -126,7 +126,8 @@ the peak (25 % by default), surviving the loss of an availability zone (on by de
 whether you run AKS already, host your own models next to the gateway or need a private network.
 
 From these the backend works out the gateway, and **How we got this** shows each step with its
-numbers:
+numbers (every formula, a quick-reference table and worked examples are in
+[Sizing a LiteLLM gateway](sizing.md)):
 
 | Step | How |
 | --- | --- |
