@@ -442,8 +442,17 @@ class LiteLLMTargets:
     def _create_aks(self, arm: ArmClient, body: GatewayCreate, actor: str) -> GatewayView:
         """Starts deploying a gateway on a new AKS cluster and selects it; it is reached by its
         URL, like a gateway the user connected, once the install in the cluster is done."""
-        deployer = str(arm.token_claims().get("oid") or "")
-        url = self._aks.start(arm, body, deployer, actor)
+        claims = arm.token_claims()
+        deployer = str(claims.get("oid") or "")
+        # A service principal (automation, CI) has an app-only token: no scopes, idtyp "app".
+        app_only = claims.get("idtyp") == "app" or "scp" not in claims
+        url = self._aks.start(
+            arm,
+            body,
+            deployer,
+            actor,
+            deployer_type="ServicePrincipal" if app_only else "User",
+        )
         cluster_id = cluster_path(body.subscription_id, body.resource_group, body.name)
         self._save(
             {

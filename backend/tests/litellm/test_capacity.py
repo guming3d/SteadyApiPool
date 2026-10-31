@@ -297,6 +297,24 @@ def test_a_failing_resource_stops_the_deployment_and_its_resources_are_deleted(
     assert _create(wizard).status_code == 200
 
 
+def test_a_database_size_azure_refuses_says_what_to_do(wizard: _Wizard, azure: FakeAzure) -> None:
+    # As on live runs: the region lists Burstable sizes, but this subscription may not create one.
+    assert _create(wizard).status_code == 200
+    azure.fail_resource(
+        "gw-new",
+        code="SkuNotAvailable",
+        message="Specified SKU is not supported in this region. Please choose a different SKU.",
+    )
+
+    _status(wizard)
+    stopped = _status(wizard)
+
+    assert stopped["state"] == "failed"
+    # The database's own error, not the DeploymentCanceled of what was stopped beside it.
+    assert stopped["error"].startswith("SkuNotAvailable: Specified SKU is not supported")
+    assert "size the gateway for more than one replica" in stopped["error"]
+
+
 def test_the_cleanup_leaves_azure_to_finish_slow_deletes(wizard: _Wizard, azure: FakeAzure) -> None:
     azure.slow_deletes = {ENVIRONMENT.casefold()}
     _create(wizard)

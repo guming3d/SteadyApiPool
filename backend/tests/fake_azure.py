@@ -940,6 +940,19 @@ class FakeAzure:
             if record is None or record["properties"]["provisioningState"] != "Running":
                 return _error(409, "DeploymentCannotBeCancelled")
             record["properties"]["provisioningState"] = "Canceled"
+            # As Azure does (seen on a live run): every operation still in flight fails too,
+            # with a DeploymentCanceled error of its own, beside the one that failed first.
+            for operation in record["operations"]:
+                properties = operation["properties"]
+                if properties.get("provisioningState") not in {"Succeeded", "Failed"}:
+                    properties["provisioningState"] = "Failed"
+                    properties["statusMessage"] = {
+                        "error": {
+                            "code": "DeploymentCanceled",
+                            "message": "The deployment was canceled. This resource operation "
+                            "may have already been initiated, or may still be waiting to start.",
+                        }
+                    }
             self.canceled.append(path.removesuffix("/cancel").casefold())
             return httpx.Response(204)
         if "/validationResults/" in path:
@@ -997,6 +1010,16 @@ class FakeAzure:
                         "targetResource": {
                             "resourceType": "Microsoft.ManagedIdentity/userAssignedIdentities",
                             "resourceName": f"id-{parameters['name']}",
+                        },
+                    }
+                },
+                # Deployed beside the database, so still running when that fails.
+                {
+                    "properties": {
+                        "provisioningState": "Running",
+                        "targetResource": {
+                            "resourceType": "Microsoft.App/managedEnvironments",
+                            "resourceName": f"cae-{parameters['name']}",
                         },
                     }
                 },
@@ -1078,6 +1101,7 @@ class FakeAzure:
         subscription: str = SUBSCRIPTION,
         message: str = "Insufficient capacity in this region.",
         created: tuple[str, ...] = ("Microsoft.ManagedIdentity/userAssignedIdentities",),
+        code: str = "ResourceDeploymentFailure",
     ) -> list[str]:
         """The database of a running gateway deployment fails while the deployment still runs;
         ``created`` are the resource types it had already created (tagged). Returns their IDs."""
@@ -1090,7 +1114,7 @@ class FakeAzure:
             if target.get("resourceType") == "Microsoft.DBforPostgreSQL/flexibleServers":
                 operation["properties"]["provisioningState"] = "Failed"
                 operation["properties"]["statusMessage"] = {
-                    "error": {"code": "ResourceDeploymentFailure", "message": message}
+                    "error": {"code": code, "message": message}
                 }
         base = f"/subscriptions/{subscription}/resourceGroups/{group}/providers"
         prefixes = {

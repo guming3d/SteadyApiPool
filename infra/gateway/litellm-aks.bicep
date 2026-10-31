@@ -75,6 +75,10 @@ param sizing string = ''
 @description('Object ID of the user deploying it: granted Azure Kubernetes Service RBAC Cluster Admin on the cluster.')
 param deployerPrincipalId string
 
+@allowed([ 'User', 'ServicePrincipal' ])
+@description('What deploys it: a signed-in user, or a service principal (automation, CI).')
+param deployerPrincipalType string = 'User'
+
 @secure()
 @description('Password of the Postgres administrator (letters and digits).')
 param postgresPassword string
@@ -248,7 +252,7 @@ resource clusterAdmin 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: cluster
   properties: {
     principalId: deployerPrincipalId
-    principalType: 'User'
+    principalType: deployerPrincipalType
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', rbacClusterAdmin)
   }
 }

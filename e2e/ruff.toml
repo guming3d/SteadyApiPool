@@ -1,0 +1,2 @@
+# The backend's lint and format settings (line length 100, the same rules).
+extend = "../backend/pyproject.toml"

@@ -52,6 +52,17 @@ NETWORK_PROVIDER = "Microsoft.Network"
 # On the deployment: delete what it created if one of its resources fails.
 CLEANUP_TAG = "ai-gateway-on-failure"
 CLEANUP_VALUE = "delete"
+# The error Azure gives each operation it stops when a deployment is canceled.
+_CANCELED = "DeploymentCanceled"
+_POSTGRES_TYPE = "microsoft.dbforpostgresql/flexibleservers"
+# Some subscriptions may not create a Burstable server (or a size) where the capabilities API
+# lists it; nothing read before deploying shows it (seen on live runs: B1ms and B2s refused in
+# several regions, D2ds_v5 created).
+_POSTGRES_SKU_HINT = (
+    "Azure refused the database's size here, though the region lists it: this subscription may "
+    "not create it in this region (often the Burstable sizes of a trial gateway). Try another "
+    "region, or size the gateway for more than one replica, which uses General Purpose."
+)
 _REGISTER_POLLS = 24
 _REGISTER_POLL_SECONDS = 5.0
 # Polls of a validation Azure runs as a long-running operation.
@@ -430,7 +441,18 @@ class GatewayDeployer:
                 steps[key] = step
         ordered = sorted(steps.values(), key=lambda step: (step.resource_type, step.name))
         reason = _error_message(properties.get("error"))
-        failed_step = next((step.error for step in ordered if step.error), None)
+        # Stopping a deployment fails every operation still in flight with DeploymentCanceled:
+        # those are what stopping did, not why. The resource that failed first says why.
+        errors = [step.error for step in ordered if step.error]
+        causes = [error for error in errors if not error.startswith(f"{_CANCELED}:")]
+        failed_step = next(iter(causes or errors), None)
+        if failed_step and any(
+            step.error == failed_step
+            and step.resource_type.casefold() == _POSTGRES_TYPE
+            and failed_step.startswith("SkuNotAvailable:")
+            for step in ordered
+        ):
+            failed_step = f"{_sentence(failed_step)} {_POSTGRES_SKU_HINT}"
         if state == "canceled" or not reason:
             # Stopped after a resource failed: that resource's error says why.
             stopped = "The deployment was stopped" if state == "canceled" else None

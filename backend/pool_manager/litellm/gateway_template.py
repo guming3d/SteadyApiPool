@@ -364,6 +364,7 @@ def aks_parameters(
     deployer: str,
     zones: list[str],
     postgres_password: str,
+    deployer_type: str = "User",
 ) -> dict[str, Any]:
     if plan.aks is None:
         raise ValueError("an AKS plan is needed")
@@ -385,6 +386,7 @@ def aks_parameters(
         "install": InstallSize.of(plan).tag(),
         "sizing": sizing_tag(sizing),
         "deployerPrincipalId": deployer,
+        "deployerPrincipalType": deployer_type,
         "postgresPassword": postgres_password,
         "tags": {},
     }

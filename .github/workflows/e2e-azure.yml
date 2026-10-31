@@ -1,0 +1,119 @@
+name: E2E (live Azure)
+
+# Tier 3 (docs/testing.md): real users' journeys against real Azure, billed. Nightly for
+# Container Apps and APIM, weekly for AKS, or by hand. It signs in with OIDC (no secret) as the
+# identity scripts/e2e-azure-setup.py creates, in the protected `azure-e2e` environment, whose
+# variables say where: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID,
+# E2E_FOUNDRY_ACCOUNTS, E2E_FOUNDRY_DEPLOYMENT and optionally E2E_LOCATION and E2E_GATEWAY_SIZE.
+
+on:
+  schedule:
+    - cron: "0 2 * * *" # nightly: aca, apim
+    - cron: "0 3 * * 0" # Sundays: aks too
+  workflow_dispatch:
+    inputs:
+      journeys:
+        description: Which journeys
+        type: choice
+        options: [aca, apim, aks, "aca,apim", "aca,apim,aks"]
+        default: aca
+      location:
+        description: Azure region (default the environment's E2E_LOCATION, else swedencentral)
+        required: false
+      keep:
+        description: Leave the resources for a look (delete the e2e-* groups yourself)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      journeys: ${{ steps.pick.outputs.journeys }}
+    steps:
+      - id: pick
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            picked="${{ inputs.journeys }}"
+          elif [ "${{ github.event.schedule }}" = "0 3 * * 0" ]; then
+            picked="aks"
+          else
+            picked="aca,apim"
+          fi
+          echo "journeys=$(python3 -c "import json,sys; print(json.dumps(sys.argv[1].split(',')))" "$picked")" >> "$GITHUB_OUTPUT"
+
+  journey:
+    needs: plan
+    runs-on: ubuntu-latest
+    environment: azure-e2e
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        journey: ${{ fromJSON(needs.plan.outputs.journeys) }}
+    # One run of a journey at a time; a second waits rather than doubling the bill.
+    concurrency:
+      group: e2e-azure-${{ matrix.journey }}
+      cancel-in-progress: false
+    timeout-minutes: 150
+    env:
+      E2E_LIVE: "1"
+      E2E_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      E2E_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      E2E_FOUNDRY_ACCOUNTS: ${{ vars.E2E_FOUNDRY_ACCOUNTS }}
+      E2E_FOUNDRY_DEPLOYMENT: ${{ vars.E2E_FOUNDRY_DEPLOYMENT }}
+      E2E_LOCATION: ${{ inputs.location || vars.E2E_LOCATION || 'swedencentral' }}
+      E2E_KEEP: ${{ inputs.keep && '1' || '' }}
+      # trial (Burstable database), or small where the subscription can't create Burstable.
+      E2E_GATEWAY_SIZE: ${{ vars.E2E_GATEWAY_SIZE || 'trial' }}
+      E2E_RUN_ID: ${{ github.run_id }}${{ github.run_attempt }}
+      # The harness signs in again with a new OIDC token every few minutes (harness.AzureLogin).
+      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the backend
+        working-directory: backend
+        run: pip install -r requirements.txt pytest==9.1.1
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Journey ${{ matrix.journey }}
+        working-directory: backend
+        shell: bash
+        run: |
+          case "${{ matrix.journey }}" in
+            aca) file=test_litellm_aca.py ;;
+            apim) file=test_apim.py ;;
+            aks) file=test_litellm_aks.py ;;
+          esac
+          pytest -q "../e2e/azure/$file"
+
+  # Whatever a journey left (a cancelled run, a runner that died): groups older than 6 hours.
+  janitor:
+    needs: journey
+    if: always() && needs.journey.result != 'skipped'
+    runs-on: ubuntu-latest
+    environment: azure-e2e
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - run: python3 scripts/e2e-azure-janitor.py --subscription "${{ vars.AZURE_SUBSCRIPTION_ID }}" --older-than 6

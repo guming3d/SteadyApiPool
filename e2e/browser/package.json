@@ -1,0 +1,15 @@
+{
+  "name": "steady-api-pool-e2e-browser",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Browser end-to-end tests: the built UI on scripts/demo_server.py (the real app on the test fakes, no Azure).",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "install-browsers": "playwright install chromium"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1",
+    "@types/node": "22.10.2"
+  }
+}

@@ -138,6 +138,9 @@ CI runs it with `--check`.
 
 ## Tests
 
+The browser journeys, the real LiteLLM stack and the live Azure journeys, and how to run each
+locally and in GitHub Actions, are in [testing.md](testing.md).
+
 ```sh
 cd backend && .venv/Scripts/pip install pytest==9.1.1 ruff==0.15.22 mypy==2.3.0
 .venv/Scripts/python -m pytest -q && .venv/Scripts/python -m ruff check . && .venv/Scripts/python -m mypy

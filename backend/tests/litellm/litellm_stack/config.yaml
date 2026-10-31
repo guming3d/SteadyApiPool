@@ -6,6 +6,10 @@ litellm_settings:
   num_retries: 2
   request_timeout: 30
 
+general_settings:
+  # As on the gateways the app deploys (gateway_template.litellm_config).
+  proxy_config_reload_interval_seconds: 5
+
 router_settings:
   routing_strategy: simple-shuffle
   optional_pre_call_checks:

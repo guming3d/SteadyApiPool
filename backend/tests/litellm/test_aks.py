@@ -50,7 +50,7 @@ def _jwt(**claims: Any) -> str:
     return f"{part({'alg': 'none'})}.{part(claims)}.sig"
 
 
-USER_TOKEN = _jwt(oid="user-oid", tid=TENANT, upn="alex@contoso.com")
+USER_TOKEN = _jwt(oid="user-oid", tid=TENANT, upn="alex@contoso.com", scp="user_impersonation")
 
 
 class _Token:
@@ -142,6 +142,7 @@ def test_deploying_on_aks_runs_the_template_and_selects_it(
     }
     parameters = deployment["parameters"]
     assert parameters["deployerPrincipalId"] == "user-oid"
+    assert parameters["deployerPrincipalType"] == "User"
     assert parameters["zones"] == []  # dev: one node, no zones
     assert parameters["postgresPassword"].isalnum()
     # The keys are kept before Azure sees anything; setup follows the deployment.
@@ -161,6 +162,22 @@ def test_deploying_on_aks_runs_the_template_and_selects_it(
         "pending",
         "DeployingAks",
     )
+
+
+def test_a_service_principal_deploys_as_one(
+    wizard: _Wizard, azure: FakeAzure, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Automation (CI) signs in as an app: an app-only token, no scopes. Its role assignment on
+    # the cluster has to say so, or Azure refuses it.
+    token = _jwt(oid="ci-sp-oid", tid=TENANT, idtyp="app", roles=[])
+    monkeypatch.setattr(_Token, "token", token)
+    azure.callers[token] = "app"
+
+    assert wizard.create().status_code == 200
+
+    parameters = azure.arm_deployments[DEPLOYMENT.casefold()]["parameters"]
+    assert parameters["deployerPrincipalId"] == "ci-sp-oid"
+    assert parameters["deployerPrincipalType"] == "ServicePrincipal"
 
 
 def test_a_production_cluster_uses_the_zones_of_its_node_size(

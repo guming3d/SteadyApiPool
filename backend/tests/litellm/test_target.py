@@ -256,6 +256,7 @@ def test_deploy_status_follows_the_deployment(wizard: _Wizard, azure: FakeAzure)
     running = wizard.client.get("/api/litellm/target/deploy-status", params=params).json()
     assert running["state"] == "running"
     assert [(step["name"], step["state"]) for step in running["steps"]] == [
+        ("cae-gw-new", "Running"),
         ("psql-gw-new", "Running"),
         ("id-gw-new", "Succeeded"),
     ]
@@ -275,7 +276,8 @@ def test_a_failed_deployment_says_why(wizard: _Wizard, azure: FakeAzure) -> None
 
     assert status["state"] == "failed"
     assert status["error"] == "Conflict: The server name psql-gw-new is already in use."
-    assert status["steps"][0]["error"] == status["error"]
+    database = next(step for step in status["steps"] if step["name"] == "psql-gw-new")
+    assert database["error"] == status["error"]
 
 
 def test_a_region_without_postgres_is_refused_before_anything_is_created(

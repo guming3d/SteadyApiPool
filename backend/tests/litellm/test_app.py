@@ -85,9 +85,12 @@ def _client(
     state_file: Path | None = None,
     secrets: SecretStore | None = None,
     benchmarks: BenchmarkRunner | None = None,
+    real_gateway: bool = False,
 ) -> TestClient:
-    """The app wired to the fakes, the way deps.py wires it to Azure."""
+    """The app wired to the fakes, the way deps.py wires it to Azure; with ``real_gateway``,
+    to the LiteLLM proxy at the settings' gateway URL instead of the fake one."""
     secrets = secrets or SecretStore(Path(tempfile.mkdtemp()) / "keys.bin", persistent=False)
+    litellm = None if real_gateway else azure.litellm.transport()
     arm = ArmClient(
         settings, credential or FakeCredential(), azure.transport(), sleep=lambda _: None
     )
@@ -95,7 +98,7 @@ def _client(
         settings,
         arm,
         stored_key=secrets.get,
-        transport=azure.litellm.transport(),
+        transport=litellm,
         sleep=lambda _: None,
     )
     service = LiteLLMService(settings, arm, gateway)
@@ -105,7 +108,7 @@ def _client(
     )
     cost = LiteLLMCost(settings, service, transport=azure.transport())
     monitor = LiteLLMMonitor(settings, arm, service, transport=azure.transport())
-    tester = LiteLLMTester(settings, service, transport=azure.litellm.transport())
+    tester = LiteLLMTester(settings, service, transport=litellm)
     # Sign-in routes reach the target chooser too; never the developer's real state file.
     chooser = TargetChooser(
         settings,
@@ -116,7 +119,7 @@ def _client(
     )
     gateways = LiteLLMTargets(
         chooser,
-        gateway_transport=azure.litellm.transport(),
+        gateway_transport=litellm,
         secrets=secrets,
         # Cleanups after failed deployments run inline, at once.
         cleanup=GatewayCleanup(run=lambda job: job(), sleep=lambda _: None),
@@ -130,7 +133,8 @@ def _client(
         get_litellm_cost: cost,
         get_litellm_monitor: monitor,
         get_litellm_tester: tester,
-        get_benchmarks: benchmarks or BenchmarkRunner(azure.litellm.transport()),
+        get_benchmarks: benchmarks
+        or BenchmarkRunner(None if real_gateway else azure.litellm.transport()),
         get_targets: chooser,
         get_litellm_targets: gateways,
     }

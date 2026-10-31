@@ -3,7 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, unified]
 
 permissions:
   contents: read
@@ -28,11 +28,13 @@ jobs:
       - name: Lint, type-check and test backend
         working-directory: backend
         run: |
-          ruff check . ../scripts ../perf
-          ruff format --check . ../scripts ../perf
+          ruff check . ../scripts ../perf ../e2e
+          ruff format --check . ../scripts ../perf ../e2e
           mypy
-          mypy --strict ../scripts/doctor.py ../scripts/package-release.py ../scripts/build-gateway-template.py ../scripts/benchmark.py
+          mypy --strict ../scripts/doctor.py ../scripts/package-release.py ../scripts/build-gateway-template.py ../scripts/benchmark.py ../scripts/e2e-azure-setup.py ../scripts/e2e-azure-janitor.py
           pytest -q
+          # The live Azure journeys collect (and skip without E2E_LIVE=1).
+          pytest -q ../e2e/azure
       - name: Test and build frontend
         working-directory: frontend
         run: |
@@ -45,6 +47,74 @@ jobs:
           az bicep build --file infra/main.bicep --stdout > /dev/null
           az bicep build --file deploy/container-apps/infra/main.bicep --stdout > /dev/null
           python scripts/build-gateway-template.py --check
+
+  # Tier 1 (docs/testing.md): the real UI in a browser, against the real backend wired to the
+  # in-memory Azure and gateways (scripts/demo_server.py). Every user journey, no Azure.
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            e2e/browser/package-lock.json
+      - name: Install the backend
+        working-directory: backend
+        run: pip install -r requirements.txt
+      - name: Build the UI
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+      - name: Browser journeys
+        working-directory: e2e/browser
+        env:
+          CI: "1"
+          E2E_PYTHON: python
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+          npm test
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: |
+            e2e/browser/playwright-report
+            e2e/browser/test-results
+          retention-days: 7
+
+  # Tier 2: the app's API and its service layer against a real LiteLLM proxy (the pinned image),
+  # Postgres and two fake Azure OpenAI regions that can be made to fail.
+  litellm-stack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the backend
+        working-directory: backend
+        run: pip install -r requirements.txt pytest==9.1.1
+      - name: Start the stack
+        run: docker compose -f backend/tests/litellm/litellm_stack/docker-compose.yml up -d --wait
+      - name: Real LiteLLM tests
+        working-directory: backend
+        run: pytest -q -m litellm
+      - name: Stack logs
+        if: failure()
+        run: docker compose -f backend/tests/litellm/litellm_stack/docker-compose.yml logs --tail 200
+      - name: Stop the stack
+        if: always()
+        run: docker compose -f backend/tests/litellm/litellm_stack/docker-compose.yml down -v
 
   # The release package, started the way the README tells people to: unzip, then
   # scripts/start-local.sh with Python only. It once exited silently on Linux and macOS.

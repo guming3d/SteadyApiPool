@@ -583,7 +583,10 @@ def _wire(
         get_apim_service: apim,
         get_apim_targets: ApimTargets(chooser),
         get_apim_cost: ApimCost(settings, apim, transport=azure.transport()),
-        get_apim_tester: ApimTester(settings, apim, transport=azure.transport()),
+        # The test call goes to the APIM service's gateway, which answers as in a load test.
+        get_apim_tester: ApimTester(
+            settings, apim, transport=httpx.MockTransport(_SlowGateway(azure.litellm)._apim)
+        ),
         get_apim_monitor: ApimMonitor(settings, arm, apim),
         get_litellm_service: litellm,
         get_litellm_targets: LiteLLMTargets(

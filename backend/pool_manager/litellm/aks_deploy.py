@@ -162,7 +162,15 @@ class AksDeployer:
 
     # -- deploying ------------------------------------------------------------------------
 
-    def start(self, arm: ArmClient, body: GatewayCreate, deployer: str, actor: str) -> str:
+    def start(
+        self,
+        arm: ArmClient,
+        body: GatewayCreate,
+        deployer: str,
+        actor: str,
+        *,
+        deployer_type: str = "User",
+    ) -> str:
         """Starts the deployment and returns the gateway's URL; ``status`` follows it."""
         if self._secrets is None:
             raise ServiceError(500, "The app has no store for the gateway's keys")
@@ -192,6 +200,7 @@ class AksDeployer:
                         sizing=body.sizing,
                         plan=found,
                         deployer=deployer,
+                        deployer_type=deployer_type,
                         zones=zones,
                         postgres_password=secrets["postgres_password"],
                     ),

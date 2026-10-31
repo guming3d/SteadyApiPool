@@ -11,6 +11,7 @@ aliases and keys this app writes, and routes the way the pool says.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import time
 from collections.abc import Iterator
@@ -21,6 +22,7 @@ import pytest
 
 from pool_manager.arm import ArmClient
 from pool_manager.config import Settings
+from pool_manager.errors import ServiceError
 from pool_manager.litellm.api_test import LiteLLMTester
 from pool_manager.litellm.gateway import GatewayConnection
 from pool_manager.litellm.models import (
@@ -78,8 +80,39 @@ def service() -> Iterator[tuple[LiteLLMService, LiteLLMTester]]:
 def _clean(service: LiteLLMService) -> None:
     for pool in service.list_pools():
         if pool.id.startswith("it-"):
-            plan = service.pool_removal_plan(pool.id)
-            service.remove_pool(pool.id, RemovalConfirm(**_confirm(plan)), "test")
+            # Listed a moment after it went (the proxy reloads on a schedule): reset_gateway.
+            with contextlib.suppress(ServiceError):
+                plan = service.pool_removal_plan(pool.id)
+                service.remove_pool(pool.id, RemovalConfirm(**_confirm(plan)), "test")
+    reset_gateway()
+
+
+def reset_gateway() -> None:
+    """Removes everything the integration tests name ``it-*`` straight through LiteLLM's admin
+    API: whatever a failed run left (an alias whose pool is gone, a key) can't fail the next."""
+    admin = httpx.Client(
+        base_url=GATEWAY, headers={"Authorization": f"Bearer {MASTER_KEY}"}, timeout=30
+    )
+    with admin:
+        for row in admin.get("/model/info").raise_for_status().json().get("data") or []:
+            if str(row.get("model_name", "")).startswith("it-"):
+                admin.post("/model/delete", json={"id": row["model_info"]["id"]})
+        fields = admin.get("/router/settings").raise_for_status().json().get("fields") or []
+        aliases = next(
+            (f.get("field_value") for f in fields if f.get("field_name") == "model_group_alias"),
+            None,
+        )
+        if isinstance(aliases, dict) and any(name.startswith("it-") for name in aliases):
+            kept = {k: v for k, v in aliases.items() if not k.startswith("it-")}
+            admin.post("/config/update", json={"router_settings": {"model_group_alias": kept}})
+        keys = admin.get("/key/list", params={"return_full_object": "true", "size": 100})
+        stale = [
+            key["token"]
+            for key in keys.raise_for_status().json().get("keys") or []
+            if isinstance(key, dict) and "test-it-" in str(key.get("key_alias") or "")
+        ]
+        if stale:
+            admin.post("/key/delete", json={"keys": stale})
 
 
 def _confirm(plan: Any) -> dict[str, Any]:
@@ -258,5 +291,7 @@ def test_a_consumer_cant_send_a_pools_call_elsewhere(
         timeout=30,
     )
 
-    assert response.status_code == 400, response.text
+    # LiteLLM answers 401 (an auth error), before any routing.
+    assert response.status_code in {400, 401}, response.text
+    assert "is not allowed in request body" in response.text
     assert _calls("b") == 0

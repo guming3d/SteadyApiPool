@@ -122,6 +122,9 @@ cd ../frontend && npm ci && npm run dev    # http://localhost:5174，把 /api �
 
 ## 测试
 
+浏览器旅程、真实 LiteLLM 环境和实时 Azure 旅程，以及如何在本地和 GitHub Actions 中运行它们，见
+[testing.zh-CN.md](testing.zh-CN.md)。
+
 ```sh
 cd backend && .venv/Scripts/pip install pytest==9.1.1 ruff==0.15.22 mypy==2.3.0
 .venv/Scripts/python -m pytest -q && .venv/Scripts/python -m ruff check . && .venv/Scripts/python -m mypy
