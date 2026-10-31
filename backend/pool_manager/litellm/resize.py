@@ -6,15 +6,22 @@ change on the platform it runs on, one item each, and changes nothing:
 - applied: on Container Apps the replica range, the scale rule and the replica size (a new
   revision rolls out); on AKS the node pool's range and LiteLLM's pods (``helm upgrade
   --reuse-values`` through Run Command, so pods roll);
-- optional, only when asked: the database's size (the server restarts for a few minutes);
+- the database's size (the server restarts for a few minutes): only when asked, unless the
+  server it has can't take the connections of the new replicas, then always;
 - left to the user, with the command where there is one: a different node size, the outbound
   ports and the tier on AKS, Redis for a gateway deployed without it (replicas then don't share
-  cooldowns), and timeouts, which are each pool's setting.
+  cooldowns), timeouts, which are each pool's setting, the database's standby in another zone,
+  and zone redundancy, which a Container Apps environment or a node pool only gets when it's
+  created.
 
 ``apply`` recomputes the plan, refuses a gateway that changed since the plan was read
 (``etag``), writes, and records the new scenario in the gateway's tags (``ai-gateway-sizing``,
-and on AKS ``ai-gateway-install``, so a later install keeps the new size). Only gateways tagged
-as this app's are resized; nothing else about them changes.
+and on AKS ``ai-gateway-install``, so a later install keeps the new size). On AKS the pods
+change through a command that may fail: the new scenario waits in ``ai-gateway-resize-*`` tags
+with the command's ID, and becomes the gateway's only once the command has succeeded (when it
+is followed, or the next plan finds it done); a failed one leaves the gateway as it was, so the
+next plan offers the change again. Only gateways tagged as this app's are resized; nothing else
+about them changes.
 """
 
 from __future__ import annotations
@@ -35,12 +42,13 @@ from ..config import Settings
 from ..errors import ServiceError, arm_failure
 from .aks_deploy import AKS_SERVER_SCOPE, CONTAINER_SERVICE_API_VERSION
 from .cleanup import tagged_resources
-from .cost import sizes_from_tags
+from .cost import postgres_ha_from_tags, sizes_from_tags
 from .gateway import GATEWAY_TAG, MANAGED_TAG, MANAGED_TAG_VALUE
 from .gateway_template import (
     AKS_NAMESPACE,
     LITELLM_HELM_CHART,
     LITELLM_VERSION,
+    POSTGRES_HA_TAG,
     SIZING_TAG,
     InstallSize,
     parse_sizing_tag,
@@ -60,6 +68,7 @@ from .models import (
 )
 from .sizing import (
     AUTOSCALE_CPU_PERCENT,
+    DATABASE_TARGET,
     SIDECAR,
     node_family,
     node_in_family,
@@ -74,6 +83,12 @@ POSTGRES_API_VERSION = "2024-08-01"
 INSTALL_TAG = "ai-gateway-install"
 PROFILE_TAG = "ai-gateway-profile"
 POSTGRES_TAG = "ai-gateway-postgres"
+# A change to the pods on AKS while its command runs: the command, and the install size and
+# scenario the gateway gets once it has succeeded.
+RESIZE_COMMAND_TAG = "ai-gateway-resize-command"
+RESIZE_INSTALL_TAG = "ai-gateway-resize-install"
+RESIZE_SIZING_TAG = "ai-gateway-resize-sizing"
+_PENDING_TAGS = (RESIZE_COMMAND_TAG, RESIZE_INSTALL_TAG, RESIZE_SIZING_TAG)
 _POSTGRES_TYPE = "microsoft.dbforpostgresql/flexibleservers"
 _LOG_LINES = 30
 
@@ -102,6 +117,13 @@ class Current:
     node_max: int = 0
     outbound_ports: int = 0
     tier: str = "Free"
+    # Container Apps: whether its environment is zone-redundant (None if it can't be read).
+    zone_redundant: bool | None = None
+    # The database server (None if not found) and whether it has a standby in another zone.
+    postgres_id: str | None = None
+    postgres_ha: bool = False
+    # AKS: a change to the pods whose command is still running.
+    resizing: bool = False
 
     @property
     def sizing(self) -> GatewaySizing | None:
@@ -190,13 +212,16 @@ class GatewayResizer:
         settings = self._settings
         try:
             if settings.gateway_cluster_id:
-                return self._cluster(arm, settings.gateway_cluster_id)
-            if settings.external:
+                current = self._cluster(arm, settings.gateway_cluster_id)
+            elif settings.external:
                 raise ServiceError(
                     409,
                     "This app didn't deploy this gateway; resize it where it runs",
                 )
-            return self._app(arm)
+            else:
+                current = self._app(arm)
+            self._postgres(arm, current)
+            return current
         except ArmError as error:
             raise arm_failure(error, "read the gateway") from error
 
@@ -223,6 +248,14 @@ class GatewayResizer:
         resources = container.get("resources") or {}
         postgres, redis = sizes_from_tags(tags)
         low = int(scale.get("minReplicas") or 1)
+        environment_id = str((body.get("properties") or {}).get("environmentId") or "")
+        zone_redundant: bool | None = None
+        if environment_id:
+            environment = arm.get_arm_json(
+                environment_id, api_version=settings.container_apps_api_version
+            )
+            if environment is not None:
+                zone_redundant = bool((environment.get("properties") or {}).get("zoneRedundant"))
         return Current(
             platform="aca",
             resource_id=str(body.get("id") or path),
@@ -239,6 +272,7 @@ class GatewayResizer:
             memory=_memory(resources.get("memory")),
             postgres_sku=postgres,
             redis_sku=redis,
+            zone_redundant=zone_redundant,
         )
 
     def _cluster(self, arm: ArmClient, cluster_id: str) -> Current:
@@ -246,7 +280,7 @@ class GatewayResizer:
         name = cluster_id.rstrip("/").rsplit("/", 1)[-1]
         if body is None:
             raise ServiceError(404, f"The gateway's cluster {name} is gone")
-        tags = self._require_managed(body, name)
+        tags, resizing = self._resolved(arm, cluster_id, self._require_managed(body, name))
         properties = body.get("properties") or {}
         pool = dict((properties.get("agentPoolProfiles") or [{}])[0])
         count = int(pool.get("count") or 1)
@@ -271,7 +305,44 @@ class GatewayResizer:
             node_max=int(pool.get("maxCount") or count) if pool.get("enableAutoScaling") else count,
             outbound_ports=int(balancer.get("allocatedOutboundPorts") or 0),
             tier=str((body.get("sku") or {}).get("tier") or "Free"),
+            resizing=resizing,
         )
+
+    def _resolved(
+        self, arm: ArmClient, cluster_id: str, tags: dict[str, str]
+    ) -> tuple[dict[str, str], bool]:
+        """The cluster's tags with a change to its pods resolved: the new install size and
+        scenario once its command has succeeded (or while it runs, so a plan doesn't offer it
+        again), the old ones once it has failed or can't be found. And whether it runs."""
+        command = tags.get(RESIZE_COMMAND_TAG)
+        if not command:
+            return tags, False
+        settled = {key: value for key, value in tags.items() if key not in _PENDING_TAGS}
+        state = self._command(arm, cluster_id, command).state
+        if state == "failed":
+            return settled, False
+        for pending, tag in ((RESIZE_INSTALL_TAG, INSTALL_TAG), (RESIZE_SIZING_TAG, SIZING_TAG)):
+            if tags.get(pending):
+                settled[tag] = tags[pending]
+        return settled, state == "running"
+
+    def _postgres(self, arm: ArmClient, current: Current) -> None:
+        """Finds the gateway's database server and whether it has a standby."""
+        servers = [
+            item
+            for item in tagged_resources(
+                arm, current.subscription_id, current.resource_group, current.name
+            )
+            if str(item.get("type") or "").casefold() == _POSTGRES_TYPE
+        ]
+        current.postgres_ha = postgres_ha_from_tags(current.tags)
+        if not servers:
+            return
+        current.postgres_id = str(servers[0]["id"])
+        server = arm.get_arm_json(current.postgres_id, api_version=POSTGRES_API_VERSION) or {}
+        mode = ((server.get("properties") or {}).get("highAvailability") or {}).get("mode")
+        if mode is not None:
+            current.postgres_ha = str(mode).casefold() == "zoneredundant"
 
     # -- the plan ----------------------------------------------------------------------
 
@@ -365,7 +436,39 @@ class GatewayResizer:
                     "manual",
                     f"az aks update -g {group} -n {cluster} --tier standard",
                 )
-        change("database", current.postgres_sku, found.postgres_sku, "optional")
+            if found.zone_redundant and not current.pool.get("availabilityZones"):
+                # A node pool's zones are set when it's created.
+                change(
+                    "zones",
+                    "-",
+                    "1, 2, 3",
+                    "manual",
+                    f"az aks nodepool add -g {group} --cluster-name {cluster} -n litellmz "
+                    f"--node-vm-size {wanted} --zones 1 2 3 --enable-cluster-autoscaler "
+                    f"--min-count {low} --max-count {high}",
+                )
+        if current.platform == "aca" and found.zone_redundant and current.zone_redundant is False:
+            change("zones", "-", "zone-redundant", "manual")
+        # The new replicas' connections (two pools each while a revision rolls over) must fit
+        # the server the gateway keeps; else resizing the database isn't optional.
+        kept = postgres_size(current.postgres_sku).connections * DATABASE_TARGET
+        required = found.max_replicas * found.db_pool * 2 > kept
+        change(
+            "database",
+            current.postgres_sku,
+            found.postgres_sku,
+            "apply" if required else "optional",
+        )
+        if found.postgres_ha and not current.postgres_ha:
+            server = (current.postgres_id or "").rsplit("/", 1)[-1] or "<server>"
+            change(
+                "database_ha",
+                "-",
+                "ZoneRedundant",
+                "manual",
+                f"az postgres flexible-server update -g {current.resource_group} -n {server} "
+                "--high-availability ZoneRedundant",
+            )
         if found.redis_sku and not current.redis_sku:
             change("redis", "-", found.redis_sku, "manual")
         before = current.sizing
@@ -392,12 +495,17 @@ class GatewayResizer:
             raise ServiceError(
                 409, "This traffic doesn't fit the gateway's platform; nothing was changed"
             )
-        items = {change.item for change in planned.changes}
+        if current.resizing:
+            raise ServiceError(
+                409, "The last change to LiteLLM's pods is still running; try again once it ends"
+            )
+        actions = {change.item: change.action for change in planned.changes}
+        items = set(actions)
         applied: list[ResizeItem] = []
         command: str | None = None
         found = planned.plan
         try:
-            if body.database and "database" in items:
+            if "database" in items and (body.database or actions["database"] == "apply"):
                 self._database(arm, current, found)
                 applied.append("database")
             tags = {
@@ -405,6 +513,7 @@ class GatewayResizer:
                 SIZING_TAG: sizing_tag(body.sizing),
                 PROFILE_TAG: found.profile,
                 POSTGRES_TAG: found.postgres_sku if "database" in applied else current.postgres_sku,
+                POSTGRES_HA_TAG: "ZoneRedundant" if current.postgres_ha else "Disabled",
             }
             if current.platform == "aca":
                 aca_items: tuple[ResizeItem, ...] = ("replicas", "scale_rule", "replica_size")
@@ -417,16 +526,20 @@ class GatewayResizer:
                 # The pods' range and the rest from the plan; spend through Redis as installed,
                 # since a resize leaves LiteLLM's config as it is.
                 installed = InstallSize.parse(current.tags.get(INSTALL_TAG))
-                tags[INSTALL_TAG] = replace(InstallSize.of(found), buffer=installed.buffer).tag()
-                arm.request(
-                    "PATCH",
-                    arm.arm_url(current.resource_id),
-                    api_version=CONTAINER_SERVICE_API_VERSION,
-                    json_body={"tags": tags},
-                )
+                size = replace(InstallSize.of(found), buffer=installed.buffer).tag()
                 if "pods" in items:
+                    # The gateway keeps its size and scenario until the command has succeeded.
                     command = self._pods(arm, current, found)
                     applied.append("pods")
+                    tags |= {
+                        SIZING_TAG: current.tags.get(SIZING_TAG, ""),
+                        RESIZE_COMMAND_TAG: command,
+                        RESIZE_INSTALL_TAG: size,
+                        RESIZE_SIZING_TAG: sizing_tag(body.sizing),
+                    }
+                else:
+                    tags[INSTALL_TAG] = size
+                self._tag(arm, current.resource_id, tags)
         except ArmError as error:
             raise arm_failure(error, "resize the gateway") from error
         logger.info(
@@ -529,18 +642,50 @@ class GatewayResizer:
         return command
 
     def command(self, arm: ArmClient, command: str) -> ResizeCommand:
-        """The pods' change on AKS, while it runs and once it has."""
+        """The pods' change on AKS, while it runs and once it has; once it has, the cluster's
+        tags say so (the new size and scenario, or the old ones after a failure)."""
         cluster = self._settings.gateway_cluster_id
         if not cluster:
             raise ServiceError(404, "Only a gateway on AKS changes its pods with a command")
         try:
-            response = arm.request(
-                "GET",
-                arm.arm_url(f"{cluster}/commandResults/{segment(command)}"),
-                api_version=CONTAINER_SERVICE_API_VERSION,
-            )
+            result = self._command(arm, cluster, command)
         except ArmError as error:
             raise arm_failure(error, "follow the change") from error
+        if result.state != "running":
+            self._settle(arm, cluster, command)
+        return result
+
+    def _settle(self, arm: ArmClient, cluster: str, command: str) -> None:
+        """Writes a finished change to the pods into the cluster's tags. Best effort: a plan
+        resolves it the same way while the tags still have it."""
+        try:
+            body = arm.get_arm_json(cluster, api_version=CONTAINER_SERVICE_API_VERSION) or {}
+            stored = {str(k): str(v) for k, v in (body.get("tags") or {}).items()}
+            if stored.get(RESIZE_COMMAND_TAG) != command:
+                return
+            tags, _ = self._resolved(arm, cluster, stored)
+            self._tag(arm, cluster, tags)
+        except ArmError as error:
+            logger.warning("Could not record the resize of %s: %s", cluster, error.message)
+
+    def _tag(self, arm: ArmClient, resource_id: str, tags: Mapping[str, str]) -> None:
+        arm.request(
+            "PATCH",
+            arm.arm_url(resource_id),
+            api_version=CONTAINER_SERVICE_API_VERSION,
+            json_body={"tags": dict(tags)},
+        )
+
+    def _command(self, arm: ArmClient, cluster: str, command: str) -> ResizeCommand:
+        """A Run Command's outcome; one Azure no longer has counts as failed (not applied)."""
+        response = arm.request(
+            "GET",
+            arm.arm_url(f"{cluster}/commandResults/{segment(command)}"),
+            api_version=CONTAINER_SERVICE_API_VERSION,
+            allow_not_found=True,
+        )
+        if response.status_code == 404:
+            return ResizeCommand(state="failed", exit_code=None, log_tail=None)
         if response.status_code == 202 or not response.content:
             return ResizeCommand(state="running", exit_code=None, log_tail=None)
         properties = response.json().get("properties") or {}
@@ -558,19 +703,22 @@ class GatewayResizer:
         )
 
     def _database(self, arm: ArmClient, current: Current, found: GatewayPlan) -> None:
-        servers = [
-            item
-            for item in tagged_resources(
-                arm, current.subscription_id, current.resource_group, current.name
-            )
-            if str(item.get("type") or "").casefold() == _POSTGRES_TYPE
-        ]
-        if not servers:
+        if not current.postgres_id:
             raise ServiceError(404, f"The database of {current.name} wasn't found")
         size = postgres_size(found.postgres_sku)
+        if current.postgres_ha and size.edition == "Burstable":
+            # Burstable has no standby, and Azure won't move a server with one there.
+            response = arm.request(
+                "PATCH",
+                arm.arm_url(current.postgres_id),
+                api_version=POSTGRES_API_VERSION,
+                json_body={"properties": {"highAvailability": {"mode": "Disabled"}}},
+            )
+            arm.wait(response, timeout_seconds=1800)
+            current.postgres_ha = False
         arm.request(
             "PATCH",
-            arm.arm_url(str(servers[0]["id"])),
+            arm.arm_url(current.postgres_id),
             api_version=POSTGRES_API_VERSION,
             json_body={"sku": {"name": size.sku, "tier": size.edition}},
         )

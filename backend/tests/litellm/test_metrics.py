@@ -223,6 +223,7 @@ def test_gateway_dashboard_reads_the_container_app_and_database(
     azure.add_metric(GATEWAY_APP, "WorkingSetBytes", [(T1, 1.25 * 2**30)])
     azure.add_metric(POSTGRES, "cpu_percent", [(T1, 12)])
     azure.add_metric(POSTGRES, "active_connections", [(T1, 7), (T2, 9)])
+    azure.add_metric(POSTGRES, "storage_percent", [(T1, 41), (T2, 42)])
 
     response = client.get("/api/litellm/metrics")
 
@@ -238,12 +239,15 @@ def test_gateway_dashboard_reads_the_container_app_and_database(
         ("gw", "memory"),
         ("psql-gw-x1", "db_cpu"),
         ("psql-gw-x1", "db_connections"),
+        ("psql-gw-x1", "db_storage"),
     }
     assert series[("gw", "replicas")]["limit"] == 1
     assert series[("gw", "cpu")]["peak"] == pytest.approx(50)
     assert series[("gw", "cpu")]["average"] == pytest.approx(35)
     assert series[("gw", "memory")]["latest"] == pytest.approx(50)
     assert series[("psql-gw-x1", "db_connections")]["unit"] == "count"
+    # Read-only at 95 %: the tab shows how full it is.
+    assert series[("psql-gw-x1", "db_storage")]["latest"] == pytest.approx(42)
     assert body["problems"] == []
 
 

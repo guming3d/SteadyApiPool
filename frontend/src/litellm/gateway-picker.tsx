@@ -474,7 +474,7 @@ function DeployProgress({ tenantId, subscriptionId, group, name, onDone, onClean
         ? <CleanupState cleanup={status.data.cleanup} />
         : <span className="muted">{t.deployCleanupHint}</span>}
       <div className="picker-actions">
-        {aks && phase === "cluster" && <Button disabled={retry.isPending} onClick={() => retry.mutate()}>
+        {aks && (phase === "cluster" || phase === "certificate") && <Button disabled={retry.isPending} onClick={() => retry.mutate()}>
           {retry.isPending ? <LoaderCircle className="spin" size={13} /> : <RefreshCw size={13} />}{t.deployRetryInstall}
         </Button>}
         {status.data && canCleanUp(status.data) && <Button variant="ghost" className="danger" onClick={() => setCleaning(true)}><Trash2 size={13} />{t.deployCleanup}</Button>}

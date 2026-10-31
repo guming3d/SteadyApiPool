@@ -84,6 +84,23 @@ def test_every_problem_in_the_region_is_reported_before_anything_is_created(
     assert GROUP.casefold() not in azure.resource_groups
 
 
+def test_zone_redundancy_needs_zones_and_a_standby_in_the_region(
+    wizard: _Wizard, azure: FakeAzure
+) -> None:
+    azure.regions_without_zones.add("eastus2")
+    azure.postgres_no_zone_ha.add("eastus2")
+
+    production = _preflight(wizard, sizing=PRODUCTION)
+    trial = _preflight(wizard)
+
+    problems = " ".join(production["problems"])
+    assert "eastus2 has no availability zones" in problems
+    assert "no zone-redundant high availability for Standard_D2ds_v5" in problems
+    assert "swedencentral" in production["open_regions"]
+    # A trial doesn't ask to survive losing a zone.
+    assert trial["problems"] == []
+
+
 def test_postgres_quota_is_checked(wizard: _Wizard, azure: FakeAzure) -> None:
     azure.postgres_vcores_free["eastus2"] = 1
 
@@ -221,6 +238,28 @@ def test_the_deployment_is_validated_as_it_is_sent(wizard: _Wizard, azure: FakeA
             "ai-gateway-on-failure": "delete",
         }
     )
+
+
+def test_a_gateway_that_survives_losing_a_zone_is_zone_redundant(
+    wizard: _Wizard, azure: FakeAzure
+) -> None:
+    assert _create(wizard, sizing=PRODUCTION).status_code == 200
+
+    parameters = azure.arm_deployments[DEPLOYMENT.casefold()]["parameters"]
+    # Its environment spreads over zones (in a network of its own); its database has a
+    # standby in another zone; a stopping replica waits for a call (120 s) and its retry.
+    assert parameters["zoneRedundant"] is True
+    assert parameters["postgresHa"] == "ZoneRedundant"
+    assert parameters["drainSeconds"] == 240
+
+
+def test_a_trial_gateway_has_neither_zones_nor_a_standby(wizard: _Wizard, azure: FakeAzure) -> None:
+    assert _create(wizard).status_code == 200
+
+    parameters = azure.arm_deployments[DEPLOYMENT.casefold()]["parameters"]
+    assert parameters["zoneRedundant"] is False
+    assert parameters["postgresHa"] == "Disabled"
+    assert not any("Microsoft.Network" in r.url.path for r in azure.requests)
 
 
 # -- when a resource fails anyway -----------------------------------------------------------

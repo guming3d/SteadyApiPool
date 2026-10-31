@@ -238,12 +238,18 @@ export type GatewayPlan = {
   postgres_tier: "Burstable" | "GeneralPurpose"
   postgres_connections: number
   postgres_limit: number
+  /** A standby server in another zone (zone-redundant high availability). */
+  postgres_ha: boolean
   db_pool: number
   redis_sku: string | null
   redis_buffer: boolean
   aks: AksPlan | null
+  /** Spread over availability zones: the Container Apps environment or the AKS nodes. */
+  zone_redundant: boolean
   request_timeout: number
   route_timeout: number
+  /** Seconds a stopping replica waits for its calls in flight: a call and its retry. */
+  drain_seconds: number
   reasons: PlanNote[]
   warnings: PlanNote[]
   /** Anything here keeps the plan from being deployed on this platform. */
@@ -254,7 +260,7 @@ export type GatewayPlans = { recommended: GatewayPlatform; aca: GatewayPlan; aks
 
 export type ResizeItem =
   | "replicas" | "scale_rule" | "replica_size" | "nodes" | "pods" | "database" | "node_size"
-  | "outbound" | "tier" | "redis" | "timeout"
+  | "outbound" | "tier" | "redis" | "timeout" | "zones" | "database_ha"
 
 /** apply: the app changes it; optional: only when asked; manual: the user does (command, if any). */
 export type ResizeChange = {

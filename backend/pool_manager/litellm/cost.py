@@ -27,6 +27,7 @@ from ..config import Settings
 from ..cost import HOURS_PER_MONTH, CostReader, meter, region_name
 from .aks_deploy import CONTAINER_SERVICE_API_VERSION
 from .gateway import GATEWAY_TAG, GatewayInfo, GatewayUnavailable
+from .gateway_template import POSTGRES_HA_TAG
 from .models import CostItem, GatewayPlan, ListPrice, ServiceCost
 from .service import LiteLLMService
 from .sizing import SIDECAR, postgres_size
@@ -78,8 +79,16 @@ def sizes_from_tags(tags: Mapping[str, Any]) -> tuple[str, str | None]:
     return postgres, redis
 
 
-def _database_items(prices: Prices, postgres_sku: str, redis_sku: str | None) -> list[CostItem]:
-    """PostgreSQL and Redis: the same on Container Apps and AKS."""
+def postgres_ha_from_tags(tags: Mapping[str, Any]) -> bool:
+    """Whether a deployed gateway's database has a standby (none before the tag existed)."""
+    return str(tags.get(POSTGRES_HA_TAG) or "").casefold() == "zoneredundant"
+
+
+def _database_items(
+    prices: Prices, postgres_sku: str, redis_sku: str | None, postgres_ha: bool = False
+) -> list[CostItem]:
+    """PostgreSQL and Redis: the same on Container Apps and AKS. A high availability standby
+    is billed like the server it stands by for (compute and storage)."""
     items: list[CostItem] = []
     sku_name, product, label = _postgres_meter(postgres_sku)
     postgres = prices.get("postgres") or []
@@ -93,11 +102,13 @@ def _database_items(prices: Prices, postgres_sku: str, redis_sku: str | None) ->
         ),
     )
     if compute is not None:
-        monthly = compute * HOURS_PER_MONTH + (storage or 0) * POSTGRES_STORAGE_GB
+        servers = 2 if postgres_ha else 1
+        monthly = (compute * HOURS_PER_MONTH + (storage or 0) * POSTGRES_STORAGE_GB) * servers
         items.append(
             CostItem(
                 kind="postgres",
-                detail=f"{label} + {POSTGRES_STORAGE_GB} GB",
+                detail=f"{label} + {POSTGRES_STORAGE_GB} GB"
+                + (f" x {servers} (zone-redundant HA)" if postgres_ha else ""),
                 monthly_low=round(monthly, 2),
                 monthly_high=round(monthly, 2),
             )
@@ -141,6 +152,7 @@ def aks_list_price(
     standard_tier: bool,
     postgres_sku: str,
     redis_sku: str | None,
+    postgres_ha: bool = False,
 ) -> ListPrice | None:
     """An AKS gateway: its Linux nodes (from the fewest to the most the autoscaler runs), the
     Standard tier's uptime SLA, PostgreSQL and Redis; None without a node price."""
@@ -182,7 +194,7 @@ def aks_list_price(
                     monthly_high=round(tier * HOURS_PER_MONTH, 2),
                 )
             )
-    items += _database_items(prices, postgres_sku, redis_sku)
+    items += _database_items(prices, postgres_sku, redis_sku, postgres_ha)
     currency = str(next((item.get("currencyCode") for item in vms), None) or "USD")
     return _total(items, currency)
 
@@ -195,6 +207,7 @@ def aca_list_price(
     replicas: tuple[int, int],
     postgres_sku: str,
     redis_sku: str | None,
+    postgres_ha: bool = False,
 ) -> ListPrice | None:
     """A Container Apps gateway: its replicas (``cpu`` and ``memory`` for all containers of
     one), PostgreSQL and Redis; None if a meter it needs is missing."""
@@ -223,7 +236,7 @@ def aca_list_price(
             ),
         )
     ]
-    items += _database_items(prices, postgres_sku, redis_sku)
+    items += _database_items(prices, postgres_sku, redis_sku, postgres_ha)
     currency = str(next((item.get("currencyCode") for item in aca), None) or "USD")
     return _total(items, currency)
 
@@ -242,6 +255,7 @@ def list_price(prices: Prices, info: GatewayInfo) -> ListPrice | None:
         replicas=(low, high),
         postgres_sku=postgres,
         redis_sku=redis,
+        postgres_ha=postgres_ha_from_tags(info.tags),
     )
 
 
@@ -255,6 +269,7 @@ def plan_price(prices: Prices, plan: GatewayPlan) -> ListPrice | None:
             standard_tier=plan.aks.tier == "Standard",
             postgres_sku=plan.postgres_sku,
             redis_sku=plan.redis_sku,
+            postgres_ha=plan.postgres_ha,
         )
     return aca_list_price(
         prices,
@@ -263,6 +278,7 @@ def plan_price(prices: Prices, plan: GatewayPlan) -> ListPrice | None:
         replicas=(plan.min_replicas, plan.max_replicas),
         postgres_sku=plan.postgres_sku,
         redis_sku=plan.redis_sku,
+        postgres_ha=plan.postgres_ha,
     )
 
 
@@ -347,6 +363,7 @@ class LiteLLMCost(CostReader):
                 standard_tier=standard,
                 postgres_sku=postgres,
                 redis_sku=redis,
+                postgres_ha=postgres_ha_from_tags(tags),
             )
             return price, profile, location
         except (httpx.HTTPError, ValueError) as error:

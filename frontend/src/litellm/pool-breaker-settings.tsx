@@ -4,7 +4,7 @@
 import { Info, RotateCcw, ShieldCheck } from "lucide-react"
 
 import { fill, useI18n } from "../i18n"
-import { DEFAULT_SETTINGS, failuresToCool, sameSettings, type PoolSettings } from "./pool-breaker"
+import { DEFAULT_SETTINGS, MAX_TIMEOUT_SECONDS, failuresToCool, sameSettings, type PoolSettings } from "./pool-breaker"
 import { Button, Field } from "../components/ui"
 
 export function PoolBreakerSettings({
@@ -52,8 +52,8 @@ export function PoolBreakerSettings({
           onChange={integer(0, 10, (value) => ({ ...settings, retries: value }))} />
       </Field>
       <Field label={t.attemptTimeout} hint={t.attemptTimeoutHint}>
-        <input type="number" min={1} max={600} value={settings.timeout_seconds} disabled={disabled}
-          onChange={integer(1, 600, (value) => ({ ...settings, timeout_seconds: value }))} />
+        <input type="number" min={1} max={MAX_TIMEOUT_SECONDS} value={settings.timeout_seconds} disabled={disabled}
+          onChange={integer(1, MAX_TIMEOUT_SECONDS, (value) => ({ ...settings, timeout_seconds: value }))} />
       </Field>
     </div>
     <div className="state"><Info size={14} />{t.sessionPinningNote}</div>

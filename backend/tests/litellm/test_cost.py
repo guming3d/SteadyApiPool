@@ -107,9 +107,10 @@ def test_a_sized_gateway_is_priced_from_its_tags() -> None:
     assert price is not None
     items = {item.kind: item for item in price.items}
     assert items["container_apps"].detail == "2.25 vCPU, 4.5 GiB x 2-6 replicas"
-    # General Purpose D2ds_v5: its series' "2 vCore" price, not the per-vCore one.
-    assert items["postgres"].detail == "D2ds_v5 + 32 GB"
-    assert items["postgres"].monthly_low == pytest.approx(133.62, abs=0.01)
+    # General Purpose D2ds_v5: its series' "2 vCore" price, not the per-vCore one; the gateway
+    # survives losing a zone, so twice, with the standby in another zone.
+    assert items["postgres"].detail == "D2ds_v5 + 32 GB x 2 (zone-redundant HA)"
+    assert items["postgres"].monthly_low == pytest.approx(2 * 133.62, abs=0.01)
     assert items["redis"].detail == "Balanced B0 x 2"
     # The same as the plan said before it was deployed.
     before = plan_price(_prices(), found)

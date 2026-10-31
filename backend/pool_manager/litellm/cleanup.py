@@ -42,8 +42,11 @@ DELETE_ORDER = {
     "microsoft.managedidentity/userassignedidentities": (3, "2023-01-31"),
     "microsoft.insights/components": (3, "2020-02-02"),
     "microsoft.operationalinsights/workspaces": (4, "2023-09-01"),
+    # A zone-redundant environment's: Azure refuses it until the environment is gone.
+    "microsoft.network/virtualnetworks": (5, "2024-05-01"),
 }
 AKS_CLUSTER_TYPE = "microsoft.containerservice/managedclusters"
+NETWORK_TYPE = "microsoft.network/virtualnetworks"
 # How long the cleanup after a failure keeps trying, and how long it waits between passes.
 CLEANUP_TIMEOUT_SECONDS = 45 * 60
 CLEANUP_RETRY_SECONDS = 30.0

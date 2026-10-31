@@ -15,6 +15,7 @@ from pool_manager.discovery import DeploymentDiscovery
 from pool_manager.errors import ServiceError
 from pool_manager.litellm.api_test import LiteLLMTester
 from pool_manager.litellm.gateway import GatewayConnection
+from pool_manager.litellm.gateway_template import litellm_config
 from pool_manager.litellm.models import (
     AliasWrite,
     ApiTestRequest,
@@ -196,6 +197,30 @@ def test_a_save_waits_until_the_gateway_shows_it() -> None:
     assert naps == [1.0] * 4
 
 
+def test_a_settings_only_save_waits_until_the_gateway_shows_the_settings() -> None:
+    w, naps = _lagging(0)
+    ids = _import(w, *_seed(w.apim))
+    saved = w.service.put_pool("gpt6", _pool(ids), "alice")
+    w.lite.lagging_reads = 4
+
+    view = w.service.put_pool(
+        "gpt6",
+        _pool(
+            ids,
+            etag=saved.etag,
+            circuit_breaker=CircuitBreaker(allowed_fails=0, cooldown_seconds=300),
+            retries=3,
+            timeout_seconds=300,
+        ),
+        "alice",
+    )
+
+    # Same members, priorities and weights: only the settings show the save has been loaded.
+    assert view.circuit_breaker == CircuitBreaker(allowed_fails=0, cooldown_seconds=300)
+    assert (view.retries, view.timeout_seconds) == (3, 300)
+    assert naps == [1.0] * 4
+
+
 def test_a_save_that_never_shows_says_so() -> None:
     w, _ = _lagging(10_000)
     ids = _import(w, *_seed(w.apim))
@@ -234,6 +259,18 @@ def test_a_pool_is_one_row_per_member(w: Wired) -> None:
     assert metadata["pool"] == {"title": "GPT-6", "description": None, "aliases": []}
     assert metadata["member"]["auth"] == "managed_identity"
     assert rows[1]["litellm_params"]["order"] == 2
+
+
+def test_consumers_cant_choose_where_a_pools_calls_go(w: Wired) -> None:
+    """A managed identity member's call carries the gateway's own token: LiteLLM refuses a
+    caller's api_base and the like unless a row or the config allows them, so neither does."""
+    _saved(w)
+
+    config = litellm_config(redis=True)
+    assert "allow_client_side_credentials" not in config["general_settings"]
+    for row in w.lite.pool("gpt6"):
+        assert "configurable_clientside_auth_params" not in row["litellm_params"]
+        assert "configurable_clientside_auth_params" not in row["model_info"]
 
 
 def test_a_saved_pool_reads_back(w: Wired) -> None:
@@ -387,6 +424,35 @@ def test_an_api_key_member_keeps_its_key_in_a_credential(w: Wired) -> None:
             "alice",
         )
     assert w.lite.credentials == {}
+
+
+def test_a_new_key_that_cannot_be_stored_keeps_the_old_one(w: Wired) -> None:
+    east, _ = _seed(w.apim)
+    member = _import(w, east)[0]
+    write = MemberBackendWrite(
+        url="https://api.partner.example/v1",  # type: ignore[arg-type]
+        model="gpt-6",
+        auth=MemberAuth(type="api_key", secret="partner-key"),  # type: ignore[arg-type]
+    )
+    w.service.put_backend("custom-openai", write, "alice")
+    w.service.put_pool("mixed", _pool([member, "custom-openai"]), "alice")
+    stored = w.lite.credentials["custom-openai-credential"]
+
+    w.lite.refusing = {"PATCH /credentials": 503, "POST /credentials": 503}
+    rotated = write.model_copy(
+        update={"auth": MemberAuth(type="api_key", secret="new-key")}  # type: ignore[arg-type]
+    )
+    with pytest.raises(ServiceError):
+        w.service.put_backend("custom-openai", rotated, "alice")
+
+    # The rows still refer to a credential that holds the working key.
+    assert w.lite.credentials["custom-openai-credential"] is stored
+    assert stored["credential_values"] == {"api_key": "partner-key"}
+    assert not any(r.method == "DELETE" and "/credentials/" in r.url.path for r in w.lite.requests)
+
+    w.lite.refusing = {}
+    w.service.put_backend("custom-openai", rotated, "alice")
+    assert stored["credential_values"] == {"api_key": "new-key"}
 
 
 def test_an_openai_compatible_member_needs_a_model(w: Wired) -> None:

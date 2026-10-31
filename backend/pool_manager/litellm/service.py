@@ -83,6 +83,22 @@ def test_key_alias(prefix: str, pool_id: str) -> str:
     return f"{prefix}test-{pool_id}"
 
 
+def _settle_shape(view: PoolView) -> object:
+    """What a save waits to see on the gateway: everything it writes except the aliases (kept
+    in the router settings, not the rows) and the row-derived ETag."""
+    return view.model_dump(
+        mode="json",
+        include={
+            "title",
+            "description",
+            "members",
+            "circuit_breaker",
+            "retries",
+            "timeout_seconds",
+        },
+    )
+
+
 def alias_target(value: object) -> str | None:
     """The model group an alias points at: ``"pool"`` or ``{"model": "pool", ...}``."""
     if isinstance(value, str):
@@ -325,21 +341,30 @@ class LiteLLMService:
         logger.info("%s removed member %s", actor, backend_id)
 
     def _store_credential(self, client: LiteLLMClient, member: Member) -> None:
-        """Keeps an api_key member's key in a LiteLLM credential its rows refer to."""
+        """Keeps an api_key member's key in a LiteLLM credential its rows refer to.
+
+        A new key replaces the old one in place (``PATCH``, one write in LiteLLM's database), and
+        the credential is created only when there is none: rows keep referring to a working key
+        whatever fails, where deleting and creating it again would leave them without one."""
         if member.auth != "api_key" or member.secret is None:
             return
         name = credential_name(member.id)
-        body = {
-            "credential_name": name,
-            "credential_values": {"api_key": member.secret.get_secret_value()},
-            "credential_info": {"managed_by": "AI Gateway Pool Manager", "member": member.id},
-        }
+        values = {"api_key": member.secret.get_secret_value()}
+        info = {"managed_by": "AI Gateway Pool Manager", "member": member.id}
+        patch = {"credential_values": values, "credential_info": info}
         try:
-            client.request("DELETE", f"/credentials/{name}")
+            client.request("PATCH", f"/credentials/{name}", json_body=patch)
         except LiteLLMError as error:
-            if error.status not in {400, 404}:
+            if error.status != 404:
                 raise
-        client.request("POST", "/credentials", json_body=body)
+            body = {"credential_name": name, **patch}
+            try:
+                client.request("POST", "/credentials", json_body=body)
+            except LiteLLMError as created:
+                # Created meanwhile (LiteLLM answers 409): replace it after all.
+                if created.status not in {400, 409}:
+                    raise
+                client.request("PATCH", f"/credentials/{name}", json_body=patch)
         member.secret = None
 
     def _delete_unused_credentials(self, client: LiteLLMClient, member_ids: list[str]) -> None:
@@ -501,22 +526,19 @@ class LiteLLMService:
             raise translate_error(error) from error
         logger.info("%s wrote pool %s with %d members", actor, name, len(members))
         self._delete_unused_credentials(client, [row_member(row).id for row in dropped])
-        return self._settled(name, write)
+        return self._settled(name, desired)
 
-    def _settled(self, name: str, write: PoolWrite) -> PoolView:
-        """The pool as just saved, once SETTLE_READS reads in a row show its members, priorities
-        and weights (a replica that hasn't reloaded yet shows the old pool, or none)."""
-        wanted = sorted((m.backend_id.casefold(), m.priority, m.weight) for m in write.members)
+    def _settled(self, name: str, desired: list[dict[str, Any]]) -> PoolView:
+        """The pool as just saved, once SETTLE_READS reads in a row show it as written: its
+        members, their priorities and weights, and its settings (a replica that hasn't reloaded
+        yet shows the old pool, or none)."""
+        wanted = _settle_shape(parse_pool(name, desired, self._protected))
         deadline = self._clock() + SETTLE_SECONDS
         streak = 0
         while True:
             group = self._pool_rows(name)
             view = parse_pool(group[0], group[1], self._protected) if group else None
-            shown = (
-                sorted((m.backend_id.casefold(), m.priority, m.weight) for m in view.members)
-                if view
-                else None
-            )
+            shown = _settle_shape(view) if view else None
             streak = streak + 1 if shown == wanted else 0
             if view is not None and streak >= SETTLE_READS:
                 return view

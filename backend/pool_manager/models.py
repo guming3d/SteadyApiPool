@@ -586,6 +586,7 @@ LoadMetric = Literal[
     "db_cpu",
     "db_memory",
     "db_connections",
+    "db_storage",
 ]
 LoadUnit = Literal["percent", "count"]
 

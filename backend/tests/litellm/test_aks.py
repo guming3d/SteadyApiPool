@@ -272,6 +272,41 @@ def test_the_phases_install_litellm_then_wait_for_https(wizard: _Wizard, azure: 
     assert len(azure.run_commands) == 1
 
 
+def test_https_that_never_comes_fails_with_the_reason_and_can_be_tried_again(
+    wizard: _Wizard, azure: FakeAzure
+) -> None:
+    assert wizard.create().status_code == 200
+    azure.finish_deployment("gw-aks")
+    azure.litellm.unreachable_hosts.add("gw-aks.swedencentral.cloudapp.azure.com")
+    azure.run_command_polls = 0
+    wizard.status()  # starts the install
+    assert wizard.status()["phase"] == "certificate"
+    # Half an hour later, still nothing on HTTPS.
+    key = f"aks-install:{CLUSTER}"
+    pending = json.loads(wizard.secrets.get(key) or "{}")
+    pending["installed_at"] -= 31 * 60
+    wizard.secrets.put(key, json.dumps(pending))
+
+    failed = wizard.status()
+
+    assert (failed["state"], failed["phase"]) == ("failed", "certificate")
+    assert "doesn't answer on https://gw-aks.swedencentral.cloudapp.azure.com" in failed["error"]
+    assert "it can't be reached" in failed["error"]
+    # Trying again runs the install (the HTTPS gateway and its certificate) once more.
+    body = {
+        "tenant_id": TENANT,
+        "subscription_id": SUBSCRIPTION,
+        "resource_group": "rg-new",
+        "gateway_name": "gw-aks",
+    }
+    retried = wizard.client.post(
+        "/api/litellm/target/gateways/retry-install", json=body, headers=WRITE
+    )
+    assert retried.status_code == 204, retried.text
+    assert wizard.status()["phase"] == "cluster"
+    assert len(azure.run_commands) == 2
+
+
 def test_a_failed_install_can_run_again_with_the_same_keys(
     wizard: _Wizard, azure: FakeAzure
 ) -> None:
@@ -442,8 +477,9 @@ def test_the_install_reads_secrets_from_files_and_never_prints_them() -> None:
     assert "LITELLM_OTEL_V2" in files["values.yaml"]
     bash = shutil.which("bash")
     if bash:
-        result = subprocess.run([bash, "-n"], input=script, text=True, capture_output=True)
-        assert result.returncode == 0, result.stderr
+        # As bytes, as Run Command gets it: text mode would send CRLF on Windows.
+        result = subprocess.run([bash, "-n"], input=script.encode(), capture_output=True)
+        assert result.returncode == 0, result.stderr.decode(errors="replace")
 
 
 def test_production_pods_get_litellms_recommended_size() -> None:
@@ -458,6 +494,23 @@ def test_production_pods_get_litellms_recommended_size() -> None:
     # LiteLLM's production environment, instead of the chart's INFO logs.
     assert "LITELLM_MODE: PRODUCTION" in values and "LITELLM_LOG: ERROR" in values
     assert "targetCPUUtilizationPercentage: 60" in values
+
+
+def test_litellm_knows_its_https_address_and_drains_calls_on_its_spread_out_pods() -> None:
+    files = aks_bootstrap(_install("production"), aks_secrets())
+    values = files["values.yaml"]
+
+    # TLS ends at the Istio gateway: LiteLLM's Admin UI cookies are Secure only with its origin.
+    assert "PROXY_BASE_URL: https://gw-aks.swedencentral.cloudapp.azure.com" in values
+    # A call (120 s) and its retry finish before a stopping pod is killed.
+    assert 'GRACEFUL_SHUTDOWN_TIMEOUT: "240"' in values
+    assert "terminationGracePeriodSeconds: 270" in values
+    # Spread over zones and nodes when there is room, never left unscheduled for it.
+    assert values.count("whenUnsatisfiable: ScheduleAnyway") == 2
+    assert "topologyKey: topology.kubernetes.io/zone" in values
+    assert "app.kubernetes.io/instance: litellm" in values
+    # Browsers come back over HTTPS only.
+    assert "Strict-Transport-Security" in files["gateway.yaml"]
 
 
 def test_the_bundle_for_an_existing_cluster_uses_the_charts_master_key() -> None:

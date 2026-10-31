@@ -1,6 +1,7 @@
 // The capacity sizer's inputs and how its plan reads. Pure, so node --test can import it;
 // capacity-sizer.tsx shows it. The arithmetic itself is the backend's (litellm/sizing.py): the
 // browser only words the numbers the plan carries.
+import { MAX_TIMEOUT_SECONDS } from "./pool-breaker.ts"
 import type { GatewayPlan, GatewaySizing, ModelSpeed, PlanNote, ResizeChange } from "./types"
 
 export const DEFAULT_SIZING: GatewaySizing = {
@@ -27,7 +28,7 @@ export const LIMITS: Record<NumberField, { min: number; max: number }> = {
   peak_rpm: { min: 1, max: 1_000_000 },
   input_tokens: { min: 1, max: 2_000_000 },
   output_tokens: { min: 1, max: 200_000 },
-  timeout_seconds: { min: 10, max: 3600 },
+  timeout_seconds: { min: 10, max: MAX_TIMEOUT_SECONDS },
   headroom_percent: { min: 0, max: 200 },
 }
 export const RESPONSE_SECONDS_MAX = 3600
@@ -72,7 +73,8 @@ export type StepKey =
   | "planStepRps" | "planStepTpm" | "planStepCall" | "planStepInFlight" | "planStepCpu"
   | "planStepHolds" | "planStepReplicas" | "planStepReplicasSingle" | "planStepScaleAca" | "planStepScaleAks" | "planStepNodes"
   | "planStepOutbound" | "planStepDatabase" | "planStepRedis" | "planStepNoRedis" | "planStepBandwidth"
-  | "planStepTimeoutAca" | "planStepTimeoutAks"
+  | "planStepTimeoutAca" | "planStepTimeoutAks" | "planStepZonesAca" | "planStepDatabaseHa" | "planStepDatabaseNoHa"
+  | "planStepDrain"
 
 export type Step = { key: StepKey; values: Record<string, string> }
 
@@ -103,17 +105,20 @@ export function planSteps(plan: GatewayPlan, sizing: GatewaySizing, locale: stri
     )
   } else {
     steps.push({ key: "planStepScaleAca", values: { concurrency: n(plan.scale_concurrency), cpu: n(plan.scale_cpu_percent) } })
+    if (plan.zone_redundant) steps.push({ key: "planStepZonesAca", values: {} })
   }
   steps.push(
     {
       key: "planStepDatabase",
       values: { sku: plan.postgres_sku.replace(/^Standard_/, ""), connections: n(plan.postgres_connections), limit: n(plan.postgres_limit), pool: n(plan.db_pool) },
     },
+    { key: plan.postgres_ha ? "planStepDatabaseHa" : "planStepDatabaseNoHa", values: {} },
     plan.redis_sku ? { key: "planStepRedis", values: { sku: plan.redis_sku.replace("_", " ") } } : { key: "planStepNoRedis", values: {} },
     { key: "planStepBandwidth", values: { mbps: n(plan.bandwidth_mbps, 1) } },
     plan.aks
       ? { key: "planStepTimeoutAks", values: { timeout: n(plan.request_timeout), route: n(plan.route_timeout) } }
       : { key: "planStepTimeoutAca", values: { timeout: n(plan.request_timeout) } },
+    { key: "planStepDrain", values: { seconds: n(plan.drain_seconds) } },
   )
   return steps
 }
@@ -139,7 +144,8 @@ export function resizeImpacts(changes: ResizeChange[], database: boolean): Impac
   if (applied.has("replicas") || applied.has("scale_rule") || applied.has("replica_size")) impacts.push("resizeImpact_revision")
   if (applied.has("nodes")) impacts.push("resizeImpact_nodes")
   if (applied.has("pods")) impacts.push("resizeImpact_pods")
-  if (database && changes.some((change) => change.item === "database")) impacts.push("resizeImpact_database")
+  // The database restarts when asked, or when it must (it can't take the new replicas).
+  if (applied.has("database") || (database && changes.some((change) => change.item === "database"))) impacts.push("resizeImpact_database")
   return impacts
 }
 

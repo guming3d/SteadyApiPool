@@ -12,7 +12,9 @@ import pytest
 from pool_manager import config
 from pool_manager.app import app
 from pool_manager.config import Settings, read_saved_target
-from pool_manager.litellm.gateway_template import LITELLM_IMAGE, aca_template
+from pool_manager.litellm.gateway_template import LITELLM_IMAGE, aca_parameters, aca_template
+from pool_manager.litellm.models import GatewaySizing
+from pool_manager.litellm.sizing import plan
 from pool_manager.secret_store import SecretStore
 from tests.fake_azure import SUBSCRIPTION, TENANT, FakeAzure
 from tests.litellm.fake_litellm import MASTER_KEY, URL
@@ -649,6 +651,30 @@ def test_delete_doesnt_wait_for_the_environment(wizard: _Wizard, azure: FakeAzur
     after = len([r for r in azure.requests if r.method == "DELETE" and "cae-gw-dev" in r.url.path])
     assert again.status_code == 204, again.text
     assert after == before
+
+
+def test_a_zone_redundant_gateways_network_goes_once_its_environment_has(
+    wizard: _Wizard, azure: FakeAzure
+) -> None:
+    sizing = GatewaySizing.model_validate(PRODUCTION)
+    parameters = {
+        key: value["value"]
+        for key, value in aca_parameters("gw-zr", "eastus2", sizing, plan(sizing, "aca")).items()
+    }
+    azure.add_gateway("gw-zr", group="rg-ai-gw", subscription=SUBSCRIPTION, parameters=parameters)
+    assert any(key.endswith("/virtualnetworks/vnet-gw-zr") for key in azure.resources)
+    # Its subnet is in use until the environment is gone.
+    azure.refused_deletes = {"microsoft.network/virtualnetworks": 1}
+
+    response = wizard.client.post(
+        "/api/litellm/target/gateways/delete", json=_delete_body("gw-zr"), headers=WRITE
+    )
+
+    # Deleted, the network by the cleanup that keeps asking for it (inline here).
+    assert response.status_code == 204, response.text
+    assert not any("gw-zr" in key for key in azure.resources)
+    network = [r for r in azure.requests if r.method == "DELETE" and "vnet-gw-zr" in r.url.path]
+    assert len(network) == 2
 
 
 def test_deleting_the_current_gateway_forgets_it(azure: FakeAzure, tmp_path: Path) -> None:

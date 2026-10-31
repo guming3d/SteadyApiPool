@@ -29,12 +29,15 @@ const PLAN = {
   postgres_tier: "GeneralPurpose",
   postgres_connections: 120,
   postgres_limit: 844,
+  postgres_ha: true,
   db_pool: 10,
   redis_sku: "Balanced_B0",
   redis_buffer: false,
   aks: null,
+  zone_redundant: true,
   request_timeout: 120,
   route_timeout: 600,
+  drain_seconds: 240,
   reasons: [{ code: "platform_simple", values: {} }],
   warnings: [{ code: "foundry_quota", values: { tpm: 15_000_000, rpm: 6000 } }],
   problems: [],
@@ -59,7 +62,9 @@ test("the bounds mirror GatewaySizing in the backend", () => {
   for (const [field, { min, max }] of Object.entries(LIMITS)) {
     const line = sizing.split("\n").find((text) => text.trimStart().startsWith(`${field}: int`))
     assert.ok(line, field)
-    const bound = (name) => Number(line.match(new RegExp(`${name}=([\\d_]+)`))?.[1].replaceAll("_", ""))
+    // A number, or a constant of models.py (MAX_TIMEOUT_SECONDS).
+    const constant = (value) => models.match(new RegExp(`^${value} = ([\\d_]+)\\r?$`, "m"))?.[1] ?? value
+    const bound = (name) => Number(constant(line.match(new RegExp(`${name}=(\\w+)`))?.[1]).replaceAll("_", ""))
     assert.deepEqual([bound("ge"), bound("le")], [min, max], field)
   }
 })
@@ -81,12 +86,17 @@ test("the steps carry the plan's numbers in order", () => {
 
   assert.deepEqual(steps.map((step) => step.key), [
     "planStepRps", "planStepTpm", "planStepCall", "planStepInFlight", "planStepCpu", "planStepHolds",
-    "planStepReplicas", "planStepScaleAca", "planStepDatabase", "planStepRedis", "planStepBandwidth", "planStepTimeoutAca",
+    "planStepReplicas", "planStepScaleAca", "planStepZonesAca", "planStepDatabase", "planStepDatabaseHa", "planStepRedis",
+    "planStepBandwidth", "planStepTimeoutAca", "planStepDrain",
   ])
   assert.deepEqual(steps[0].values, { rps: "100", rpm: "6,000" })
   assert.equal(steps[1].values.tpm, "15M")
   assert.deepEqual(steps[6].values, { peak: "4", range: "2–6", headroom: "25" })
-  assert.equal(steps[8].values.sku, "D2ds_v5")
+  assert.equal(steps[9].values.sku, "D2ds_v5")
+  assert.deepEqual(steps.at(-1).values, { seconds: "240" })
+  // A trial has no standby, and says what that means.
+  const trial = planSteps({ ...PLAN, postgres_ha: false, zone_redundant: false }, SIZING, "en").map((step) => step.key)
+  assert.ok(trial.includes("planStepDatabaseNoHa") && !trial.includes("planStepZonesAca"))
 })
 
 test("an AKS plan has nodes and outbound ports instead of the replica trigger", () => {
@@ -122,6 +132,8 @@ test("a resize warns about what it does to running traffic", () => {
   assert.deepEqual(resizeImpacts(aca, false), ["resizeImpact_revision"])
   assert.deepEqual(resizeImpacts(aca, true), ["resizeImpact_revision", "resizeImpact_database"])
   assert.deepEqual(resizeImpacts(aks, false), ["resizeImpact_nodes", "resizeImpact_pods"])
+  // A database too small for the new replicas is resized whether asked or not.
+  assert.deepEqual(resizeImpacts([change("replicas", "apply"), change("database", "apply")], false), ["resizeImpact_revision", "resizeImpact_database"])
   // Only what the app would change counts; a manual item changes nothing.
   assert.equal(resizeChangesSomething([change("redis", "manual")], false), false)
   assert.equal(resizeChangesSomething([change("database", "optional")], true), true)

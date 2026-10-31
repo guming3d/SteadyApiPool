@@ -317,7 +317,7 @@ export type PoolMetrics = {
 /** APIM: capacity (classic tiers), cpu and memory (v2 tiers). LiteLLM: replicas, and cpu and
  *  memory of each replica's allocation (Container Apps), node_cpu and node_memory (AKS), and its
  *  database's db_*. */
-export type LoadMetric = "capacity" | "cpu" | "memory" | "replicas" | "node_cpu" | "node_memory" | "db_cpu" | "db_memory" | "db_connections"
+export type LoadMetric = "capacity" | "cpu" | "memory" | "replicas" | "node_cpu" | "node_memory" | "db_cpu" | "db_memory" | "db_connections" | "db_storage"
 
 export type LoadPoint = { time: string; average: number | null; peak: number | null }
 

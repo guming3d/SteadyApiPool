@@ -6,8 +6,10 @@ leave the others behind, billed. ``CapacityCheck.problems`` reads, without chang
 
 - that the region offers every resource type the template creates (the providers' locations);
 - PostgreSQL Flexible Server: the region's restrictions, the server version, the size the
-  sizing plan picked, and the subscription's vCore quota for that size's family;
-- Container Apps: room for one more managed environment in the region;
+  sizing plan picked, zone-redundant high availability for it when the plan has a standby, and
+  the subscription's vCore quota for that size's family;
+- Container Apps: room for one more managed environment in the region, and availability zones
+  when the environment is to be zone-redundant;
 - AKS: the plan's node size, or the same size in the first node family the subscription may
   use there (Ddsv5, then Ddsv7, then Ddsv6), its zones and that family's vCPU quota for the
   most nodes it runs.
@@ -32,6 +34,7 @@ from .sizing import NODE_FAMILIES, node_family, node_in_family, postgres_size
 logger = logging.getLogger(__name__)
 
 RESOURCES_API_VERSION = "2021-04-01"
+LOCATIONS_API_VERSION = "2022-12-01"
 POSTGRES_API_VERSION = "2024-08-01"
 # The server version in the gateway templates.
 POSTGRES_VERSION = "16"
@@ -62,6 +65,7 @@ _LABELS = {
     "Microsoft.App/managedEnvironments": "Container Apps environments",
     "Microsoft.App/containerApps": "Container Apps",
     "Microsoft.ContainerService/managedClusters": "AKS clusters",
+    "Microsoft.Network/virtualNetworks": "virtual networks",
 }
 
 
@@ -79,6 +83,9 @@ def resource_types(plan: GatewayPlan) -> list[str]:
         types.append("Microsoft.ContainerService/managedClusters")
     else:
         types += ["Microsoft.App/managedEnvironments", "Microsoft.App/containerApps"]
+        if plan.zone_redundant:
+            # A zone-redundant environment runs in a virtual network of its own.
+            types.append("Microsoft.Network/virtualNetworks")
     return types
 
 
@@ -125,7 +132,9 @@ class CapacityCheck:
         report = CapacityReport()
         report.problems += self._offered(types, providers, location)
         checks: list[Callable[[], list[str]]] = [
-            lambda: self._postgres(arm, subscription, location, plan.postgres_sku),
+            lambda: self._postgres(
+                arm, subscription, location, plan.postgres_sku, ha=plan.postgres_ha
+            ),
         ]
         if plan.aks is not None:
             aks = plan.aks
@@ -141,6 +150,8 @@ class CapacityCheck:
             checks.append(nodes_fit)
         else:
             checks.append(lambda: self._environments(arm, subscription, location))
+            if plan.zone_redundant:
+                checks.append(lambda: self._zones(arm, subscription, location))
         with ThreadPoolExecutor(max_workers=len(checks)) as pool:
             for found in pool.map(lambda check: check(), checks):
                 report.problems += found
@@ -217,7 +228,9 @@ class CapacityCheck:
                 problems.append(f"Azure doesn't offer {_LABELS.get(kind, kind)} in {location}.")
         return problems
 
-    def _postgres(self, arm: ArmClient, subscription: str, location: str, sku: str) -> list[str]:
+    def _postgres(
+        self, arm: ArmClient, subscription: str, location: str, sku: str, *, ha: bool = False
+    ) -> list[str]:
         base = f"{subscription}/providers/Microsoft.DBforPostgreSQL/locations/{segment(location)}"
         size = postgres_size(sku)
         try:
@@ -251,11 +264,17 @@ class CapacityCheck:
                 (e for e in editions if str(e.get("name")).casefold() == size.edition.casefold()),
                 None,
             )
-            offered = {str(s.get("name")) for s in (edition or {}).get("supportedServerSkus") or []}
-            if size.sku not in offered:
+            skus = {str(s.get("name")): s for s in (edition or {}).get("supportedServerSkus") or []}
+            if size.sku not in skus:
                 problems.append(
                     f"PostgreSQL Flexible Server has no {size.edition_label} {size.sku} in "
                     f"{location}."
+                )
+            elif ha and not _zone_ha(capability, skus[size.sku]):
+                problems.append(
+                    f"PostgreSQL Flexible Server in {location} has no zone-redundant high "
+                    f"availability for {size.sku}, which a gateway that survives losing a zone "
+                    "needs: pick another region, or don't ask to survive losing a zone."
                 )
         problems += _quota(
             (usages or {}).get("value") or [],
@@ -283,6 +302,28 @@ class CapacityCheck:
             1,
             location,
         )
+
+    def _zones(self, arm: ArmClient, subscription: str, location: str) -> list[str]:
+        """A zone-redundant Container Apps environment needs a region with availability zones."""
+        try:
+            found = arm.get_arm_json(f"{subscription}/locations", api_version=LOCATIONS_API_VERSION)
+        except ArmError as error:
+            logger.info("Cannot read the subscription's regions: %s", error.message)
+            return []
+        region = next(
+            (
+                item
+                for item in (found or {}).get("value") or []
+                if _region(item.get("name")) == _region(location)
+            ),
+            None,
+        )
+        if region is None or region.get("availabilityZoneMappings"):
+            return []
+        return [
+            f"{location} has no availability zones, so the gateway's Container Apps environment "
+            "can't be zone-redundant: pick another region, or don't ask to survive losing a zone."
+        ]
 
     def _nodes(
         self, arm: ArmClient, subscription: str, location: str, node_size: str, vcpus: int
@@ -359,6 +400,16 @@ class CapacityCheck:
             quota_names = {quota: label, **quota_names}
         problems = _quota((usages or {}).get("value") or [], quota_names, vcpus, location)
         return zones, problems
+
+
+def _zone_ha(capability: Mapping[str, Any], sku: Mapping[str, Any]) -> bool:
+    """Whether a PostgreSQL size can have a standby in another zone in the region: the size's
+    own high availability modes, else the region's flag; True when neither is listed."""
+    modes = sku.get("supportedHaMode")
+    if isinstance(modes, list):
+        return "ZoneRedundant" in {str(mode) for mode in modes}
+    flag = str(capability.get("zoneRedundantHaSupported") or "").casefold()
+    return flag != "disabled"
 
 
 def _open(sku: Mapping[str, Any]) -> bool:

@@ -42,7 +42,7 @@ from ..secret_store import SecretStore
 from ..target import TargetChooser, resource_group_of
 from .access import GATEWAY_ACTIONS
 from .aks_deploy import CONTAINER_SERVICE_API_VERSION, AksDeployer, cluster_path
-from .cleanup import GatewayCleanup, delete_resources, tagged_resources
+from .cleanup import NETWORK_TYPE, GatewayCleanup, delete_resources, tagged_resources
 from .cost import PlanPrices
 from .gateway import (
     MANAGED_TAG,
@@ -686,8 +686,32 @@ class LiteLLMTargets:
         name = str(found.get("name") or body.gateway_name)
         if body.confirm_name.strip().casefold() != name.casefold():
             raise ServiceError(400, f"Type the gateway name ({name}) to confirm")
-        result = delete_resources(arm, self._resources(arm, body, name))
+        resources = self._resources(arm, body, name)
+        result = delete_resources(arm, resources)
         deleted = [*result.deleted, *result.deleting]
+        # A virtual network goes only once its environment has (10-20 minutes): the cleanup
+        # that follows failed deployments keeps asking for it.
+        networks = {
+            str(item.get("name"))
+            for item in resources
+            if str(item.get("type") or "").casefold() == NETWORK_TYPE
+        }
+        later = [
+            resource
+            for resource, error in result.failed
+            if resource in networks and error.status in {400, 409}
+        ]
+        if later:
+            result.failed = [item for item in result.failed if item[0] not in later]
+            self._cleanup.start(
+                f"delete:{body.subscription_id}/{body.resource_group}/{name}".casefold()
+                + f"@{datetime.now(UTC).isoformat()}",
+                arm,
+                body.subscription_id,
+                body.resource_group,
+                name,
+            )
+            deleted += later
         if result.failed:
             failed = [
                 (resource, arm_failure(error, f"delete {resource}"))

@@ -215,3 +215,48 @@ def test_saving_a_pool_again_changes_rows_in_place(
     assert saved.retries == 2
     assert "order: 1" in (pools.config(POOL).yaml or "")
     assert saved.etag != pool.etag
+
+
+# What a consumer could send to point a pool's call, and the gateway's credentials with it, at a
+# host of their choosing. LiteLLM 1.106 refuses each one before routing (is_request_body_safe):
+# with ``enable_azure_ad_token_refresh`` a call that got through with an empty key would carry
+# the gateway's managed identity token to that host.
+OVERRIDES = [
+    {"api_base": "http://region-b:8080", "api_key": ""},
+    {"api_base": "http://region-b:8080", "api_key": "anything"},
+    {"base_url": "http://region-b:8080", "api_key": ""},
+    {"extra_body": {"api_base": "http://region-b:8080"}},
+    {"metadata": {"api_base": "http://region-b:8080"}},
+    {"azure_ad_token": "x", "api_base": "http://region-b:8080"},
+]
+
+
+@pytest.mark.parametrize("override", OVERRIDES)
+def test_a_consumer_cant_send_a_pools_call_elsewhere(
+    service: tuple[LiteLLMService, LiteLLMTester], override: dict[str, Any]
+) -> None:
+    pools, tester = service
+    a, b = _members(pools)
+    # Region b only answers when region a fails: any call it serves came from the override.
+    pools.put_pool(
+        POOL,
+        PoolWrite(
+            members=[
+                PoolMemberWrite(backend_id=a, priority=0, weight=1),
+                PoolMemberWrite(backend_id=b, priority=1, weight=1),
+            ]
+        ),
+        "test",
+    )
+    key = tester.create_key(POOL, "test").key
+    _region("b", 200)
+
+    response = httpx.post(
+        f"{GATEWAY}/v1/chat/completions",
+        headers={"Authorization": f"Bearer {key}"},
+        json={"model": POOL, "messages": [{"role": "user", "content": "hi"}], **override},
+        timeout=30,
+    )
+
+    assert response.status_code == 400, response.text
+    assert _calls("b") == 0

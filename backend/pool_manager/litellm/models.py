@@ -88,6 +88,9 @@ class BackendView(StrictModel):
 DEFAULT_RETRIES = 1
 
 DEFAULT_TIMEOUT_SECONDS = 120
+# The longest a call may take, for a pool's attempts and a gateway's sizing alike, so a scenario
+# the sizer takes can be written to the pools on that gateway.
+MAX_TIMEOUT_SECONDS = 3600
 
 
 class PoolWrite(StrictModel):
@@ -99,7 +102,7 @@ class PoolWrite(StrictModel):
     # Further attempts LiteLLM makes for a failed request, on the same or another member.
     retries: int | None = Field(default=None, ge=0, le=10)
     # How long one attempt may take before LiteLLM gives up on that member.
-    timeout_seconds: int | None = Field(default=None, ge=1, le=600)
+    timeout_seconds: int | None = Field(default=None, ge=1, le=MAX_TIMEOUT_SECONDS)
     # ``None`` creates a new pool; otherwise it must match the pool as loaded.
     etag: str | None = None
 
@@ -343,7 +346,7 @@ class GatewaySizing(StrictModel):
     input_tokens: int = Field(ge=1, le=2_000_000)
     output_tokens: int = Field(ge=1, le=200_000)
     # The longest a call may take, retries aside: LiteLLM's request_timeout.
-    timeout_seconds: int = Field(ge=10, le=3600)
+    timeout_seconds: int = Field(ge=10, le=MAX_TIMEOUT_SECONDS)
     streaming: bool = True
     model_speed: ModelSpeed = "standard"
     # Overrides the speed preset: the average seconds a call takes, start to last token.
@@ -429,13 +432,21 @@ class GatewayPlan(StrictModel):
     postgres_tier: Literal["Burstable", "GeneralPurpose"]
     postgres_connections: int
     postgres_limit: int
+    # A standby server in another zone (zone-redundant high availability), for a gateway that
+    # survives losing a zone; General Purpose only.
+    postgres_ha: bool
     db_pool: int
     redis_sku: str | None
     # Spend written through Redis (use_redis_transaction_buffer), at LiteLLM's threshold.
     redis_buffer: bool
     aks: AksPlan | None
+    # Spread over availability zones: the Container Apps environment (in a virtual network of
+    # its own) or the AKS nodes, and the database's standby.
+    zone_redundant: bool
     request_timeout: int
     route_timeout: int
+    # Seconds a stopping replica waits for its calls in flight: a call and its retry.
+    drain_seconds: int
     reasons: list[PlanNote]
     warnings: list[PlanNote]
     # Anything here keeps the plan from being deployed on this platform.
@@ -461,9 +472,12 @@ ResizeItem = Literal[
     "tier",
     "redis",
     "timeout",
+    "zones",
+    "database_ha",
 ]
-# apply: the app changes it; optional: only when asked (the database restarts); manual: the app
-# leaves it to the user (``command`` says how, when there is one).
+# apply: the app changes it; optional: only when asked (the database restarts; required, so
+# apply, when the server it has can't take the new replicas); manual: the app leaves it to the
+# user (``command`` says how, when there is one).
 ResizeAction = Literal["apply", "optional", "manual"]
 
 

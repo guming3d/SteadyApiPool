@@ -113,7 +113,7 @@ export function ResizeDialog({ initial, onClose }: { initial: GatewaySizing | nu
                 <span>{fill(t.resizeManualItem, { item: t[`resizeItem_${item.item}`], current: item.current, proposed: item.proposed })}</span>
                 {item.command
                   ? <CodeBlock code={item.command} label={t[`resizeItem_${item.item}`]} />
-                  : <small className="muted">{t[`resizeManual_${item.item === "timeout" ? "timeout" : "redis"}`]}</small>}
+                  : <small className="muted">{t[`resizeManual_${item.item === "timeout" || item.item === "zones" ? item.item : "redis"}`]}</small>}
               </div>)}
             </div>}
           </>}

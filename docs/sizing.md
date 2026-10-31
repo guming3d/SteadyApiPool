@@ -159,6 +159,7 @@ profile (a trial, no redundancy, Burstable database, no Redis).
 | Scale out on calls in flight | more than (calls in flight ÷ replicas at the peak) per replica |
 | Scale out on CPU | 27 % of the replica's allocation, which is 60 % of its one worker's core (60 × 1 ÷ 2.25) |
 | Limit | 30 replicas a plan; the ingress ends a request that sends nothing for 240 s |
+| Zones | with zone redundancy, a zone-redundant environment (in a virtual network of its own; Azure sets that only when it's created) |
 
 60 % is below the 70 % the replicas are sized at, so a new replica (a few minutes to start)
 arrives before the others are saturated.
@@ -185,7 +186,13 @@ Past 199 replicas the plan keeps D16ds_v5 and lowers LiteLLM's pool per replica 
 below 2 connections a replica (about 1,000 replicas) it refuses and says to split the traffic.
 Burstable isn't used for more than one replica: it runs out of CPU credits under steady load.
 
-> 2 × 10 × 2 = 40 connections: **`Standard_D2ds_v5`**.
+**High availability.** With zone redundancy the server (General Purpose: zone redundancy means
+two replicas at least) gets a standby in another zone that takes over if it fails. Azure bills the
+standby like the server, so the database costs twice as much. Without it the database is a single
+server: while it restarts (maintenance, a resize) or fails, the gateway may refuse calls and stops
+recording spend until it's back.
+
+> 2 × 10 × 2 = 40 connections: **`Standard_D2ds_v5`**, with a standby in another zone.
 
 ### 8. Redis
 
@@ -237,6 +244,10 @@ slow.
 
 **Timeouts.** The route on AKS allows a call and its retry: the larger of 600 s and
 (timeout × 2 + 60 s).
+
+**Draining.** On both platforms a replica or pod that stops (scaling in, a new revision, a node's
+maintenance) takes no new calls and waits for those in flight: a call and its retry, timeout × 2
+(240 s at the default 120 s), then 30 s more before it is killed.
 
 > 2 pods: **3 × `Standard_D4ds_v5`** (3 for the zones, 2 pods running), Standard tier; 72 slowed
 > calls over 3 nodes = 24 ports a node, 1 outbound IP with 16,000 ports a node.
@@ -296,7 +307,10 @@ for large AKS plans, go by the measured number until you have load-tested your o
 - **Region capacity.** The deploy form checks the region offers each resource and the
   subscription has quota, before anything is created.
 - **Changing traffic.** **Resize for new traffic** in the gateway panel recomputes the plan for
-  a gateway the app deployed and applies it after you confirm.
+  a gateway the app deployed and applies it after you confirm. It resizes the database whenever
+  the server the gateway has can't take the new replicas' connections (step 7), and leaves what
+  Azure only sets at creation (zone redundancy, the database's geo-redundant backup) or what needs
+  a command (the database's standby) to you.
 
 ## Run the sizer yourself
 

@@ -45,6 +45,9 @@ class FakeLiteLLM:
     requests: list[httpx.Request] = field(default_factory=list)
     # Hosts that don't answer yet.
     unreachable_hosts: set[str] = field(default_factory=set)
+    # Admin calls ("<METHOD> <path prefix>") that answer this status instead, e.g. a database
+    # that refuses writes for a while.
+    refusing: dict[str, int] = field(default_factory=dict)
     _keys: count = field(default_factory=lambda: count(1))  # type: ignore[type-arg]
 
     def transport(self) -> httpx.MockTransport:
@@ -80,6 +83,10 @@ class FakeLiteLLM:
             return self._inference(request, path, body, auth)
         if auth != self.master_key:
             return _error(401, "Authentication Error, invalid master key")
+        for call, status in self.refusing.items():
+            method, _, prefix = call.partition(" ")
+            if request.method == method and path.startswith(prefix):
+                return _error(status, f"{call} refused")
         if path == "/health/readiness/details":
             return httpx.Response(
                 200, json={"status": "healthy", "db": self.db, "litellm_version": self.version}
@@ -119,8 +126,20 @@ class FakeLiteLLM:
         if path == "/credentials" and request.method == "POST":
             name = body["credential_name"]
             if name in self.credentials:
-                return _error(400, f"Credential {name} already exists")
+                return _error(409, f"Credential {name} already exists")
             self.credentials[name] = body
+            return httpx.Response(200, json={"success": True})
+        if path.startswith("/credentials/") and request.method == "PATCH":
+            # As LiteLLM 1.106: one update of the stored credential, its values merged.
+            stored = self.credentials.get(path.removeprefix("/credentials/"))
+            if stored is None:
+                return _error(404, "Credential not found in DB.")
+            stored["credential_values"] = {
+                **stored.get("credential_values", {}),
+                **(body.get("credential_values") or {}),
+            }
+            if body.get("credential_info"):
+                stored["credential_info"] = body["credential_info"]
             return httpx.Response(200, json={"success": True})
         if path.startswith("/credentials/") and request.method == "DELETE":
             if self.credentials.pop(path.removeprefix("/credentials/"), None) is None:

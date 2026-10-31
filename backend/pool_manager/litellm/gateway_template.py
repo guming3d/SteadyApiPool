@@ -15,8 +15,11 @@ they match). Every gateway gets the same config.yaml, so it behaves the same whe
   pool of connections (one worker each), so the most replicas stay inside the server's; past
   LiteLLM's threshold (``sizing.redis_buffer``) spend goes through Redis;
 - the rest of LiteLLM's production checklist (docs.litellm.ai/docs/proxy/prod): failed calls go
-  to the logs, not the spend table; JSON logs at ERROR; no .env loading (``PRODUCTION_ENV``); and
-  the ingress in front is trusted for the client's address (``TRUSTED_PROXY_RANGES``).
+  to the logs, not the spend table; JSON logs at ERROR; no .env loading (``PRODUCTION_ENV``); the
+  ingress in front is trusted for the client's address (``TRUSTED_PROXY_RANGES``); LiteLLM knows
+  its public HTTPS address (``PROXY_BASE_URL``, so its Admin UI cookies are Secure behind the
+  ingress that ends TLS); and a stopping replica drains its calls in flight (a call and its
+  retry, ``sizing.drain_seconds``).
 
 How big it is (replicas, nodes, the database, Redis, the timeout) is the sizing plan's
 (sizing.py), passed to the templates as parameters and to the AKS install as a tag.
@@ -43,7 +46,7 @@ from .models import (
     GatewaySizing,
 )
 from .resources import to_yaml
-from .sizing import AUTOSCALE_CPU_PERCENT, DB_POOL, MIN_ROUTE_SECONDS
+from .sizing import AUTOSCALE_CPU_PERCENT, DB_POOL, MIN_ROUTE_SECONDS, drain_seconds
 
 # Keep in step with tests/litellm/litellm_stack/docker-compose.yml and the Bicep default.
 LITELLM_VERSION = "1.106.4"
@@ -230,6 +233,15 @@ def parse_sizing_tag(value: str | None) -> GatewaySizing | None:
         return None
 
 
+# The tag on the Container App or cluster with the database's high availability mode.
+POSTGRES_HA_TAG = "ai-gateway-postgres-ha"
+
+
+def postgres_ha_mode(plan: GatewayPlan) -> str:
+    """The templates' ``postgresHa``: a standby in another zone, or none."""
+    return "ZoneRedundant" if plan.postgres_ha else "Disabled"
+
+
 def aca_parameters(
     name: str, location: str, sizing: GatewaySizing, plan: GatewayPlan
 ) -> dict[str, Any]:
@@ -246,6 +258,9 @@ def aca_parameters(
         "scaleCpuPercent": plan.scale_cpu_percent,
         "postgresSku": plan.postgres_sku,
         "postgresTier": plan.postgres_tier,
+        "postgresHa": postgres_ha_mode(plan),
+        "zoneRedundant": plan.zone_redundant,
+        "drainSeconds": plan.drain_seconds,
         "redisSku": plan.redis_sku or "",
         "sizing": sizing_tag(sizing),
         "image": LITELLM_IMAGE,
@@ -365,6 +380,7 @@ def aks_parameters(
         "outboundPorts": plan.aks.outbound_ports,
         "postgresSku": plan.postgres_sku,
         "postgresTier": plan.postgres_tier,
+        "postgresHa": postgres_ha_mode(plan),
         "redisSku": plan.redis_sku or "",
         "install": InstallSize.of(plan).tag(),
         "sizing": sizing_tag(sizing),
@@ -400,6 +416,7 @@ def _values(install: AksInstall) -> dict[str, Any]:
     size = install.size
     redis = bool(install.redis_host)
     collector = f"http://otel-collector.{AKS_NAMESPACE}.svc:4318"
+    drain = drain_seconds(size.timeout)
     values: dict[str, Any] = {
         "replicaCount": size.min_replicas,
         "image": {"repository": LITELLM_IMAGE.split(":")[0], "tag": f"v{LITELLM_VERSION}"},
@@ -425,8 +442,25 @@ def _values(install: AksInstall) -> dict[str, Any]:
             "OTEL_EXPORTER_OTLP_ENDPOINT": collector,
             "OTEL_SERVICE_NAME": install.name,
             **PRODUCTION_ENV,
+            # TLS ends at the Istio gateway: without its public origin LiteLLM sets the Admin
+            # UI's sign-in cookie without Secure.
+            "PROXY_BASE_URL": f"https://{install.fqdn}",
+            "GRACEFUL_SHUTDOWN_TIMEOUT": str(drain),
             **({"REDIS_SSL": "True"} if redis else {}),
         },
+        # LiteLLM's drain and a margin; the chart's 90 s would cut a long call short.
+        "terminationGracePeriodSeconds": drain + 30,
+        # Replicas on different nodes and zones when there is room (a preference, so a small or
+        # single-zone cluster still schedules them; zone redundancy has three nodes at least).
+        "topologySpreadConstraints": [
+            {
+                "maxSkew": 1,
+                "topologyKey": key,
+                "whenUnsatisfiable": "ScheduleAnyway",
+                "labelSelector": {"matchLabels": {"app.kubernetes.io/instance": "litellm"}},
+            }
+            for key in ("topology.kubernetes.io/zone", "kubernetes.io/hostname")
+        ],
         "serviceAccount": {
             "create": True,
             "name": AKS_NAMESPACE,
@@ -492,6 +526,14 @@ def _collector_manifests() -> list[dict[str, Any]]:
             "spec": {"selector": labels, "ports": [{"port": 4318, "targetPort": 4318}]},
         },
     ]
+
+
+HSTS = {
+    "type": "ResponseHeaderModifier",
+    "responseHeaderModifier": {
+        "set": [{"name": "Strict-Transport-Security", "value": "max-age=31536000"}]
+    },
+}
 
 
 def _gateway_manifests(install: AksInstall) -> list[dict[str, Any]]:
@@ -573,11 +615,13 @@ def _gateway_manifests(install: AksInstall) -> list[dict[str, Any]]:
             "spec": {
                 "parentRefs": [{"name": "litellm", "sectionName": "https"}],
                 "hostnames": [install.fqdn],
-                # Model calls can take minutes; the gateway mustn't cut them short.
+                # Model calls can take minutes; the gateway mustn't cut them short. Browsers
+                # are told to come back over HTTPS only (HSTS).
                 "rules": [
                     {
                         "backendRefs": [{"name": "litellm", "port": 4000}],
                         "timeouts": {"request": f"{install.size.route_timeout}s"},
+                        "filters": [HSTS],
                     }
                 ],
             },
@@ -720,7 +764,12 @@ def aks_bundle(
             "secret": {"name": "litellm-db", "usernameKey": "username", "passwordKey": "password"},
         },
         "environmentSecrets": ["litellm-env"],
-        "envVars": {"STORE_MODEL_IN_DB": "True", **PRODUCTION_ENV},
+        "envVars": {
+            "STORE_MODEL_IN_DB": "True",
+            **PRODUCTION_ENV,
+            "GRACEFUL_SHUTDOWN_TIMEOUT": str(drain_seconds(DEFAULT_TIMEOUT_SECONDS)),
+        },
+        "terminationGracePeriodSeconds": drain_seconds(DEFAULT_TIMEOUT_SECONDS) + 30,
         "serviceAccount": {
             "create": True,
             "annotations": {"azure.workload.identity/client-id": "${IDENTITY_CLIENT_ID}"},
@@ -770,7 +819,8 @@ az identity federated-credential create --resource-group "$RESOURCE_GROUP" \\
 DB_PASSWORD=$(openssl rand -hex 24)
 az postgres flexible-server create --resource-group "$RESOURCE_GROUP" --name "$POSTGRES" \\
   --location "$LOCATION" --tier Burstable --sku-name Standard_B1ms --version 16 \\
-  --storage-size 32 --admin-user litellm --admin-password "$DB_PASSWORD" \\
+  --storage-size 32 --storage-auto-grow Enabled \\
+  --admin-user litellm --admin-password "$DB_PASSWORD" \\
   --public-access 0.0.0.0 --yes
 az postgres flexible-server db create --resource-group "$RESOURCE_GROUP" \\
   --server-name "$POSTGRES" --database-name litellm

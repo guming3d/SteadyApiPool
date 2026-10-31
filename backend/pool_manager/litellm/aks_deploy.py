@@ -11,7 +11,10 @@ Three phases, each followed by the deployment's status (``AksDeployer.status``):
    HTTPS Gateway (gateway_template.aks_bootstrap), with a token the user's sign-in gets for the
    AKS server app. The install can run again safely, so it starts again after a restart.
 3. certificate: Let's Encrypt issues the certificate for https://<name>.<region>.cloudapp.azure.com;
-   once LiteLLM answers there, the gateway is connected like any external one.
+   once LiteLLM answers there, the gateway is connected like any external one. If it still
+   doesn't answer ``CERTIFICATE_SECONDS`` after the install, the phase fails with what is in the
+   way (the name doesn't resolve, the certificate isn't trusted, LiteLLM isn't ready), and the
+   install can run again.
 
 The secrets (master and salt keys, the Postgres password) are made once, before the deployment,
 and kept in the local secret store until the install is done; afterwards only the master key
@@ -71,6 +74,9 @@ PLATFORM_TAG = "ai-gateway-platform"
 ROLE_ASSIGNMENT_WRITE = "Microsoft.Authorization/roleAssignments/write"
 # Lines of the install's output kept for the status.
 _LOG_LINES = 40
+# How long after the install LiteLLM may take to answer on HTTPS (Let's Encrypt usually issues
+# the certificate within minutes).
+CERTIFICATE_SECONDS = 30 * 60
 
 
 def cluster_path(subscription_id: str, resource_group: str, name: str) -> str:
@@ -266,7 +272,20 @@ class AksDeployer:
                 "its output is below. Try the install again once the cause is fixed.",
             )
         status = status.model_copy(update={"log_tail": tail})
-        if not self._answers(url):
+        problem = self._probe(url)
+        if problem is not None:
+            since = pending.get("installed_at")
+            if since is None:
+                pending["installed_at"] = self._clock()
+                self._keep(cluster, pending)
+            elif self._clock() - float(since) > CERTIFICATE_SECONDS:
+                return self._failed(
+                    status,
+                    "certificate",
+                    f"LiteLLM doesn't answer on {url} {CERTIFICATE_SECONDS // 60} minutes after "
+                    f"its install: {problem}. Try the install again once the cause is fixed: it "
+                    "applies the HTTPS gateway and asks for its certificate again.",
+                )
             return status.model_copy(update={"state": "running", "phase": "certificate"}), None
         assert self._secrets is not None
         self._secrets.put(url, pending["master_key"])
@@ -281,6 +300,7 @@ class AksDeployer:
         if pending is None:
             raise ServiceError(404, f"{name} has no install to run again")
         pending.pop("command_id", None)
+        pending.pop("installed_at", None)
         self._keep(cluster, pending)
 
     def forget_install(self, cluster_id: str) -> None:
@@ -409,11 +429,27 @@ class AksDeployer:
             str(properties.get("logs") or properties.get("reason") or ""),
         )
 
-    def _answers(self, url: str) -> bool:
-        """LiteLLM answers on the HTTPS address with a trusted certificate."""
+    def _probe(self, url: str) -> str | None:
+        """None once LiteLLM answers on the HTTPS address with a trusted certificate; else
+        what is in the way, in words."""
         try:
             with httpx.Client(transport=self._transport, timeout=10.0) as client:
                 response = client.get(f"{url}/health/liveliness")
-        except httpx.HTTPError:
-            return False
-        return response.status_code == 200
+        except httpx.TimeoutException:
+            return "it doesn't answer in time"
+        except httpx.HTTPError as error:
+            text = str(error)
+            if any(
+                word in text
+                for word in ("getaddrinfo", "Name or service not known", "nodename nor servname")
+            ):
+                return "its name doesn't resolve (the public IP's DNS label isn't there yet)"
+            if "CERTIFICATE_VERIFY_FAILED" in text or "certificate" in text.casefold():
+                return (
+                    "its certificate isn't trusted (Let's Encrypt hasn't issued it: see "
+                    "kubectl -n litellm describe certificate litellm-tls)"
+                )
+            return f"it can't be reached ({text or type(error).__name__})"
+        if response.status_code != 200:
+            return f"it answers {response.status_code} (LiteLLM isn't ready)"
+        return None

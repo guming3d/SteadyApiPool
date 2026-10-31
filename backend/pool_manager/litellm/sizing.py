@@ -12,8 +12,10 @@ all come from the plan the backend computes, never from the browser.
 4. How many calls one replica can hold (memory for the bodies in flight, an event loop cap).
 5. Replicas at the peak are whichever of 3 and 4 needs more; the range adds the headroom and,
    for zone redundancy, one replica more (and at least two).
-6. The database (connections: replicas x pool x 2 while a revision rolls over), Redis (only
-   with more than one replica), AKS nodes, and the outbound ports for the slowed-down case.
+6. The database (connections: replicas x pool x 2 while a revision rolls over; a standby in
+   another zone when the gateway survives losing one), Redis (only with more than one replica),
+   AKS nodes, and the outbound ports for the slowed-down case.
+7. How long a stopping replica waits for its calls in flight: a call and its retry.
 
 The CPU figures (``CPU_MS_*``) were measured with tests/litellm/litellm_stack/calibrate.py on
 LiteLLM as this app deploys it; the memory ones (``BODY_COPIES``) are estimates; the Azure limits
@@ -135,6 +137,13 @@ REDIS_LARGEST = "Balanced_B5"
 # Past this, LiteLLM recommends routing spend writes through Redis (use_redis_transaction_buffer).
 REDIS_BUFFER_RPS = 1000
 REDIS_BUFFER_REPLICAS = 10
+
+
+def drain_seconds(timeout: int) -> int:
+    """How long a stopping replica waits for its calls in flight (LiteLLM's
+    GRACEFUL_SHUTDOWN_TIMEOUT): a call and its retry, so scaling in, a new revision or a node's
+    maintenance doesn't cut one short."""
+    return timeout * (RETRIES + 1)
 
 
 def redis_buffer(rps: float, max_replicas: int) -> bool:
@@ -461,12 +470,17 @@ def _plan(sizing: GatewaySizing, platform: GatewayPlatform) -> GatewayPlan:
         postgres_tier="Burstable" if database.edition == "Burstable" else "GeneralPurpose",
         postgres_connections=connections,
         postgres_limit=database.connections,
+        # High availability needs General Purpose, which zone redundancy always gets (two
+        # replicas at least, so never the trial's Burstable).
+        postgres_ha=sizing.zone_redundant and database.edition == "GeneralPurpose",
         db_pool=max(pool, 1),
         redis_sku=redis,
         redis_buffer=buffer,
         aks=aks,
+        zone_redundant=sizing.zone_redundant,
         request_timeout=sizing.timeout_seconds,
         route_timeout=max(MIN_ROUTE_SECONDS, sizing.timeout_seconds * (RETRIES + 1) + 60),
+        drain_seconds=drain_seconds(sizing.timeout_seconds),
         reasons=[],
         warnings=warnings,
         problems=problems,

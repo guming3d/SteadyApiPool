@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "8102028261023563188"
+      "templateHash": "17242356576795596429"
     }
   },
   "parameters": {
@@ -91,6 +91,17 @@
         "Burstable",
         "GeneralPurpose"
       ]
+    },
+    "postgresHa": {
+      "type": "string",
+      "defaultValue": "Disabled",
+      "allowedValues": [
+        "Disabled",
+        "ZoneRedundant"
+      ],
+      "metadata": {
+        "description": "PostgreSQL high availability: a standby in another zone (General Purpose only)."
+      }
     },
     "redisSku": {
       "type": "string",
@@ -214,14 +225,15 @@
         "administratorLogin": "litellm",
         "administratorLoginPassword": "[parameters('postgresPassword')]",
         "storage": {
-          "storageSizeGB": 32
+          "storageSizeGB": 32,
+          "autoGrow": "Enabled"
         },
         "backup": {
           "backupRetentionDays": 7,
           "geoRedundantBackup": "Disabled"
         },
         "highAvailability": {
-          "mode": "Disabled"
+          "mode": "[parameters('postgresHa')]"
         },
         "network": {
           "publicNetworkAccess": "Enabled"
@@ -267,7 +279,7 @@
       "apiVersion": "2026-03-01",
       "name": "[parameters('name')]",
       "location": "[parameters('location')]",
-      "tags": "[union(variables('gatewayTags'), createObject('ai-gateway-app-insights', resourceId('Microsoft.Insights/components', format('appi-{0}', parameters('name'))), 'ai-gateway-profile', parameters('profile'), 'ai-gateway-postgres', parameters('postgresSku'), 'ai-gateway-redis', parameters('redisSku'), 'ai-gateway-install', parameters('install'), 'ai-gateway-sizing', parameters('sizing')))]",
+      "tags": "[union(variables('gatewayTags'), createObject('ai-gateway-app-insights', resourceId('Microsoft.Insights/components', format('appi-{0}', parameters('name'))), 'ai-gateway-profile', parameters('profile'), 'ai-gateway-postgres', parameters('postgresSku'), 'ai-gateway-postgres-ha', parameters('postgresHa'), 'ai-gateway-redis', parameters('redisSku'), 'ai-gateway-install', parameters('install'), 'ai-gateway-sizing', parameters('sizing')))]",
       "sku": {
         "name": "Base",
         "tier": "[parameters('clusterTier')]"

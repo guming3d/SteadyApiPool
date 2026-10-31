@@ -255,6 +255,8 @@ the URL, so use a demo service.
 **Limits.** Azure public cloud only. A sign-in covers one tenant; choosing a service in another
 tenant signs in to that tenant. Deployment discovery scans the chosen service's subscription.
 Services whose gateway uses a custom domain can be managed but not test-called from the app.
+A load test runs on the replica that started it, so the ingress keeps each browser on one replica
+(sticky sessions); if that replica stops, so does the test, and its results are gone.
 
 | Setting | Default | Purpose |
 | --- | --- | --- |

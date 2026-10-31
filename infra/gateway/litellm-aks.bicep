@@ -10,7 +10,9 @@
 //                litellm/litellm service account; the setup wizard grants it Cognitive Services
 //                OpenAI User on member accounts
 //   Postgres Flexible Server: LiteLLM's model table, virtual keys and spend (Burstable only for a
-//                single replica: it runs out of CPU credits under sustained load)
+//                single replica: it runs out of CPU credits under sustained load), storage
+//                growing by itself, zone-redundant high availability when the gateway is to
+//                survive losing a zone
 //   Azure Managed Redis (more than one replica): cooldowns shared between replicas
 //   Log Analytics + Application Insights: the gateway's OpenTelemetry spans
 //
@@ -56,6 +58,10 @@ param outboundPorts int = 0
 param postgresSku string = 'Standard_B1ms'
 @allowed([ 'Burstable', 'GeneralPurpose' ])
 param postgresTier string = 'Burstable'
+
+@allowed([ 'Disabled', 'ZoneRedundant' ])
+@description('PostgreSQL high availability: a standby in another zone (General Purpose only).')
+param postgresHa string = 'Disabled'
 
 @description('Azure Managed Redis SKU, e.g. Balanced_B0; empty for none (a single replica).')
 param redisSku string = ''
@@ -123,9 +129,10 @@ resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = {
     version: '16'
     administratorLogin: 'litellm'
     administratorLoginPassword: postgresPassword
-    storage: { storageSizeGB: 32 }
+    // Read-only at 95 % full; growing by itself keeps LiteLLM's spend logs writable.
+    storage: { storageSizeGB: 32, autoGrow: 'Enabled' }
     backup: { backupRetentionDays: 7, geoRedundantBackup: 'Disabled' }
-    highAvailability: { mode: 'Disabled' }
+    highAvailability: { mode: postgresHa }
     network: { publicNetworkAccess: 'Enabled' }
     authConfig: { activeDirectoryAuth: 'Disabled', passwordAuth: 'Enabled' }
   }
@@ -172,6 +179,7 @@ resource cluster 'Microsoft.ContainerService/managedClusters@2026-03-01' = {
     'ai-gateway-app-insights': insights.id
     'ai-gateway-profile': profile
     'ai-gateway-postgres': postgresSku
+    'ai-gateway-postgres-ha': postgresHa
     'ai-gateway-redis': redisSku
     'ai-gateway-install': install
     'ai-gateway-sizing': sizing

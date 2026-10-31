@@ -274,6 +274,10 @@ class FakeAzure:
     offered: dict[str, list[str]] = field(default_factory=dict)
     postgres_skus: dict[str, list[str]] = field(default_factory=dict)
     postgres_vcores_free: dict[str, int] = field(default_factory=dict)
+    # Regions whose PostgreSQL sizes have no zone-redundant high availability, and regions
+    # without availability zones (the subscription's locations list no zone mappings).
+    postgres_no_zone_ha: set[str] = field(default_factory=set)
+    regions_without_zones: set[str] = field(default_factory=set)
     environments_free: dict[str, int] = field(default_factory=dict)
     # ARM's validation of a deployment: errors it reports (code, message), whether it answers
     # as a long-running operation, and the bodies it was asked to validate.
@@ -355,6 +359,9 @@ class FakeAzure:
         production = profile == "production"
         cpu, memory = (2.0, "4Gi") if production else (1.0, "2Gi")
         replicas = (2, 10) if production else (1, 1)
+        zone_redundant = bool((parameters or {}).get("zoneRedundant"))
+        base = f"/subscriptions/{subscription}/resourceGroups/{group}/providers"
+        environment_id = f"{base}/Microsoft.App/managedEnvironments/cae-{name}"
         if parameters is not None:
             cpu = float(parameters["replicaCpu"])
             memory = str(parameters["replicaMemory"])
@@ -362,6 +369,7 @@ class FakeAzure:
             if managed:
                 tags |= {
                     "ai-gateway-postgres": parameters["postgresSku"],
+                    "ai-gateway-postgres-ha": parameters.get("postgresHa", "Disabled"),
                     "ai-gateway-redis": parameters["redisSku"],
                     "ai-gateway-sizing": parameters["sizing"],
                 }
@@ -383,6 +391,7 @@ class FakeAzure:
             ),
             "properties": {
                 "provisioningState": state,
+                "environmentId": environment_id,
                 "configuration": {"ingress": {"fqdn": fqdn, "targetPort": 4000}},
                 "template": {
                     "containers": [
@@ -404,14 +413,16 @@ class FakeAzure:
         }
         self.container_app_secrets[app_id.casefold()] = {"litellm-master-key": master_key}
         if managed:
-            base = f"/subscriptions/{subscription}/resourceGroups/{group}/providers"
-            for kind, resource in (
+            owned = [
                 ("Microsoft.App/managedEnvironments", f"cae-{name}"),
                 ("Microsoft.DBforPostgreSQL/flexibleServers", f"psql-{name}-x1"),
                 ("Microsoft.ManagedIdentity/userAssignedIdentities", f"id-{name}"),
                 ("Microsoft.Insights/components", f"appi-{name}"),
                 ("Microsoft.OperationalInsights/workspaces", f"log-{name}"),
-            ):
+            ]
+            if zone_redundant:
+                owned.append(("Microsoft.Network/virtualNetworks", f"vnet-{name}"))
+            for kind, resource in owned:
                 resource_id = f"{base}/{kind}/{resource}"
                 self.resources[resource_id.casefold()] = {
                     "id": resource_id,
@@ -419,6 +430,14 @@ class FakeAzure:
                     "type": kind,
                     "tags": {"managed-by": "ai-gateway-pool", "ai-gateway": name},
                 }
+            self.resources[environment_id.casefold()]["properties"] = {
+                "provisioningState": "Succeeded",
+                "zoneRedundant": zone_redundant,
+            }
+            server = next(k for k in self.resources if k.endswith(f"/psql-{name}-x1".casefold()))
+            self.resources[server]["properties"] = {
+                "highAvailability": {"mode": (parameters or {}).get("postgresHa", "Disabled")}
+            }
         return app_id
 
     def add_account(
@@ -579,6 +598,26 @@ class FakeAzure:
             return httpx.Response(200, json={"value": self.subscriptions})
         parts = path.strip("/").split("/")
         subscription = parts[1]
+        if parts[2:] == ["locations"]:
+            regions = ["eastus2", "swedencentral", "westus3", "centralus", "westeurope"]
+            regions += sorted(self.regions_without_zones - set(regions))
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "name": region,
+                            "availabilityZoneMappings": []
+                            if region in self.regions_without_zones
+                            else [
+                                {"logicalZone": z, "physicalZone": f"{region}-az{z}"}
+                                for z in ("1", "2", "3")
+                            ],
+                        }
+                        for region in regions
+                    ]
+                },
+            )
         if parts[2:] == ["resourcegroups"]:
             prefix = f"/subscriptions/{subscription}/".casefold()
             groups = [
@@ -622,6 +661,11 @@ class FakeAzure:
                 region, ["Standard_B1ms", "Standard_B2s", "Standard_D2ds_v5"]
             )
             burstable = [sku for sku in skus if sku.startswith("Standard_B")]
+            modes = (
+                ["SameZone"]
+                if region in self.postgres_no_zone_ha
+                else ["SameZone", "ZoneRedundant"]
+            )
             capability = {
                 "name": "FlexibleServerCapabilities",
                 "restricted": "Enabled" if reason else "Disabled",
@@ -637,7 +681,9 @@ class FakeAzure:
                     {
                         "name": "GeneralPurpose",
                         "supportedServerSkus": [
-                            {"name": sku} for sku in skus if sku not in burstable
+                            {"name": sku, "supportedHaMode": modes}
+                            for sku in skus
+                            if sku not in burstable
                         ],
                     },
                 ],
@@ -1100,6 +1146,7 @@ class FakeAzure:
             cluster_tags = {
                 "ai-gateway-profile": parameters["profile"],
                 "ai-gateway-postgres": parameters["postgresSku"],
+                "ai-gateway-postgres-ha": parameters.get("postgresHa", "Disabled"),
                 "ai-gateway-redis": parameters["redisSku"],
                 "ai-gateway-install": parameters["install"],
                 "ai-gateway-sizing": parameters["sizing"],
@@ -1118,7 +1165,11 @@ class FakeAzure:
                     "agentPoolProfiles": [pool],
                 },
             ),
-            ("Microsoft.DBforPostgreSQL/flexibleServers", f"psql-{name}-x1", {}),
+            (
+                "Microsoft.DBforPostgreSQL/flexibleServers",
+                f"psql-{name}-x1",
+                {"highAvailability": {"mode": (parameters or {}).get("postgresHa", "Disabled")}},
+            ),
             (
                 "Microsoft.ManagedIdentity/userAssignedIdentities",
                 f"id-{name}",

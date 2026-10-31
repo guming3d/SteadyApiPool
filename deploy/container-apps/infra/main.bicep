@@ -127,6 +127,9 @@ resource app 'Microsoft.App/containerApps@2025-01-01' = {
         targetPort: 8000
         transport: 'auto'
         allowInsecure: false
+        // A load test runs on the replica that started it (benchmark.py, in the user's session):
+        // the browser's polls and its stop have to reach that replica. Nothing else needs it.
+        stickySessions: { affinity: 'sticky' }
       }
       registries: [
         {
@@ -170,7 +173,8 @@ resource app 'Microsoft.App/containerApps@2025-01-01' = {
         }
       ]
       // Sessions are in memory and per replica: a request on another replica just exchanges
-      // the user's token again. One replica stays up so nobody waits for a cold start.
+      // the user's token again (only a load test needs the same replica: sticky sessions).
+      // One replica stays up so nobody waits for a cold start.
       scale: {
         minReplicas: 1
         maxReplicas: maxReplicas

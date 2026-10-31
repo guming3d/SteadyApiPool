@@ -48,6 +48,7 @@ PROVIDERS = (
     "Microsoft.DBforPostgreSQL",
 )
 REDIS_PROVIDER = "Microsoft.Cache"
+NETWORK_PROVIDER = "Microsoft.Network"
 # On the deployment: delete what it created if one of its resources fails.
 CLEANUP_TAG = "ai-gateway-on-failure"
 CLEANUP_VALUE = "delete"
@@ -240,8 +241,10 @@ class GatewayDeployer:
                 existing_api=self._settings.container_apps_api_version,
             )
             self.require_capacity(arm, body, found)
+            # A zone-redundant environment runs in a virtual network of its own.
+            providers = (*PROVIDERS, NETWORK_PROVIDER) if found.zone_redundant else PROVIDERS
             created = self.provision(
-                arm, body, actor, providers=PROVIDERS, redis=found.redis_sku is not None
+                arm, body, actor, providers=providers, redis=found.redis_sku is not None
             )
             self.deploy(
                 arm,

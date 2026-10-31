@@ -7,6 +7,8 @@ import type { CircuitBreaker, PoolView, PoolWrite } from "./types"
 export const DEFAULT_BREAKER: CircuitBreaker = { allowed_fails: 0, cooldown_seconds: 60 }
 export const DEFAULT_RETRIES = 1
 export const DEFAULT_TIMEOUT_SECONDS = 120
+/** The longest attempt (models.py's MAX_TIMEOUT_SECONDS), the sizer's longest timeout too. */
+export const MAX_TIMEOUT_SECONDS = 3600
 
 export type PoolSettings = { circuit_breaker: CircuitBreaker; retries: number; timeout_seconds: number }
 

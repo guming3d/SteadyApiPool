@@ -58,6 +58,8 @@ POSTGRES_SPECS = (
     LoadSpec("cpu_percent", "db_cpu", "percent"),
     LoadSpec("memory_percent", "db_memory", "percent"),
     LoadSpec("active_connections", "db_connections", "count"),
+    # Read-only at 95 %: storage grows by itself on gateways this app deploys, but not forever.
+    LoadSpec("storage_percent", "db_storage", "percent"),
 )
 
 

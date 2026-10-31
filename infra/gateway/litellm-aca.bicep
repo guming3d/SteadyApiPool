@@ -6,12 +6,16 @@
 //   User-assigned identity: what LiteLLM calls Foundry deployments as (AZURE_CLIENT_ID);
 //                  the setup wizard grants it Cognitive Services OpenAI User on member accounts
 //   Postgres Flexible Server: LiteLLM's model table, virtual keys and spend (Burstable only for a
-//                  single replica: it runs out of CPU credits under sustained load)
+//                  single replica: it runs out of CPU credits under sustained load), storage
+//                  growing by itself, zone-redundant high availability when the gateway is
+//                  to survive losing a zone
 //   Azure Managed Redis (more than one replica): shared cooldown state
 //   Log Analytics + Application Insights
 //   Container Apps environment: workload profiles (v2), LiteLLM on its Consumption profile, so a
 //                  dedicated profile and premium ingress can be added later. Ingress ends a request
 //                  that sends nothing for 240 seconds unless premium ingress raises its idle timeout.
+//                  Zone-redundant (in a virtual network of its own) when the gateway is to survive
+//                  losing a zone: Azure only allows that when the environment is created.
 //
 // The sizes come from the app's sizing plan (backend/pool_manager/litellm/sizing.py); the
 // defaults are its smallest gateway.
@@ -54,6 +58,17 @@ param postgresSku string = 'Standard_B1ms'
 @allowed([ 'Burstable', 'GeneralPurpose' ])
 param postgresTier string = 'Burstable'
 
+@allowed([ 'Disabled', 'ZoneRedundant' ])
+@description('PostgreSQL high availability: a standby in another zone (General Purpose only).')
+param postgresHa string = 'Disabled'
+
+@description('Spread the environment over availability zones; needs a virtual network, and only at creation.')
+param zoneRedundant bool = false
+
+@description('Seconds a stopping replica waits for its calls in flight (a call and its retry).')
+@minValue(30)
+param drainSeconds int = 240
+
 @description('Azure Managed Redis SKU, e.g. Balanced_B0; empty for none (a single replica).')
 param redisSku string = ''
 
@@ -91,6 +106,7 @@ var withRedis = !empty(redisSku)
 var suffix = uniqueString(resourceGroup().id, name)
 var gatewayTags = union(tags, { 'managed-by': 'ai-gateway-pool', 'ai-gateway': name })
 var postgresName = take('psql-${name}-${suffix}', 63)
+var vnetName = 'vnet-${name}'
 var redisName = take('redis-${name}-${suffix}', 60)
 
 resource logs 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
@@ -132,9 +148,10 @@ resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = {
     version: '16'
     administratorLogin: 'litellm'
     administratorLoginPassword: postgresPassword
-    storage: { storageSizeGB: 32 }
+    // Read-only at 95 % full; growing by itself keeps LiteLLM's spend logs writable.
+    storage: { storageSizeGB: 32, autoGrow: 'Enabled' }
     backup: { backupRetentionDays: 7, geoRedundantBackup: 'Disabled' }
-    highAvailability: { mode: 'Disabled' }
+    highAvailability: { mode: postgresHa }
     network: { publicNetworkAccess: 'Enabled' }
     authConfig: { activeDirectoryAuth: 'Disabled', passwordAuth: 'Enabled' }
   }
@@ -171,12 +188,40 @@ resource redisDatabase 'Microsoft.Cache/redisEnterprise/databases@2025-04-01' = 
   }
 }
 
+// Only for zone redundancy, which needs the environment in a virtual network: a subnet delegated
+// to it (a workload profiles environment wants /27 at least; /24 leaves room for the most
+// replicas a plan has, twice over while a revision rolls out).
+resource vnet 'Microsoft.Network/virtualNetworks@2024-05-01' = if (zoneRedundant) {
+  name: vnetName
+  location: location
+  tags: gatewayTags
+  properties: {
+    addressSpace: { addressPrefixes: [ '10.10.0.0/16' ] }
+    subnets: [
+      {
+        name: 'infrastructure'
+        properties: {
+          addressPrefix: '10.10.0.0/24'
+          delegations: [
+            { name: 'environments', properties: { serviceName: 'Microsoft.App/environments' } }
+          ]
+        }
+      }
+    ]
+  }
+}
+
 resource environment 'Microsoft.App/managedEnvironments@2025-01-01' = {
   name: 'cae-${name}'
   location: location
   tags: gatewayTags
   properties: {
     workloadProfiles: [ { name: 'Consumption', workloadProfileType: 'Consumption' } ]
+    zoneRedundant: zoneRedundant
+    vnetConfiguration: zoneRedundant ? {
+      infrastructureSubnetId: vnet!.properties.subnets[0].id
+      internal: false
+    } : null
     appLogsConfiguration: {
       destination: 'log-analytics'
       logAnalyticsConfiguration: {
@@ -215,6 +260,11 @@ var baseEnv = [
   // LiteLLM's production settings (gateway_template.PRODUCTION_ENV): no .env loading, errors only.
   { name: 'LITELLM_MODE', value: 'PRODUCTION' }
   { name: 'LITELLM_LOG', value: 'ERROR' }
+  // The public HTTPS address: TLS ends at the ingress, so LiteLLM sees plain HTTP and would set
+  // the Admin UI's sign-in cookie without Secure.
+  { name: 'PROXY_BASE_URL', value: 'https://${name}.${environment.properties.defaultDomain}' }
+  // On SIGTERM LiteLLM stops taking calls and waits this long for those in flight.
+  { name: 'GRACEFUL_SHUTDOWN_TIMEOUT', value: string(drainSeconds) }
 ]
 var redisEnv = withRedis ? [
   { name: 'REDIS_HOST', value: redis!.properties.hostName }
@@ -230,6 +280,7 @@ resource gateway 'Microsoft.App/containerApps@2025-01-01' = {
     'ai-gateway-app-insights': insights.id
     'ai-gateway-profile': profile
     'ai-gateway-postgres': postgresSku
+    'ai-gateway-postgres-ha': postgresHa
     'ai-gateway-redis': redisSku
     'ai-gateway-sizing': sizing
   })
@@ -251,6 +302,8 @@ resource gateway 'Microsoft.App/containerApps@2025-01-01' = {
       secrets: concat(baseSecrets, redisSecrets)
     }
     template: {
+      // LiteLLM's drain and a margin before Container Apps kills the replica.
+      terminationGracePeriodSeconds: drainSeconds + 30
       containers: [
         {
           name: 'litellm'

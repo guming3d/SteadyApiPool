@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "12749400762410343413"
+      "templateHash": "4317267802924114518"
     }
   },
   "parameters": {
@@ -82,6 +82,32 @@
         "GeneralPurpose"
       ]
     },
+    "postgresHa": {
+      "type": "string",
+      "defaultValue": "Disabled",
+      "allowedValues": [
+        "Disabled",
+        "ZoneRedundant"
+      ],
+      "metadata": {
+        "description": "PostgreSQL high availability: a standby in another zone (General Purpose only)."
+      }
+    },
+    "zoneRedundant": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Spread the environment over availability zones; needs a virtual network, and only at creation."
+      }
+    },
+    "drainSeconds": {
+      "type": "int",
+      "defaultValue": 240,
+      "minValue": 30,
+      "metadata": {
+        "description": "Seconds a stopping replica waits for its calls in flight (a call and its retry)."
+      }
+    },
     "redisSku": {
       "type": "string",
       "defaultValue": "",
@@ -147,6 +173,7 @@
     "suffix": "[uniqueString(resourceGroup().id, parameters('name'))]",
     "gatewayTags": "[union(parameters('tags'), createObject('managed-by', 'ai-gateway-pool', 'ai-gateway', parameters('name')))]",
     "postgresName": "[take(format('psql-{0}-{1}', parameters('name'), variables('suffix')), 63)]",
+    "vnetName": "[format('vnet-{0}', parameters('name'))]",
     "redisName": "[take(format('redis-{0}-{1}', parameters('name'), variables('suffix')), 60)]"
   },
   "resources": [
@@ -224,14 +251,15 @@
         "administratorLogin": "litellm",
         "administratorLoginPassword": "[parameters('postgresPassword')]",
         "storage": {
-          "storageSizeGB": 32
+          "storageSizeGB": 32,
+          "autoGrow": "Enabled"
         },
         "backup": {
           "backupRetentionDays": 7,
           "geoRedundantBackup": "Disabled"
         },
         "highAvailability": {
-          "mode": "Disabled"
+          "mode": "[parameters('postgresHa')]"
         },
         "network": {
           "publicNetworkAccess": "Enabled"
@@ -273,6 +301,37 @@
       ]
     },
     {
+      "condition": "[parameters('zoneRedundant')]",
+      "type": "Microsoft.Network/virtualNetworks",
+      "apiVersion": "2024-05-01",
+      "name": "[variables('vnetName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('gatewayTags')]",
+      "properties": {
+        "addressSpace": {
+          "addressPrefixes": [
+            "10.10.0.0/16"
+          ]
+        },
+        "subnets": [
+          {
+            "name": "infrastructure",
+            "properties": {
+              "addressPrefix": "10.10.0.0/24",
+              "delegations": [
+                {
+                  "name": "environments",
+                  "properties": {
+                    "serviceName": "Microsoft.App/environments"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
       "type": "Microsoft.App/managedEnvironments",
       "apiVersion": "2025-01-01",
       "name": "[format('cae-{0}', parameters('name'))]",
@@ -285,6 +344,8 @@
             "workloadProfileType": "Consumption"
           }
         ],
+        "zoneRedundant": "[parameters('zoneRedundant')]",
+        "vnetConfiguration": "[if(parameters('zoneRedundant'), createObject('infrastructureSubnetId', reference(resourceId('Microsoft.Network/virtualNetworks', variables('vnetName')), '2024-05-01').subnets[0].id, 'internal', false()), null())]",
         "appLogsConfiguration": {
           "destination": "log-analytics",
           "logAnalyticsConfiguration": {
@@ -294,7 +355,8 @@
         }
       },
       "dependsOn": [
-        "[resourceId('Microsoft.OperationalInsights/workspaces', format('log-{0}', parameters('name')))]"
+        "[resourceId('Microsoft.OperationalInsights/workspaces', format('log-{0}', parameters('name')))]",
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
       ]
     },
     {
@@ -302,7 +364,7 @@
       "apiVersion": "2025-01-01",
       "name": "[parameters('name')]",
       "location": "[parameters('location')]",
-      "tags": "[union(variables('gatewayTags'), createObject('ai-gateway-app-insights', resourceId('Microsoft.Insights/components', format('appi-{0}', parameters('name'))), 'ai-gateway-profile', parameters('profile'), 'ai-gateway-postgres', parameters('postgresSku'), 'ai-gateway-redis', parameters('redisSku'), 'ai-gateway-sizing', parameters('sizing')))]",
+      "tags": "[union(variables('gatewayTags'), createObject('ai-gateway-app-insights', resourceId('Microsoft.Insights/components', format('appi-{0}', parameters('name'))), 'ai-gateway-profile', parameters('profile'), 'ai-gateway-postgres', parameters('postgresSku'), 'ai-gateway-postgres-ha', parameters('postgresHa'), 'ai-gateway-redis', parameters('redisSku'), 'ai-gateway-sizing', parameters('sizing')))]",
       "identity": {
         "type": "UserAssigned",
         "userAssignedIdentities": {
@@ -323,6 +385,7 @@
           "secrets": "[concat(createArray(createObject('name', 'litellm-master-key', 'value', parameters('masterKey')), createObject('name', 'litellm-salt-key', 'value', parameters('saltKey')), createObject('name', 'database-url', 'value', format('postgresql://litellm:{0}@{1}:5432/litellm?sslmode=require', parameters('postgresPassword'), reference(resourceId('Microsoft.DBforPostgreSQL/flexibleServers', variables('postgresName')), '2024-08-01').fullyQualifiedDomainName)), createObject('name', 'litellm-config', 'value', parameters('litellmConfig')), createObject('name', 'otel-config', 'value', parameters('collectorConfig')), createObject('name', 'appinsights-connection-string', 'value', reference(resourceId('Microsoft.Insights/components', format('appi-{0}', parameters('name'))), '2020-02-02').ConnectionString)), if(variables('withRedis'), createArray(createObject('name', 'redis-password', 'value', listKeys(resourceId('Microsoft.Cache/redisEnterprise/databases', variables('redisName'), 'default'), '2025-04-01').primaryKey)), createArray()))]"
         },
         "template": {
+          "terminationGracePeriodSeconds": "[add(parameters('drainSeconds'), 30)]",
           "containers": [
             {
               "name": "litellm",
@@ -337,7 +400,7 @@
                 "cpu": "[json(parameters('replicaCpu'))]",
                 "memory": "[parameters('replicaMemory')]"
               },
-              "env": "[concat(createArray(createObject('name', 'LITELLM_MASTER_KEY', 'secretRef', 'litellm-master-key'), createObject('name', 'LITELLM_SALT_KEY', 'secretRef', 'litellm-salt-key'), createObject('name', 'DATABASE_URL', 'secretRef', 'database-url'), createObject('name', 'STORE_MODEL_IN_DB', 'value', 'True'), createObject('name', 'AZURE_CLIENT_ID', 'value', reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('id-{0}', parameters('name'))), '2023-01-31').clientId), createObject('name', 'LITELLM_OTEL_V2', 'value', 'true'), createObject('name', 'OTEL_EXPORTER', 'value', 'otlp_http'), createObject('name', 'OTEL_ENDPOINT', 'value', 'http://127.0.0.1:4318'), createObject('name', 'OTEL_EXPORTER_OTLP_ENDPOINT', 'value', 'http://127.0.0.1:4318'), createObject('name', 'OTEL_SERVICE_NAME', 'value', parameters('name')), createObject('name', 'LITELLM_MODE', 'value', 'PRODUCTION'), createObject('name', 'LITELLM_LOG', 'value', 'ERROR')), if(variables('withRedis'), createArray(createObject('name', 'REDIS_HOST', 'value', reference(resourceId('Microsoft.Cache/redisEnterprise', variables('redisName')), '2025-04-01').hostName), createObject('name', 'REDIS_PORT', 'value', '10000'), createObject('name', 'REDIS_PASSWORD', 'secretRef', 'redis-password'), createObject('name', 'REDIS_SSL', 'value', 'True')), createArray()))]",
+              "env": "[concat(createArray(createObject('name', 'LITELLM_MASTER_KEY', 'secretRef', 'litellm-master-key'), createObject('name', 'LITELLM_SALT_KEY', 'secretRef', 'litellm-salt-key'), createObject('name', 'DATABASE_URL', 'secretRef', 'database-url'), createObject('name', 'STORE_MODEL_IN_DB', 'value', 'True'), createObject('name', 'AZURE_CLIENT_ID', 'value', reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('id-{0}', parameters('name'))), '2023-01-31').clientId), createObject('name', 'LITELLM_OTEL_V2', 'value', 'true'), createObject('name', 'OTEL_EXPORTER', 'value', 'otlp_http'), createObject('name', 'OTEL_ENDPOINT', 'value', 'http://127.0.0.1:4318'), createObject('name', 'OTEL_EXPORTER_OTLP_ENDPOINT', 'value', 'http://127.0.0.1:4318'), createObject('name', 'OTEL_SERVICE_NAME', 'value', parameters('name')), createObject('name', 'LITELLM_MODE', 'value', 'PRODUCTION'), createObject('name', 'LITELLM_LOG', 'value', 'ERROR'), createObject('name', 'PROXY_BASE_URL', 'value', format('https://{0}.{1}', parameters('name'), reference(resourceId('Microsoft.App/managedEnvironments', format('cae-{0}', parameters('name'))), '2025-01-01').defaultDomain)), createObject('name', 'GRACEFUL_SHUTDOWN_TIMEOUT', 'value', string(parameters('drainSeconds')))), if(variables('withRedis'), createArray(createObject('name', 'REDIS_HOST', 'value', reference(resourceId('Microsoft.Cache/redisEnterprise', variables('redisName')), '2025-04-01').hostName), createObject('name', 'REDIS_PORT', 'value', '10000'), createObject('name', 'REDIS_PASSWORD', 'secretRef', 'redis-password'), createObject('name', 'REDIS_SSL', 'value', 'True')), createArray()))]",
               "volumeMounts": [
                 {
                   "volumeName": "config",
