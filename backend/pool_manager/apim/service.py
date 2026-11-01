@@ -5,7 +5,8 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
-from collections.abc import Mapping
+import time
+from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from html import unescape
 from typing import Any
@@ -62,6 +63,10 @@ logger = logging.getLogger(__name__)
 COGNITIVE_SERVICES_RESOURCE = "https://cognitiveservices.azure.com"
 
 _POLICY_SCAN_WORKERS = 8
+# How long deleting a pool waits for APIs just deleted to stop counting as its users, and how
+# APIM names them ("/apis/<id>;rev=1/policies/policy").
+_REFERENCE_SECONDS = 120.0
+_API_USER = re.compile(r"/apis/([^;/\s]+)")
 
 
 def _translate(error: ArmError) -> ServiceError:
@@ -544,13 +549,32 @@ class ApimService:
         logger.info("%s deleted pool %s", actor, pool_id)
         self._delete_orphans([member.backend_id for member in pool.members], actor)
 
-    def _delete_pool_resource(self, pool_id: str, etag: str | None) -> None:
-        self._arm.request(
-            "DELETE",
-            self._backend_path(pool_id),
-            api_version=self._settings.pool_api_version,
-            headers={"If-Match": etag or "*"},
-        )
+    def _delete_pool_resource(
+        self, pool_id: str, etag: str | None, deleted_apis: Sequence[str] = ()
+    ) -> None:
+        """Deletes a pool backend. Right after its APIs were deleted, a v2 gateway can still
+        count their policies as using it (400, "is used by ... /apis/<id>;rev=1/policies/...",
+        seen on a live run): that only, it waits out, for up to ``_REFERENCE_SECONDS``."""
+        gone = {api.casefold() for api in deleted_apis}
+        deadline = time.monotonic() + _REFERENCE_SECONDS
+        delay = 2.0
+        while True:
+            try:
+                self._arm.request(
+                    "DELETE",
+                    self._backend_path(pool_id),
+                    api_version=self._settings.pool_api_version,
+                    headers={"If-Match": etag or "*"},
+                )
+                return
+            except ArmError as error:
+                users = {m.casefold() for m in _API_USER.findall(error.message)}
+                lingering = error.status == 400 and bool(users) and users <= gone
+                if not lingering or time.monotonic() > deadline:
+                    raise
+                logger.info("Pool %s is still referenced by deleted APIs; retrying", pool_id)
+                self._arm.sleep(delay)
+                delay = min(delay * 2, 15.0)
 
     # -- removing pools with their APIs ------------------------------------------------
 
@@ -669,7 +693,7 @@ class ApimService:
                 self._delete_api(api.id, actor)
                 result.deleted_apis.append(api.id)
             for pool_id in plan.pools:
-                self._delete_pool_resource(pool_id, pool_etag)
+                self._delete_pool_resource(pool_id, pool_etag, result.deleted_apis)
                 logger.info("%s deleted pool %s", actor, pool_id)
                 result.pools.append(pool_id)
         except (ArmError, ServiceError) as error:

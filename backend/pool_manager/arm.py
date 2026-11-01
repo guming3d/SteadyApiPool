@@ -131,6 +131,10 @@ class ArmClient:
             message = str(error).splitlines()[0] if str(error) else type(error).__name__
             raise ArmError(401, "CredentialUnavailable", message) from error
 
+    def sleep(self, seconds: float) -> None:
+        """Waits as this client waits between retries (tests make it instant)."""
+        self._sleep(seconds)
+
     def token_claims(self) -> dict[str, Any]:
         """Claims of the current token, for display only (ARM validates the token itself)."""
         return jwt_claims(self._bearer())

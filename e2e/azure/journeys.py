@@ -207,7 +207,8 @@ def monitor_shows_traffic(trip: Any, product: str) -> dict[str, Any]:
         "the Monitor tab to show the pool's traffic",
         lambda: trip.api.get(f"/{product}/pools/{pool_id}/metrics", range="1h", refresh="true"),
         lambda found: bool(found.get("gateway")) and found["gateway"]["requests"] > 0,
-        timeout=1200,
+        # A new APIM service's first metrics took over 20 minutes once (live run).
+        timeout=1800,
         every=60,
         failed=lambda found: (
             found.get("gateway_error") if found.get("gateway_error") == "forbidden" else None

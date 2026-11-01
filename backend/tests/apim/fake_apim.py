@@ -40,6 +40,10 @@ class FakeApim(FakeAzure):
     # The service the app manages (Settings: sub / rg / apim).
     service_id: str = SERVICE
     backends: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # As a v2 gateway does (seen on a live run): for this many backend deletes after an API
+    # was deleted, APIM still counts the API's policy as using the backend (400).
+    lingering_api_refs: int = 0
+    _lingering: list[str] = field(default_factory=list)
     named_values: dict[str, dict[str, Any]] = field(default_factory=dict)
     apis: dict[str, dict[str, Any]] = field(default_factory=dict)
     policies: dict[str, str] = field(default_factory=dict)
@@ -184,6 +188,15 @@ class FakeApim(FakeAzure):
         if parts == ["backends"]:
             return httpx.Response(200, json={"value": list(self.backends.values())})
         if parts[0] == "backends" and len(parts) == 2:
+            if request.method == "DELETE" and self._lingering and self.lingering_api_refs > 0:
+                self.lingering_api_refs -= 1
+                entities = "\r\n".join(
+                    f"/apis/{api};rev=1/policies/policy" for api in self._lingering
+                )
+                message = f"Backend '{parts[1]}' is used by the following entities:\r\n{entities}"
+                return httpx.Response(
+                    400, json={"error": {"code": "ValidationError", "message": message}}
+                )
             return self._resource(request, self.backends, parts[1], f"backends/{parts[1]}", body)
         if parts[0] == "namedValues" and len(parts) == 2:
             return self._resource(
@@ -361,6 +374,7 @@ class FakeApim(FakeAzure):
         self.policies.pop(name, None)
         for operation in [item for item in self.operations if item[0] == name]:
             del self.operations[operation]
+        self._lingering.append(name)
         return httpx.Response(200)
 
     def _operation(self, request: httpx.Request, api: str, name: str, body: Any) -> httpx.Response:

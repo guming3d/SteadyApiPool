@@ -114,6 +114,41 @@ def test_removing_a_pool_takes_its_apis_and_unused_members(
     assert {"p2", "pool-b", "pool-c"} <= set(apim.backends)
 
 
+def test_a_pool_whose_deleted_api_still_counts_as_its_user_goes_too(
+    client: TestClient, apim: FakeApim
+) -> None:
+    # Seen on a live BasicV2 run: right after its API is deleted, APIM still says the API's
+    # policy uses the pool, and deleting the pool failed with the API already gone.
+    _seed(client, apim)
+    apim.lingering_api_refs = 2
+    plan = client.get("/api/apim/pools/p1/removal").json()
+
+    response = client.post("/api/apim/pools/p1/remove", json=_confirm(plan), headers=WRITE)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["pools"] == ["p1"]
+    assert "p1" not in apim.backends
+    assert apim.lingering_api_refs == 0
+
+
+def test_a_pool_still_used_by_an_api_that_stays_is_not_retried(apim: FakeApim) -> None:
+    """Only the APIs the removal itself deleted are waited for; anything else fails at once."""
+    from pool_manager.apim.service import ApimService
+    from pool_manager.arm import ArmClient, ArmError
+    from tests.fake_azure import FakeCredential
+
+    apim._lingering.append("someone-elses-api")
+    apim.lingering_api_refs = 1
+    apim.backends["p9"] = {"name": "p9", "properties": {}}
+    settings = _settings()
+    service = ApimService(
+        settings, ArmClient(settings, FakeCredential(), apim.transport(), sleep=lambda _: None)
+    )
+    with pytest.raises(ArmError) as raised:
+        service._delete_pool_resource("p9", None, deleted_apis=["p1"])
+    assert raised.value.status == 400 and "is used by" in raised.value.message
+
+
 def test_removal_refuses_what_was_not_reviewed(client: TestClient, apim: FakeApim) -> None:
     _seed(client, apim)
     plan = client.get("/api/apim/pools/p1/removal").json()
