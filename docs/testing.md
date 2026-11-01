@@ -114,7 +114,10 @@ regions (`--regions`, default `eastus2 swedencentral`), each with a GlobalStanda
 It prints `E2E_SUBSCRIPTION_ID`, `E2E_FOUNDRY_ACCOUNTS` and `E2E_FOUNDRY_DEPLOYMENT`.
 
 `identity` creates the app registration GitHub Actions signs in as, with no secret: a federated
-credential for the repository's `azure-e2e` environment. In the subscription it gets
+credential for the repository's `azure-e2e` environment, by name (`repo:<owner>/<repo>:...`) and,
+for a repository with GitHub's immutable OIDC subjects (`repo:<owner>@<id>/<repo>@<id>:...`, read
+from GitHub's API with the `gh` CLI), by ID too; a login that fails with `AADSTS700213` names the
+subject GitHub sent. In the subscription it gets
 *Contributor*, and *Role Based Access Control Administrator* limited by a condition to the two
 roles the app assigns (*Cognitive Services OpenAI User*, *Azure Kubernetes Service RBAC Cluster
 Admin*), so it can't grant anything else. It prints `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` and

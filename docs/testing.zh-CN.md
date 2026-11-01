@@ -103,7 +103,9 @@ python scripts/e2e-azure-setup.py identity --repo <owner>/<repo>
 AI 服务帐户，每个帐户有一个同一模型（`--model`、`--version`）的全局标准部署 `e2e-chat`。按令牌付费：
 空闲时不产生费用。它会输出 `E2E_SUBSCRIPTION_ID`、`E2E_FOUNDRY_ACCOUNTS` 和 `E2E_FOUNDRY_DEPLOYMENT`。
 
-`identity` 创建 GitHub Actions 用来登录的应用注册，没有机密：为存储库的 `azure-e2e` 环境添加联合凭据。
+`identity` 创建 GitHub Actions 用来登录的应用注册，没有机密：为存储库的 `azure-e2e` 环境添加联合凭据，按名称
+（`repo:<owner>/<repo>:...`）添加；如果存储库使用 GitHub 的不可变 OIDC 主体（`repo:<owner>@<id>/<repo>@<id>:...`，
+通过 `gh` CLI 从 GitHub 的 API 读取），还会按 ID 添加。登录失败并出现 `AADSTS700213` 时，错误中会给出 GitHub 发送的主体。
 它在订阅中获得*参与者*角色，以及受条件限制的*基于角色的访问控制管理员*角色，只能分配本应用会分配的两个角色
 （*认知服务 OpenAI 用户*、*Azure Kubernetes 服务 RBAC 群集管理员*），因此无法授予其他任何权限。它会输出
 `AZURE_CLIENT_ID`、`AZURE_TENANT_ID` 和 `AZURE_SUBSCRIPTION_ID`。
