@@ -98,7 +98,8 @@ jobs:
             apim) file=test_apim.py ;;
             aks) file=test_litellm_aks.py ;;
           esac
-          pytest -q "../e2e/azure/$file"
+          # Each step by name (pytest.ini asks for -v), so a log says which one failed.
+          pytest "../e2e/azure/$file"
 
   # Whatever a journey left (a cancelled run, a runner that died): groups older than 6 hours.
   janitor:
