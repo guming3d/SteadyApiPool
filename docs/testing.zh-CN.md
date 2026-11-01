@@ -135,6 +135,18 @@ cd backend && .venv/Scripts/python -m pytest ../e2e/azure/test_litellm_aca.py
 
 没有 `E2E_LIVE=1` 时，所有步骤都会被跳过，不会意外创建任何资源（CI 在每次推送时都以这种方式收集它们）。
 
+### 计划运行失败时
+
+每晚或周日的旅程失败（或其后的 janitor 失败）时，会创建一个分配给存储库所有者的问题 **Live E2E failing: <旅程>**
+（标签 `e2e-failure`），内容包括失败的步骤、它们的错误、日志末尾和本次运行的链接（`scripts/e2e-report.py`；由于存储库是公开的，
+ID 和类似密钥的内容都会被隐去）。GitHub 会给被分配者发送电子邮件。同一旅程连续失败时，会在已打开的问题中添加评论，而不是再创建
+一个；再次通过时会关闭该问题并附上说明。手动运行时勾选 **report** 也会报告。
+
+电子邮件发往你 GitHub 帐户的通知地址。只需在 GitHub 中设置一次：**Settings > Notifications**，把 **Default notifications
+email**（或在 **Custom routing** 中为此存储库设置的地址）设为接收这些邮件的地址，并为 **Participating, @mentions and custom**
+保持 **Email** 开启。计划工作流运行失败时，GitHub 也会给该工作流的所有者发送电子邮件（**Settings > Notifications > Actions**，
+*Only notify for failed workflows*），但不含错误内容。
+
 ### 清理
 
 每次运行会在拆除阶段删除自己的资源组（`e2e-<旅程>-<运行>`），并清除它软删除的 APIM 服务。如果运行被取消

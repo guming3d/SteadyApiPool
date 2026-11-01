@@ -154,6 +154,22 @@ cd backend && .venv/Scripts/python -m pytest ../e2e/azure/test_litellm_aca.py
 Without `E2E_LIVE=1` every step is skipped: nothing is created by accident (CI collects them that
 way on every push).
 
+### When a scheduled run fails
+
+A nightly or Sunday journey that fails, or the janitor after it, opens an issue **Live E2E
+failing: <journey>** (label `e2e-failure`) assigned to the repository's owner, with the steps that
+failed, their errors, the end of the log and the run's link (`scripts/e2e-report.py`; IDs and
+anything key-like are redacted, since the repository is public). GitHub emails the assignee. A
+journey that keeps failing adds a comment to its open issue instead of opening another; passing
+again closes it, with a note. A manual run reports too when **report** is ticked.
+
+The email goes to your GitHub account's notification address. Once, in GitHub: **Settings >
+Notifications**, set **Default notifications email** (or, under **Custom routing**, the address
+for this repository) to the address that should get them, and keep **Email** on for
+**Participating, @mentions and custom**. GitHub also emails the owner of a scheduled workflow
+when a run fails (**Settings > Notifications > Actions**, *Only notify for failed workflows*),
+without the error text.
+
 ### Cleaning up
 
 A run deletes its resource group (`e2e-<journey>-<run>`) in teardown and purges the APIM

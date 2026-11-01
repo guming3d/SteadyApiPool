@@ -24,6 +24,10 @@ on:
         description: Leave the resources for a look (delete the e2e-* groups yourself)
         type: boolean
         default: false
+      report:
+        description: Report a failure as an issue (emailed), as scheduled runs do
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -53,6 +57,8 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      # A scheduled run that fails opens an issue (scripts/e2e-report.py), which GitHub emails.
+      issues: write
     strategy:
       fail-fast: false
       matrix:
@@ -98,8 +104,27 @@ jobs:
             apim) file=test_apim.py ;;
             aks) file=test_litellm_aks.py ;;
           esac
-          # Each step by name (pytest.ini asks for -v), so a log says which one failed.
-          pytest "../e2e/azure/$file"
+          # Each step by name (pytest.ini asks for -v), so a log says which one failed; kept
+          # for the failure report.
+          set -o pipefail
+          pytest "../e2e/azure/$file" 2>&1 | tee "$RUNNER_TEMP/journey.log"
+      # Scheduled runs only: a failure opens (or comments on) "Live E2E failing: <journey>",
+      # assigned to the repository's owner, whom GitHub emails; passing again closes it.
+      - name: Report the failure
+        if: failure() && (github.event_name == 'schedule' || inputs.report)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python3 scripts/e2e-report.py failed --journey "${{ matrix.journey }}"
+          --log "$RUNNER_TEMP/journey.log"
+          --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      - name: Close the failure report
+        if: success() && (github.event_name == 'schedule' || inputs.report)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python3 scripts/e2e-report.py passed --journey "${{ matrix.journey }}"
+          --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
   # Whatever a journey left (a cancelled run, a runner that died): groups older than 6 hours.
   janitor:
@@ -110,6 +135,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      issues: write
     steps:
       - uses: actions/checkout@v4
       - uses: azure/login@v2
@@ -117,4 +143,22 @@ jobs:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      - run: python3 scripts/e2e-azure-janitor.py --subscription "${{ vars.AZURE_SUBSCRIPTION_ID }}" --older-than 6
+      - name: Delete what runs left
+        run: |
+          set -o pipefail
+          python3 scripts/e2e-azure-janitor.py --subscription "${{ vars.AZURE_SUBSCRIPTION_ID }}" --older-than 6 2>&1 | tee "$RUNNER_TEMP/janitor.log"
+      - name: Report the failure
+        if: failure() && (github.event_name == 'schedule' || inputs.report)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python3 scripts/e2e-report.py failed --journey janitor
+          --log "$RUNNER_TEMP/janitor.log"
+          --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      - name: Close the failure report
+        if: success() && (github.event_name == 'schedule' || inputs.report)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python3 scripts/e2e-report.py passed --journey janitor
+          --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

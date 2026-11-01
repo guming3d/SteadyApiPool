@@ -67,9 +67,7 @@ def foundry(args: argparse.Namespace) -> None:
     accounts = []
     for region in args.regions:
         name = f"{args.prefix}-{region}"[:60]
-        if az(
-            "cognitiveservices", "account", "show", "-g", GROUP, "-n", name, check=False
-        ):
+        if az("cognitiveservices", "account", "show", "-g", GROUP, "-n", name, check=False):
             print(f"{name} exists")
         else:
             az(
@@ -104,9 +102,7 @@ def _condition() -> str:
     parts = []
     for action in ("write", "delete"):
         source = "Resource" if action == "delete" else "Request"
-        attribute = (
-            f"@{source}[Microsoft.Authorization/roleAssignments:RoleDefinitionId]"
-        )
+        attribute = f"@{source}[Microsoft.Authorization/roleAssignments:RoleDefinitionId]"
         parts.append(
             f"((!(ActionMatches{{'Microsoft.Authorization/roleAssignments/{action}'}})) OR "
             f"({attribute} ForAnyOfAnyValues:GuidEquals {{{roles}}}))"
@@ -121,9 +117,7 @@ def _subjects(repo: str) -> list[tuple[str, str]]:
     subjects = [("github-azure-e2e", f"repo:{repo}:environment:{ENVIRONMENT}")]
     gh = shutil.which("gh") or shutil.which("gh.exe")
     if gh is None:
-        print(
-            "gh not found: only the subject by name is registered (see docs/testing.md)"
-        )
+        print("gh not found: only the subject by name is registered (see docs/testing.md)")
         return subjects
     result = subprocess.run(
         [gh, "api", f"repos/{repo}/actions/oidc/customization/sub"],
@@ -131,9 +125,7 @@ def _subjects(repo: str) -> list[tuple[str, str]]:
         text=True,
     )
     if result.returncode != 0:
-        print(
-            f"Couldn't read the repository's OIDC subject settings: {result.stderr.strip()}"
-        )
+        print(f"Couldn't read the repository's OIDC subject settings: {result.stderr.strip()}")
         return subjects
     prefix = str(json.loads(result.stdout).get("sub_claim_prefix") or "")
     by_id = f"{prefix}:environment:{ENVIRONMENT}"
@@ -152,9 +144,7 @@ def identity(args: argparse.Namespace) -> None:
         az("ad", "sp", "create", "--id", client_id)
     sp = az("ad", "sp", "show", "--id", client_id, check=False) or {}
     principal = sp.get("id", "<its service principal's object ID>")
-    existing = az(
-        "ad", "app", "federated-credential", "list", "--id", client_id, check=False
-    )
+    existing = az("ad", "app", "federated-credential", "list", "--id", client_id, check=False)
     known = {c.get("subject") for c in existing or []}
     for name, subject in _subjects(args.repo):
         if subject in known:
@@ -188,24 +178,16 @@ def identity(args: argparse.Namespace) -> None:
 def main(argv: list[str] | None = None) -> int:
     global DRY_RUN
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument(
-        "--dry-run", action="store_true", help="print the commands only"
-    )
+    parser.add_argument("--dry-run", action="store_true", help="print the commands only")
     sub = parser.add_subparsers(dest="command", required=True)
-    one = sub.add_parser(
-        "foundry", help="the long-lived Foundry accounts and deployments"
-    )
+    one = sub.add_parser("foundry", help="the long-lived Foundry accounts and deployments")
     one.add_argument("--regions", nargs=2, default=["eastus2", "swedencentral"])
     one.add_argument("--prefix", default="e2e-steadyapipool")
     one.add_argument("--model", default="gpt-4.1-mini")
     one.add_argument("--version", default="2025-04-14")
     one.add_argument("--deployment", default="e2e-chat")
-    one.add_argument(
-        "--capacity", type=int, default=10, help="thousands of tokens a minute"
-    )
-    two = sub.add_parser(
-        "identity", help="the GitHub Actions identity (OIDC, no secret)"
-    )
+    one.add_argument("--capacity", type=int, default=10, help="thousands of tokens a minute")
+    two = sub.add_parser("identity", help="the GitHub Actions identity (OIDC, no secret)")
     two.add_argument("--repo", default="guming3d/SteadyApiPool", help="owner/name")
     args = parser.parse_args(argv)
     DRY_RUN = args.dry_run
