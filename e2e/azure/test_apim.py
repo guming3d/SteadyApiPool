@@ -100,7 +100,8 @@ class TestApim:
                 "max_tokens": 16,
                 "stream": True,
             },
-            "key": trip.state["key"],
+            # APIM's body names it as its test call does (the API's subscription key).
+            "subscription_key": trip.state["key"],
         }
         journeys.load_test(trip, f"/apim/apis/{api}/benchmarks", start)
 
