@@ -6,6 +6,7 @@ import json
 from collections.abc import Iterator
 from datetime import UTC, datetime
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -154,6 +155,39 @@ def test_unreachable_prices_leave_the_spend(client: TestClient, azure: FakeAzure
     cost = client.get("/api/litellm/cost").json()
     assert cost["list_price"] is None
     assert cost["month_to_date"]["amount"] == 3.0
+
+
+@pytest.mark.parametrize(
+    "service", ["Azure Container Apps", "Azure Database for PostgreSQL", "Redis Cache"]
+)
+def test_a_transient_price_failure_keeps_the_gateway_estimate(
+    client: TestClient, azure: FakeAzure, monkeypatch: pytest.MonkeyPatch, service: str
+) -> None:
+    azure.add_gateway("gw", profile="production")
+    azure.container_apps[GATEWAY_APP.casefold()]["location"] = "Sweden Central"
+    azure.retail_prices["swedencentral"] = RETAIL_PRICES
+    prices = azure._prices
+    failed = False
+    delays: list[float] = []
+    monkeypatch.setattr("pool_manager.cost.time.sleep", delays.append)
+
+    def flaky_prices(request: httpx.Request) -> httpx.Response:
+        nonlocal failed
+        if not failed and f"'{service}'" in request.url.params.get("$filter", ""):
+            failed = True
+            return httpx.Response(503)
+        return prices(request)
+
+    monkeypatch.setattr(azure, "_prices", flaky_prices)
+    cost = client.get("/api/litellm/cost").json()
+
+    assert (cost["profile"], cost["location"]) == ("production", "Sweden Central")
+    assert {item["kind"] for item in cost["list_price"]["items"]} == {
+        "container_apps",
+        "postgres",
+        "redis",
+    }
+    assert delays == [1.0]
 
 
 def test_an_external_gateways_bill_is_not_ours_to_read(azure: FakeAzure) -> None:
