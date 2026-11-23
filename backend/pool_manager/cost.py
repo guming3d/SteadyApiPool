@@ -33,6 +33,8 @@ HOURS_PER_MONTH = 730
 _SPEND_SECONDS = 3600.0
 _PRICES_SECONDS = 86400.0
 _MAX_PRICE_PAGES = 10
+_MAX_PRICE_ATTEMPTS = 3
+_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 # Cost Management's answers for subscriptions it has no data for (free, sponsored, CSP, ...).
 _UNSUPPORTED = frozenset(
     {"SubscriptionTypeNotSupported", "BillingAccessDenied", "IndirectCostDisabled"}
@@ -128,7 +130,8 @@ class CostReader:
     def retail_prices(
         self, service: str, region: str, refresh: bool, extra_filter: str = ""
     ) -> list[dict[str, Any]]:
-        """Every Consumption meter of one service in a region (``extra_filter`` narrows it)."""
+        """Every Consumption meter of one service in a region (``extra_filter`` narrows it).
+        Transient failures get up to three attempts per page."""
         key = (f"{service}|{extra_filter}", region)
         with self._lock:
             cached = self._price_cache.get(key)
@@ -144,8 +147,24 @@ class CostReader:
         for _ in range(_MAX_PRICE_PAGES):
             if url is None:
                 break
-            response = self._http.get(url, params=params)
-            response.raise_for_status()
+            for attempt in range(_MAX_PRICE_ATTEMPTS):
+                retry_after = ""
+                try:
+                    response = self._http.get(url, params=params)
+                    response.raise_for_status()
+                    break
+                except httpx.TransportError:
+                    if attempt == _MAX_PRICE_ATTEMPTS - 1:
+                        raise
+                except httpx.HTTPStatusError as error:
+                    if (
+                        error.response.status_code not in _RETRYABLE_STATUS
+                        or attempt == _MAX_PRICE_ATTEMPTS - 1
+                    ):
+                        raise
+                    retry_after = error.response.headers.get("Retry-After", "")
+                delay = min(float(retry_after), 4.0) if retry_after.isdecimal() else 2.0**attempt
+                time.sleep(delay)
             body = response.json()
             items.extend(body.get("Items") or [])
             url = body.get("NextPageLink") or None
