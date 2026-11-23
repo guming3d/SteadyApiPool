@@ -1,0 +1,120 @@
+// "How to call this pool": what a client needs to call the pool through the gateway, with code
+// generated for it, and the setup that otherwise makes the first call fail.
+import { CircleAlert, Terminal } from "lucide-react"
+import { useState } from "react"
+
+import { callSnippet, KEY_PLACEHOLDER, SNIPPET_LANGUAGES, type SnippetLanguage } from "./call-snippets"
+import { fill, useI18n } from "../i18n"
+import type { Capabilities, PoolEndpoint } from "./types"
+import { api, keys } from "./api"
+import { memberOfServed } from "./api-test"
+import { KeyStep, TryIt } from "./api-tester"
+import { LoadTest } from "../components/benchmark-panel"
+import { FoundryAccessNotice, useOpenSetup } from "../components/setup"
+import { CodeBlock, CopyButton } from "../components/ui"
+
+export { CodeBlock, CopyButton }
+
+const LANGUAGE_LABEL: Record<SnippetLanguage, string> = {
+  curl: "curl",
+  python: "Python",
+  javascript: "JavaScript",
+  powershell: "PowerShell",
+}
+
+/** The pool's base URL: the gateway's OpenAI v1 surface. */
+export function baseUrlOf(endpoint: Pick<PoolEndpoint, "base_url"> | undefined, gatewayUrl?: string | null) {
+  return endpoint?.base_url ?? `${(gatewayUrl || "https://<gateway>").replace(/\/+$/, "")}/default/models/openai/v1`
+}
+
+export function CallGuide({
+  endpoint,
+  capabilities,
+  canWrite,
+  usesIdentity,
+  accountIds,
+}: {
+  endpoint: PoolEndpoint | undefined
+  capabilities: Capabilities | undefined
+  canWrite: boolean
+  /** Some members are Foundry deployments the gateway calls as its managed identity. */
+  usesIdentity: boolean
+  /** Cognitive Services accounts of the pool's Foundry members. */
+  accountIds: string[]
+}) {
+  const { t, locale } = useI18n("aigateway")
+  const openSetup = useOpenSetup()
+  const [language, setLanguage] = useState<SnippetLanguage>("python")
+  // Kept in this page's memory only.
+  const [key, setKey] = useState("")
+  const [keyInCode, setKeyInCode] = useState(false)
+
+  const header = <header className="section-header"><b className="call-title"><Terminal size={14} />{t.callGuideTitle}</b></header>
+  if (!endpoint) return <section className="call-guide">{header}</section>
+
+  const baseUrl = baseUrlOf(endpoint, capabilities?.gateway_url)
+  const modelName = endpoint.model_name
+  const code = callSnippet(language, { baseUrl, model: modelName, key: keyInCode && key ? key : undefined })
+  const principalId = capabilities?.gateway_principal_id ?? null
+
+  return <section className="call-guide">
+    {header}
+    <p className="muted call-hint">{t.callGuideHint}</p>
+
+    {usesIdentity && (!principalId || accountIds.length > 0) && <div className="call-prereq">
+      <b>{t.callPrereqTitle}</b>
+      {!principalId
+        ? <div className="foundry-access" data-tone="warn">
+          <CircleAlert size={14} /><span>{t.foundryNoIdentity}</span>
+          <button type="button" className="link-button" onClick={openSetup}>{t.setupOpen}</button>
+        </div>
+        : <FoundryAccessNotice accountIds={accountIds} />}
+    </div>}
+
+    <dl className="call-facts">
+      <div><dt>{t.baseUrl}</dt><dd><code>{baseUrl}</code><CopyButton text={baseUrl} label={t.baseUrl} /></dd></div>
+      <div><dt>{t.modelName}</dt><dd><code>{modelName}</code><CopyButton text={modelName} label={t.modelName} /></dd></div>
+      <div><dt>{t.auth}</dt><dd><code>Authorization: Bearer &lt;key&gt;</code> <span className="muted">{t.authOrApiKeyHeader}</span></dd></div>
+    </dl>
+
+    <ol className="call-steps">
+      <li>
+        <b>{t.callStepKey}</b>
+        <KeyStep canWrite={canWrite} value={key} onChange={setKey} />
+      </li>
+      <li>
+        <b>{t.callStepTry}</b>
+        <TryIt poolId={endpoint.pool_id} baseUrl={baseUrl} apiKey={key} model={modelName} />
+      </li>
+      <li>
+        <b>{t.callStepLoad}</b>
+        <LoadTest product="aigateway" name={endpoint.pool_id} baseUrl={baseUrl} model={modelName} canWrite={canWrite} needsKey={!key}
+          memberLabel={memberOfServed} calls={{
+            queryKey: (runId) => keys.benchmark(endpoint.pool_id, runId),
+            start: (spec) => api.startBenchmark(endpoint.pool_id, { spec, key }),
+            get: (runId) => api.benchmark(endpoint.pool_id, runId),
+            stop: (runId) => api.stopBenchmark(endpoint.pool_id, runId),
+          }} />
+      </li>
+      <li>
+        <b>{t.callStepRequest}</b>
+        <p>{fill(t.callStepRequestBody, { placeholder: KEY_PLACEHOLDER }, locale)}</p>
+        {key && <label className="check"><input type="checkbox" checked={keyInCode} onChange={(event) => setKeyInCode(event.target.checked)} />{t.keyInCode}</label>}
+        <div className="segment code-tabs" role="tablist">
+          {SNIPPET_LANGUAGES.map((candidate) => <button key={candidate} type="button" role="tab" aria-selected={candidate === language} className={candidate === language ? "active" : ""} onClick={() => setLanguage(candidate)}>{LANGUAGE_LABEL[candidate]}</button>)}
+        </div>
+        <CodeBlock code={code} label={LANGUAGE_LABEL[language]} />
+      </li>
+    </ol>
+    <details className="call-notes">
+      <summary>{t.callStepNotes}</summary>
+      <ul>
+        <li>{fill(t.callNoteModel, { model: modelName }, locale)}</li>
+        <li>{t.callNoteRetry}</li>
+        <li>{t.callNote429}</li>
+        <li>{t.callNoteStream}</li>
+        <li>{t.callNoteResponses}</li>
+      </ul>
+    </details>
+  </section>
+}

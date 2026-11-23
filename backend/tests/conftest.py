@@ -27,6 +27,7 @@ def _no_real_azure(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         deps._apim_service,
         deps._gateway,
         deps._litellm_service,
+        deps._aigateway_service,
         deps._discovery,
         deps._access,
         deps._verifier,

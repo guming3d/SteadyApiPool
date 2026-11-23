@@ -16,6 +16,9 @@ You choose the gateway on the setup page:
 - **A [LiteLLM](https://github.com/BerriAI/litellm) gateway**, an open-source AI gateway. The app
   deploys it on Azure Container Apps or AKS, or connects one you already run, and gives clients
   OpenAI-style model names, aliases and virtual keys.
+- **[Azure AI Gateway](https://learn.microsoft.com/azure/ai-gateway/overview)**, Microsoft's
+  managed gateway for AI traffic (`Microsoft.ApiManagement/aigateways`). The app uses one you have,
+  or creates one, and makes each pool a model alias with failure rules.
 
 ![A pool's Routing tab: the client calls the gateway with one model name, and the pool spreads requests across Foundry deployments in several regions, with cooldown and retries](docs/images/pool-routing.png)
 
@@ -39,16 +42,16 @@ it fails or is throttled.*
 *The same pool on each gateway: the primary answers 429, the gateway retries on the next member and
 benches the primary for 60 s, then takes it back.*
 
-| | Azure API Management | LiteLLM |
-| --- | --- | --- |
-| Pick it when | Your organization already runs APIM, or wants a managed Azure service with its policies, products and portal | You want an OpenAI-style endpoint with model names, aliases and per-key limits, or an open-source gateway you can run anywhere |
-| What the app sets up | An APIM service (yours, or a new Basic v2 one), a `Pool` backend per pool and an API bound to it | A LiteLLM proxy with PostgreSQL on Container Apps (one step) or a new AKS cluster, or a connection to yours; a model group per pool |
-| How clients call it | `https://<apim>.azure-api.net/<api-path>/chat/completions?api-version=…` with `Ocp-Apim-Subscription-Key` | `https://<gateway>/v1/chat/completions` with a virtual key and the pool ID (or an alias) as the model |
-| Failure handling | A circuit breaker per member, retries in the API's policy, optional session affinity | Cooldown per member, retries on another member, Responses API follow-ups pinned to the deployment that answered |
-| Cost | The service's tier (Basic v2 is the suggested start; Developer has no SLA), billed by the hour | From about $46 a month for one Container Apps replica; the sizer prices the plan for your traffic in your region before you deploy (list prices) |
-| Also available as | The [public app](docs/deploy.md#public-app-on-azure-container-apps), where anyone signs in with their own Azure account | — |
+| | Azure API Management | LiteLLM | Azure AI Gateway |
+| --- | --- | --- | --- |
+| Pick it when | Your organization already runs APIM, or wants a managed Azure service with its policies, products and portal | You want an OpenAI-style endpoint with model names, aliases and per-key limits, or an open-source gateway you can run anywhere | You want a managed Azure gateway made for AI traffic: an OpenAI-style endpoint without running anything yourself |
+| What the app sets up | An APIM service (yours, or a new Basic v2 one), a `Pool` backend per pool and an API bound to it | A LiteLLM proxy with PostgreSQL on Container Apps (one step) or a new AKS cluster, or a connection to yours; a model group per pool | An AI Gateway (yours, or a new Standard one), a model provider per Foundry account, a model per member and a model alias per pool |
+| How clients call it | `https://<apim>.azure-api.net/<api-path>/chat/completions?api-version=…` with `Ocp-Apim-Subscription-Key` | `https://<gateway>/v1/chat/completions` with a virtual key and the pool ID (or an alias) as the model | `https://<gateway>.<region>.ai.gateway.azure.com/default/models/openai/v1/chat/completions` with a gateway API key and the pool ID as the model |
+| Failure handling | A circuit breaker per member, retries in the API's policy, optional session affinity | Cooldown per member, retries on another member, Responses API follow-ups pinned to the deployment that answered | A failure rule on the alias: a member that answers 408, 429 or 5xx, or not at all, sits out 60 s and the request goes to the next one |
+| Cost | The service's tier (Basic v2 is the suggested start; Developer has no SLA), billed by the hour | From about $46 a month for one Container Apps replica; the sizer prices the plan for your traffic in your region before you deploy (list prices) | Billed per request (the app shows the list price; in November 2026 Azure listed none) |
+| Also available as | The [public app](docs/deploy.md#public-app-on-azure-container-apps), where anyone signs in with their own Azure account | — | — |
 
-Both kinds manage the same Foundry deployments with the same identity rules (the gateway calls
+All three manage the same Foundry deployments with the same identity rules (the gateway calls
 them with its managed identity, no keys), and you can switch between them on the setup page.
 
 ### How much traffic?
@@ -66,7 +69,7 @@ region; requests a minute it carried, and the median latency it added at 600 a m
 When a deployment answered 429 or 500, both gateways moved its traffic to the next one within a
 second; with a real model, every pool answered all calls past one deployment's quota, where that
 deployment alone turned up to 65% away. The sizes, prices, failover details and the method are in
-[Benchmarks](docs/benchmarks.md).
+[Benchmarks](docs/benchmarks.md). Azure AI Gateway hasn't been benchmarked yet.
 
 ## Quick start
 
@@ -116,8 +119,9 @@ screenshot of each step.
 - [Step-by-step guide](docs/getting-started.md): every option of each step, deploying a LiteLLM
   gateway on Container Apps or AKS, client code, the load test, troubleshooting, and a demo that
   runs without Azure.
-- [Features and how it works](docs/features.md): everything the app does, how a pool maps to APIM
-  and to LiteLLM, and what a LiteLLM gateway deployment creates and how it's maintained.
+- [Features and how it works](docs/features.md): everything the app does, how a pool maps to APIM,
+  to LiteLLM and to Azure AI Gateway, and what a LiteLLM gateway deployment creates and how it's
+  maintained.
 - [Sizing a LiteLLM gateway](docs/sizing.md): from a customer's RPM and tokens to Container Apps
   replicas, PostgreSQL, Redis or AKS nodes, step by step, with worked examples.
 - [Benchmarks](docs/benchmarks.md): how much each gateway carries, the latency it adds and what

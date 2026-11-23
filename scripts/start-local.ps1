@@ -117,19 +117,21 @@ $Subscription = Get-Setting "POOL_MANAGER_SUBSCRIPTION_ID"
 $ResourceGroup = Get-Setting "POOL_MANAGER_RESOURCE_GROUP"
 $ApimName = Get-Setting "POOL_MANAGER_APIM_NAME"
 $GatewayName = Get-Setting "POOL_MANAGER_GATEWAY_NAME"
+$AiGatewayName = Get-Setting "POOL_MANAGER_AIGATEWAY_NAME"
 $GatewayUrl = Get-Setting "POOL_MANAGER_GATEWAY_URL"
-# The gateway is optional here (the setup page chooses one). An APIM service or a LiteLLM
-# Container App needs its subscription, resource group and name; a LiteLLM gateway elsewhere
-# needs its name and URL.
-$TargetValues = @($Subscription, $ResourceGroup, "$ApimName$GatewayName")
-if ($ApimName -and ($GatewayName -or $GatewayUrl)) {
-  Fail "backend/.env names both an APIM service and a LiteLLM gateway; keep one."
+# The gateway is optional here (the setup page chooses one). An APIM service, an AI Gateway or
+# a LiteLLM Container App needs its subscription, resource group and name; a LiteLLM gateway
+# elsewhere needs its name and URL.
+$TargetValues = @($Subscription, $ResourceGroup, "$ApimName$AiGatewayName$GatewayName")
+$Kinds = @($ApimName, $AiGatewayName, "$GatewayName$GatewayUrl") | Where-Object { $_ }
+if (@($Kinds).Count -gt 1) {
+  Fail "backend/.env names more than one gateway (APIM, AI Gateway, LiteLLM); keep one."
 } elseif ($GatewayUrl) {
   if (-not $GatewayName) { Fail "POOL_MANAGER_GATEWAY_URL needs POOL_MANAGER_GATEWAY_NAME in backend/.env." }
 } elseif (($TargetValues | Where-Object { $_ }).Count -notin @(0, 3)) {
-  Fail "Set POOL_MANAGER_SUBSCRIPTION_ID, POOL_MANAGER_RESOURCE_GROUP and POOL_MANAGER_APIM_NAME (or POOL_MANAGER_GATEWAY_NAME) in backend/.env, or remove them to choose the gateway in the app."
+  Fail "Set POOL_MANAGER_SUBSCRIPTION_ID, POOL_MANAGER_RESOURCE_GROUP and POOL_MANAGER_APIM_NAME (or POOL_MANAGER_AIGATEWAY_NAME, or POOL_MANAGER_GATEWAY_NAME) in backend/.env, or remove them to choose the gateway in the app."
 }
-if ($Subscription -eq "00000000-0000-0000-0000-000000000000" -or $ResourceGroup -in @("my-apim-rg", "my-gateway-rg") -or $ApimName -eq "my-apim" -or $GatewayName -eq "my-gateway") {
+if ($Subscription -eq "00000000-0000-0000-0000-000000000000" -or $ResourceGroup -in @("my-apim-rg", "my-gateway-rg", "my-aigateway-rg") -or $ApimName -eq "my-apim" -or $GatewayName -eq "my-gateway" -or $AiGatewayName -eq "my-aigateway") {
   Fail "backend/.env still has the example gateway values; set real ones or remove them to choose the gateway in the app."
 }
 # Locally there is no App Service Authentication, so easy_auth would answer 401 to everything.

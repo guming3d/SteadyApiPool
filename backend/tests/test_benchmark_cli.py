@@ -155,3 +155,34 @@ def test_apim_options() -> None:
 
     assert target.url == "https://a/api/chat/completions"
     assert target.headers["api-key"] == "k" and target.params == {"api-version": "2024-10-21"}
+
+
+def test_aigateway_calls_the_openai_v1_surface_with_a_bearer_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[httpx.Request] = []
+
+    def gateway(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        body = {"choices": [], "usage": {"prompt_tokens": 9, "completion_tokens": 3}}
+        return httpx.Response(200, json=body, headers={"x-ms-served-model": "gpt-6-2026-09-03"})
+
+    monkeypatch.setenv("AIGATEWAY_KEY", "aigw-key")
+    out = io.StringIO()
+    host = "https://aigw.eastus2-01.ai.gateway.azure.com"
+    argv = ["--gateway", "aigateway", "--url", host, "--model", "gpt6"]
+    argv += ["--max-requests", "3", "--no-stream"]
+
+    code = cli.main(argv, transport=httpx.MockTransport(gateway), out=out)
+
+    assert code == 0
+    assert "gpt-6-2026-09-03: 3 (100%)" in out.getvalue()
+    request = seen[0]
+    assert str(request.url) == f"{host}/default/models/openai/v1/chat/completions"
+    assert request.headers["Authorization"] == "Bearer aigw-key"
+    body = json.loads(request.content)
+    assert body["model"] == "gpt6"
+    assert body["max_completion_tokens"] == 128 and "max_tokens" not in body
+    assert cli.chat_url(f"{host}/default/models/openai/v1", "aigateway") == (
+        f"{host}/default/models/openai/v1/chat/completions"
+    )

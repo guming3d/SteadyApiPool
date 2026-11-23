@@ -176,10 +176,10 @@ export type ApimCli = { apiVersion: string; keyHeader: string | null }
 export const APIM_CLI_DEFAULTS = { apiVersion: "2025-04-01-preview", keyHeader: "Ocp-Apim-Subscription-Key" } as const
 
 /** The same run from a terminal, with scripts/benchmark.py; the key goes in an environment
- * variable so it stays out of the shell history. ``url`` is the gateway's /v1 on LiteLLM and the
- * API's URL on APIM. */
-export function cliCommand({ url, model, spec, windows, apim }: { url: string; model: string; spec: BenchmarkSpec; windows: boolean; apim?: ApimCli }) {
-  const args = apim ? ["--gateway", "apim"] : []
+ * variable so it stays out of the shell history. ``url`` is the gateway's /v1 on LiteLLM, the
+ * API's URL on APIM and the OpenAI v1 base URL on AI Gateway (``aigateway``). */
+export function cliCommand({ url, model, spec, windows, apim, aigateway = false }: { url: string; model: string; spec: BenchmarkSpec; windows: boolean; apim?: ApimCli; aigateway?: boolean }) {
+  const args = apim ? ["--gateway", "apim"] : aigateway ? ["--gateway", "aigateway"] : []
   args.push("--url", url, "--model", model)
   if (apim && apim.apiVersion !== APIM_CLI_DEFAULTS.apiVersion) args.push("--api-version", apim.apiVersion)
   if (apim?.keyHeader && apim.keyHeader !== APIM_CLI_DEFAULTS.keyHeader) args.push("--key-header", apim.keyHeader)
@@ -191,7 +191,9 @@ export function cliCommand({ url, model, spec, windows, apim }: { url: string; m
   if (spec.max_tokens !== DEFAULT_SPEC.max_tokens) args.push("--max-tokens", String(spec.max_tokens))
   if (!spec.stream) args.push("--no-stream")
   const python = windows ? "backend\\.venv\\Scripts\\python scripts\\benchmark.py" : "backend/.venv/bin/python scripts/benchmark.py"
-  const [env, placeholder] = apim ? ["APIM_KEY", "<your-subscription-key>"] : ["LITELLM_KEY", "<your-virtual-key>"]
+  const [env, placeholder] = apim
+    ? ["APIM_KEY", "<your-subscription-key>"]
+    : aigateway ? ["AIGATEWAY_KEY", "<your-api-key>"] : ["LITELLM_KEY", "<your-virtual-key>"]
   const key = windows ? `$env:${env} = "${placeholder}"` : `export ${env}='${placeholder}'`
   return `${key}\n${python} ${args.join(" ")}`
 }

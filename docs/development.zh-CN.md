@@ -8,9 +8,9 @@
 
 ```
 SteadyApiPool/
-├── backend/    FastAPI 应用（pool_manager：共享代码、apim/ 和 litellm/）及测试；同时提供构建好的
-│               前端
-├── frontend/   React/Vite 界面（src/apim、src/litellm 和其余共享部分；构建到
+├── backend/    FastAPI 应用（pool_manager：共享代码、apim/、litellm/ 和 aigateway/）及测试；同时提供
+│               构建好的前端
+├── frontend/   React/Vite 界面（src/apim、src/litellm、src/aigateway 和其余共享部分；构建到
 │               backend/pool_manager/static）
 ├── infra/      Bicep：容器应用和 AKS 上的 LiteLLM 网关（infra/gateway），以及用 Easy Auth 和最小权限
 │               角色把本应用托管在 App Service 上
@@ -133,8 +133,9 @@ cd ../frontend && npm test && npm run build
 
 后端测试使用一个内存中的 Azure（`tests/fake_azure.py`：ARM、模板部署、权限和角色、Foundry、Azure Monitor、
 Log Analytics、成本管理和零售价格）、构建在它之上的内存中的 APIM（`tests/apim/fake_apim.py`，它会强制执行 ETag
-以及 `If-Match` / `If-None-Match`），以及一个内存中的 LiteLLM 代理（`tests/litellm/fake_litellm.py`，它的管理 API
-和聊天补全，按 v1.106 的行为建模）。不需要 Azure 访问。
+以及 `If-Match` / `If-None-Match`），一个内存中的 Azure AI 网关（`tests/aigateway/fake_aigateway.py`：网关、其工作区
+的模型提供程序、模型、别名和导出器，以及 API 密钥，带 ETag，机密从不返回），以及一个内存中的 LiteLLM 代理
+（`tests/litellm/fake_litellm.py`，它的管理 API 和聊天补全，按 v1.106 的行为建模）。不需要 Azure 访问。
 
 另有一个可选的集成测试，让 LiteLLM 服务层在 Docker 中对接一个**真实**的 LiteLLM 代理，带有 PostgreSQL 和两个模拟的
 Azure OpenAI 区域（`tests/litellm_stack/`）。它检查 LiteLLM 是否接受应用写入的行、凭据、别名和密钥，以及是否按

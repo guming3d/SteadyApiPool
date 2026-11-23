@@ -7,18 +7,24 @@
     backend/.venv/Scripts/python scripts/benchmark.py --gateway apim \
         --url https://<apim>.azure-api.net/<api path> --model <model>
 
+    set AIGATEWAY_KEY=<API key>
+    backend/.venv/Scripts/python scripts/benchmark.py --gateway aigateway \
+        --url https://<gateway>.<region>.ai.gateway.azure.com --model <pool>
+
 It uses the same engine as the pool's call guide (backend/pool_manager/benchmark.py) and works
 against any OpenAI-compatible chat completions endpoint. With --gateway apim the URL is the
 API's, the key goes in APIM's subscription key header (--key-header), the api-version query is
-added (--api-version) and the answering member is the x-ms-region Azure OpenAI sends. Presets:
+added (--api-version) and the answering member is the x-ms-region Azure OpenAI sends. With
+--gateway aigateway the URL is the gateway's host (or its /default/models/openai/v1), and the
+answering member is the model AI Gateway names in x-ms-served-model. Presets:
 smoke (2 users, 30 s, the default), typical (10 users, 2 min) and stress (30 users, 3 min);
 --users, --duration and the other options change them. It prints a status line while it runs
 and a report at the end; Ctrl+C stops it (requests already sent finish) and still prints the
 report, a second Ctrl+C quits at once. Every request is billed by Foundry like real traffic.
 
-The key comes from LITELLM_KEY or APIM_KEY (or --key, or a prompt), is only sent to the
-gateway and is never written to the JSON or CSV files. Exit code: 0 when the run finished and
-some requests succeeded, 1 when none did, 2 for a usage error.
+The key comes from LITELLM_KEY, APIM_KEY or AIGATEWAY_KEY (or --key, or a prompt), is only sent
+to the gateway and is never written to the JSON or CSV files. Exit code: 0 when the run finished
+and some requests succeeded, 1 when none did, 2 for a usage error.
 """
 
 from __future__ import annotations
@@ -59,10 +65,12 @@ from pool_manager.models import (  # noqa: E402
     BenchmarkSpec,
 )
 
-KEY_ENVS = {"litellm": "LITELLM_KEY", "apim": "APIM_KEY"}
+KEY_ENVS = {"litellm": "LITELLM_KEY", "apim": "APIM_KEY", "aigateway": "AIGATEWAY_KEY"}
 # APIM's defaults: its subscription key header and the api-version the call guide uses.
 APIM_KEY_HEADER = "Ocp-Apim-Subscription-Key"
 APIM_API_VERSION = "2025-04-01-preview"
+# Where AI Gateway serves its OpenAI v1 surface on the gateway's host.
+AIGATEWAY_OPENAI_PATH = "/default/models/openai/v1"
 
 
 def chat_url(url: str, gateway: str = "litellm") -> str:
@@ -71,6 +79,8 @@ def chat_url(url: str, gateway: str = "litellm") -> str:
     url = url.rstrip("/")
     if url.endswith("/chat/completions"):
         return url
+    if gateway == "aigateway" and not url.endswith(AIGATEWAY_OPENAI_PATH):
+        return f"{url}{AIGATEWAY_OPENAI_PATH}/chat/completions"
     if url.endswith("/v1") or gateway == "apim":
         return f"{url}/chat/completions"
     return f"{url}/v1/chat/completions"
@@ -89,6 +99,15 @@ def target(args: argparse.Namespace, key: str) -> BenchmarkTarget:
             },
             params={"api-version": args.api_version or APIM_API_VERSION},
             member_header="x-ms-region",
+            tokens_field="max_completion_tokens",
+        )
+    if args.gateway == "aigateway":
+        return BenchmarkTarget(
+            url=url,
+            model=args.model,
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+            member_header="x-ms-served-model",
+            # The gateway forwards the body; newer Azure OpenAI models refuse max_tokens.
             tokens_field="max_completion_tokens",
         )
     headers = {"Content-Type": "application/json"}
@@ -199,7 +218,7 @@ def _spec(args: argparse.Namespace) -> BenchmarkSpec:
 def _key(args: argparse.Namespace) -> str | None:
     key = args.key or os.environ.get(KEY_ENVS[args.gateway])
     if not key and sys.stdin.isatty():
-        kind = "Subscription key" if args.gateway == "apim" else "Virtual key"
+        kind = {"apim": "Subscription key", "aigateway": "API key"}.get(args.gateway, "Virtual key")
         key = getpass.getpass(f"{kind} (input hidden): ")
     return key.strip() if key else None
 

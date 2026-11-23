@@ -22,13 +22,15 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-# The gateway product the app manages: Azure API Management, or a LiteLLM proxy.
-Product = Literal["apim", "litellm"]
+# The gateway product the app manages: Azure API Management, a LiteLLM proxy, or Azure AI Gateway
+# (``Microsoft.ApiManagement/aigateways``).
+Product = Literal["apim", "litellm", "aigateway"]
 
 
 class PoolMemberWrite(StrictModel):
     backend_id: str = Field(pattern=RESOURCE_ID_PATTERN)
-    # 0-based here; APIM stores ``priority + 1``, and LiteLLM's ``order`` is ``priority + 1``.
+    # 0-based here; APIM stores ``priority + 1``, LiteLLM's ``order`` is ``priority + 1``, and an
+    # AI Gateway alias takes it as it is.
     priority: int = Field(ge=0, le=99)
     weight: int = Field(ge=0, le=100)
 
@@ -243,6 +245,8 @@ SetupFix = Literal[
     "select_gateway",
     # APIM: turn on the service's system-assigned identity.
     "enable_apim_identity",
+    # AI Gateway: turn on the gateway's system-assigned identity.
+    "enable_aigateway_identity",
     # LiteLLM: an external gateway whose master key isn't known here (yet).
     "connect_gateway",
     "grant_foundry_access",

@@ -17,6 +17,10 @@
     "gatewayMasterKey": { "value": "${GATEWAY_MASTER_KEY}" },
     "gatewayPrincipalId": { "value": "${GATEWAY_PRINCIPAL_ID}" },
     "gatewayAppInsightsId": { "value": "${GATEWAY_APP_INSIGHTS_ID}" },
+    "aigatewayName": { "value": "${AIGATEWAY_NAME}" },
+    "aigatewayResourceGroup": { "value": "${AIGATEWAY_RESOURCE_GROUP=${AZURE_RESOURCE_GROUP}}" },
+    "aigatewaySubscriptionId": { "value": "${AIGATEWAY_SUBSCRIPTION_ID=${AZURE_SUBSCRIPTION_ID}}" },
+    "aigatewayLogAnalyticsWorkspaceId": { "value": "${AIGATEWAY_LOG_ANALYTICS_WORKSPACE_ID}" },
     "entraClientId": { "value": "${ENTRA_CLIENT_ID}" },
     "owners": { "value": "${POOL_OWNERS}" },
     "enableDelegatedAzureAccess": { "value": "${ENABLE_DELEGATED_AZURE_ACCESS=false}" }

@@ -4,35 +4,35 @@
 
 # Features and how it works
 
-What the app does, how a pool maps onto each kind of gateway, and what deploying a LiteLLM
-gateway creates. To get going, see the [step-by-step guide](getting-started.md).
+What the app does, how a pool maps onto each kind of gateway (APIM, LiteLLM, Azure AI Gateway),
+and what deploying a LiteLLM gateway creates. To get going, see the [step-by-step guide](getting-started.md).
 
 ## What it does
 
 | Area | What it does |
 | --- | --- |
 | **Setup wizard** | Four steps: **Sign in**, **AI gateway**, **Permissions** and **Gateway → Foundry**. It checks sign-in, the gateway (for LiteLLM: reachable, database connected, master key valid), its managed identity, your access to it and the gateway's access to Foundry. It fixes what your Azure rights allow and writes a ready-to-send admin request for the rest. Locally it also chooses the kind of gateway, and picks, creates, connects or deletes the gateway. |
-| **Gateway choice** | APIM: an existing service, or a new one. LiteLLM: sizes the gateway for your peak traffic and recommends Container Apps or AKS, deploys on Container Apps in one step, or creates a new AKS cluster and installs LiteLLM with HTTPS on it, or generates the files for a cluster you already have, or connects any LiteLLM proxy. Later, **Switch gateway** in the gateway panel (the gateway name in the top bar) opens the same choice, for either kind; the gateway you leave is not changed. Before switching, the app checks the new gateway: an APIM service has finished provisioning; a LiteLLM gateway has finished provisioning, isn't stopped, its master key can be read, and LiteLLM answers with its database connected. If it fails, you stay on the current gateway and see why, with **Switch anyway** to fix it in setup. |
+| **Gateway choice** | APIM: an existing service, or a new one. Azure AI Gateway: an existing gateway, or a new Standard one. LiteLLM: sizes the gateway for your peak traffic and recommends Container Apps or AKS, deploys on Container Apps in one step, or creates a new AKS cluster and installs LiteLLM with HTTPS on it, or generates the files for a cluster you already have, or connects any LiteLLM proxy. Later, **Switch gateway** in the gateway panel (the gateway name in the top bar) opens the same choice, for either kind; the gateway you leave is not changed. Before switching, the app checks the new gateway: an APIM service has finished provisioning; a LiteLLM gateway has finished provisioning, isn't stopped, its master key can be read, and LiteLLM answers with its database connected. If it fails, you stay on the current gateway and see why, with **Switch anyway** to fix it in setup. |
 | **Guided tour** | A two-minute walkthrough for people new to AI gateways. It runs once after setup; **Tour** in the top bar replays it. |
 | **Deployment discovery** | Lists the Azure OpenAI / Foundry deployments in your subscriptions, grouped by model, and imports the ones you select into a new or existing pool. |
 | **Deploy a model** | Creates a pay-per-token OpenAI model deployment in a Foundry account, using your own Azure rights, so you don't need the Foundry portal. |
-| **Pools** | Create and edit pools of 2–30 members in **Failover**, **Balanced** or **Weighted** mode. On APIM a pool is a `Pool` backend, with optional session affinity; on LiteLLM it is a model group whose ID is the model name clients send. |
+| **Pools** | Create and edit pools of 2–30 members in **Failover**, **Balanced** or **Weighted** mode. On APIM a pool is a `Pool` backend, with optional session affinity; on LiteLLM it is a model group whose ID is the model name clients send; on Azure AI Gateway it is a model alias, also called by its ID. |
 | **Members** | Edited inside their pool. Besides Foundry deployments, you can add any OpenAI-compatible endpoint (on LiteLLM with no auth, an API key stored by LiteLLM as an encrypted credential, or the gateway's managed identity). Members the app created go once no pool uses them. |
-| **Failure handling** | A pool setting written to every member. APIM: one circuit breaker rule. LiteLLM: the cooldown (how many failures in a minute bench a member, and for how long), retries on another member and the timeout per attempt. |
+| **Failure handling** | A pool setting written to every member. APIM: one circuit breaker rule. LiteLLM: the cooldown (how many failures in a minute bench a member, and for how long), retries on another member and the timeout per attempt. Azure AI Gateway: one failure rule on the alias (which answers count, retries on the same member, how long a failed member sits out) and the retries across members. |
 | **Pool API (APIM)** | Creating a pool also creates and binds an HTTP API for it, so clients have an endpoint right away. **API binding** points an existing API at a pool through its policy, with a diff preview first; unbinding restores the original policy byte for byte. |
 | **Model names and aliases (LiteLLM)** | The pool ID always works; aliases point other model names at the pool, so existing clients don't have to change. **View LiteLLM config** shows the pool as a LiteLLM `config.yaml` would write it (secrets left out), with a diff before you publish, and **Export YAML**. |
 | **Routing preview** | Shows how the gateway routes traffic through the pool and simulates failures, breaker trips or cooldowns, and recovery. |
-| **Test call** | Gets a test key (an APIM subscription key, or a LiteLLM virtual key), sends a test request from the page, shows which member answered, and gives ready-to-copy client code. |
+| **Test call** | Gets a test key (an APIM subscription key, a LiteLLM virtual key, or an AI Gateway API key, which opens every pool on that gateway), sends a test request from the page, shows which member answered, and gives ready-to-copy client code. |
 | **Load test** | Simulated users calling the pool, from its call guide or `scripts/benchmark.py`: throughput, latency and time-to-first-token percentiles, 429s and the members that answered (on APIM, through a bound API, the regions that answered), plus failovers on LiteLLM, with a verdict and exports. |
-| **Metrics** | Requests, availability, 429s and latency for the pool (from APIM's Azure Monitor metrics, or the LiteLLM gateway's OpenTelemetry traces in Application Insights), plus traffic share, tokens and latency per member from Azure Monitor. |
+| **Metrics** | Requests, availability, 429s and latency for the pool (from APIM's Azure Monitor metrics, the LiteLLM gateway's OpenTelemetry traces in Application Insights, or Azure AI Gateway's request logs in Log Analytics), plus traffic share, tokens and latency per member from Azure Monitor. |
 | **Gateway metrics** | The **Gateway metrics** tab: all the gateway's traffic (every API on APIM, every model on LiteLLM) and the load on what it runs on, from Azure Monitor. APIM: capacity on the classic tiers, the gateway's CPU and memory on the v2 tiers. LiteLLM on Container Apps: replicas against their maximum, and each replica's CPU and memory as a share of what it is given; on AKS the nodes' CPU and memory; and the PostgreSQL server deployed with it (CPU, memory, connections, storage). Values above 70% are marked busy, above 90% saturated. A gateway you connected by URL shows only its traffic. |
 | **Cost** | This month's spend for the gateway's resources and their list price. Open it from the gateway name in the top bar, which on LiteLLM also links LiteLLM's own admin UI: sign in as `admin` with the master key as the password. The app never shows the key; the panel gives the command that reads it with your own Azure rights (`az containerapp secret show` on Container Apps, `kubectl` on AKS). |
 | **Same model** | Refuses to save a pool whose Foundry members serve different models. The model is read from Azure, not guessed from the deployment name. |
 | **Pool quota** | Under a pool's members: the tokens and requests a minute its Foundry deployments allow together (each deployment's own `rateLimits`, else its capacity at 1,000 TPM and 6 RPM a unit). On LiteLLM it warns when that is less than the traffic the gateway was sized for. |
 | **Resize (LiteLLM)** | **Resize for new traffic** in the gateway panel sizes a gateway this app deployed for a new peak and lists every change before applying it with your own Azure rights: replicas, their size and scale trigger on Container Apps; the node range and LiteLLM's pods on AKS; the database when you tick it, and always when the server it has can't take the new replicas' connections. It warns that production traffic may be affected and waits for you to confirm; what it can't change in place comes as commands (zone redundancy, which Azure only sets when a Container Apps environment or a node pool is created, and the database's standby among them). On AKS the new size counts once Helm has applied it: a change that failed is offered again. |
-| **Removing** | Removes a pool, or everything this app created on the gateway, after showing exactly what will go. Locally it can also delete a gateway it created (an APIM service is soft-deleted and restorable for 48 hours; a LiteLLM gateway is gone for good). |
+| **Removing** | Removes a pool, or everything this app created on the gateway, after showing exactly what will go. Locally it can also delete a gateway it created (an APIM service is soft-deleted and restorable for 48 hours; a LiteLLM gateway or an Azure AI Gateway is deleted with everything in it). |
 | **Public app (APIM)** | A website on Container Apps where anyone signs in with their own Microsoft account and works with their own Azure rights; nothing is stored on the server. |
-| **Safety** | The app only changes and deletes what it created, and only after you have seen it. On APIM every update is ETag-conditional and it never rewrites policy it didn't write; on LiteLLM pools added elsewhere are shown read-only. Resources with a protected ID prefix (`POOL_MANAGER_PROTECTED_PREFIXES`) are read-only on both. |
+| **Safety** | The app only changes and deletes what it created, and only after you have seen it. On APIM every update is ETag-conditional and it never rewrites policy it didn't write; on LiteLLM pools added elsewhere are shown read-only; on Azure AI Gateway every update is ETag-conditional and aliases, models and providers it didn't create are read-only. Resources with a protected ID prefix (`POOL_MANAGER_PROTECTED_PREFIXES`) are read-only on both. |
 
 ### How a pool maps to APIM
 
@@ -88,6 +88,47 @@ Defaults for a new pool:
 - With more than one replica, cooldowns are only shared through Redis, which the sizer adds to
   every plan with more than one replica.
 
+### How a pool maps to Azure AI Gateway
+
+[Azure AI Gateway](https://learn.microsoft.com/azure/ai-gateway/overview) is its own Azure
+resource (`Microsoft.ApiManagement/aigateways`, API version `2026-11-01`), managed entirely
+through Azure Resource Manager, so the app works with it the way it works with APIM: with your
+Azure rights (or the hosted app's identity), and every update is ETag-conditional.
+
+| In the app | In AI Gateway (default workspace) |
+| --- | --- |
+| Pool | A model alias named after the pool, whose `aliasName` (the model clients send) is the pool ID, and whose `backendModels` are the members with `priority` (0 is preferred) and `weight` (1–100) |
+| Member | A model registration (`modelProviders/<provider>/models/<model>`) that names the Foundry deployment by its resource ID. The app gives each Foundry account it imports from one model provider of its own, which calls the account as the gateway's system-assigned identity (resource `https://cognitiveservices.azure.com/`) |
+| Custom member | A Custom model provider of its own with the endpoint's base URL and the key as a secret header (`api-key`, or `Authorization: Bearer`), and a model under it |
+| Failure handling | One failure rule on the alias, `failures[0]`: a CEL condition on the member's answer, the retries on the same member, and how long a failed member sits out (`excludeFor`); plus `maxRetryAttempts`, the extra sends of one request across the members |
+| Test key | One runtime API key for the gateway, `<prefix>test` |
+
+Defaults for a new pool:
+- **Failure rule:** a member that answers 408, 429 or 5xx, or doesn't answer at all (a timeout or
+  a refused connection), sits out 60 s; the request goes on to the next member at once.
+- **Retries:** 2 further sends of a request across the members.
+
+**Worth knowing about AI Gateway:**
+- **Priority alone is not failover.** Without a failure rule the alias passes a member's 429 or
+  500 straight to the client. The app always writes its rule, so a pool fails over.
+- **What the app didn't write stays as it is.** Child resources take no tags, so the app marks
+  its own in their description. Aliases, models and providers without that mark are shown
+  read-only. Saving one of its own pools keeps the alias's inline policies (token and cost
+  limits, IP filters), automatic model selection and session preference, and replaces only the
+  members, the failure rule and the retry limit.
+- **A key opens every pool.** AI Gateway runtime keys are gateway-wide, so the test key can call
+  every alias on the gateway. The app creates and reads it with your own Azure rights, never its
+  own identity, never reads the built-in `master` key, and the cleanup deletes it.
+- **Foundry User.** The gateway's identity needs *Foundry User* on each Foundry account (it also
+  covers Foundry's other models); the setup wizard checks and grants that one role.
+- **Metrics come from telemetry.** The Monitor tab reads the gateway's request logs and traces
+  (`OTelLogs`, `OTelSpans`) in the Log Analytics workspace behind the Application Insights
+  component its telemetry exporter sends to. Each attempt on a member writes one log, so
+  failovers and each member's attempts show. Without an exporter the tab says how to add one.
+  AI Gateway reports no load of its own, so the **Gateway metrics** tab shows its traffic only.
+- **Billed per request.** The list price is the Retail Prices API's `10k AI Gateway Requests`
+  meter; in November 2026 it listed no charge.
+
 ### Discovered deployments
 
 - **What is listed:** only `Succeeded` deployments in **OpenAI format** on `OpenAI` or `AIServices` accounts. Partner models (Anthropic, DeepSeek, xAI, …) use other inference paths and are skipped.
@@ -95,7 +136,8 @@ Defaults for a new pool:
 - **How clients call it:**
   - APIM appends the operation path, so clients call `https://<apim>/<api-path>/chat/completions?api-version=…` with the header `Ocp-Apim-Subscription-Key`. The API the app creates for a pool is already shaped this way. If you bind your own API instead, it must expose `/chat/completions` (or a catch-all `/*`), not `/deployments/{id}/…`.
   - LiteLLM: `https://<gateway>/v1/chat/completions` (or `/v1/responses`) with `Authorization: Bearer <virtual key>` and the pool ID or an alias as `model`.
-- **Auth:** members authenticate with the **gateway's managed identity**, because most accounts disable key auth. It needs **Cognitive Services OpenAI User** on each account; the setup wizard, the Deployments selection bar and the Test call tab check that and grant it if you may (**Grant access**), or give you an admin request with the exact `az role assignment create` command. On APIM the service's system-assigned identity must be on as well (**Turn on identity**), and an API you bind yourself must send the managed-identity token for `https://cognitiveservices.azure.com`.
+  - AI Gateway: `https://<gateway>.<region>.ai.gateway.azure.com/default/models/openai/v1/chat/completions` (or `/responses`) with `Authorization: Bearer <API key>` and the pool ID as `model`.
+- **Auth:** members authenticate with the **gateway's managed identity**, because most accounts disable key auth. It needs **Cognitive Services OpenAI User** on each account (on AI Gateway, **Foundry User**); the setup wizard, the Deployments selection bar and the Test call tab check that and grant it if you may (**Grant access**), or give you an admin request with the exact `az role assignment create` command. On APIM and AI Gateway the gateway's system-assigned identity must be on as well (**Turn on identity**), and an API you bind yourself must send the managed-identity token for `https://cognitiveservices.azure.com`.
 - **Caching:** results are cached for 5 minutes. **Refresh** rescans, which takes about 15 s for 25 accounts.
 
 ### A LiteLLM gateway on Container Apps

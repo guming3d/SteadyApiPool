@@ -2,10 +2,10 @@
 // English and has seen the product tour (it would cover the page on a first run).
 import { expect, test as base, type Page } from "@playwright/test"
 
-export type Product = "litellm" | "apim"
+export type Product = "litellm" | "apim" | "aigateway"
 export type Stage = "sign-in" | "ready" | "pool"
 
-export const GATEWAY = { litellm: "ai-gateway-contoso", apim: "apim-contoso" } as const
+export const GATEWAY = { litellm: "ai-gateway-contoso", apim: "apim-contoso", aigateway: "aigw-contoso" } as const
 // The pool the "pool" stage has in use (scripts/demo_server.py POOL).
 export const POOL = "gpt-5-6-luna"
 

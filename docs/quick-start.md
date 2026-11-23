@@ -22,10 +22,10 @@ remembers the sign-in.
 
 ## 3. Choose the gateway
 
-Pick **LiteLLM gateway** or **Azure API Management** (you can switch later), then **Use this
-gateway** or **Use this service** on one you have.
+Pick **LiteLLM gateway**, **Azure API Management** or **Azure AI Gateway** (you can switch
+later), then **Use this gateway** or **Use this service** on one you have.
 
-![Setup page, step 2: LiteLLM gateway or Azure API Management, with the LiteLLM gateways in a subscription, each with Use this gateway, plus Deploy a gateway and Connect a gateway](images/onboarding-2-choose-gateway.png)
+![Setup page, step 2: LiteLLM gateway, Azure API Management or Azure AI Gateway, with the LiteLLM gateways in a subscription, each with Use this gateway, plus Deploy a gateway and Connect a gateway](images/onboarding-2-choose-gateway.png)
 
 No APIM service yet? **Create an APIM service** fills everything in (the Basic v2 tier) and waits
 until the service is ready, usually a few minutes.
@@ -40,6 +40,10 @@ Container Apps or AKS and shows how it got there, then deploys it (5–25 minute
 **Connect a gateway** to use a LiteLLM proxy you already run.
 
 ![Size the gateway for your traffic: peak RPM, tokens, timeout and streaming, with the Container Apps plan recommended and How we got this open, beside the AKS plan](images/onboarding-2b-deploy-gateway.png)
+
+No AI Gateway yet? **Create an AI Gateway** creates a Standard one in the region you choose and
+waits until it is ready. For the Monitor tab, connect its telemetry to Application Insights once
+(see [Azure AI Gateway](getting-started.md#azure-ai-gateway)).
 
 ## 4. Pick the deployments to pool
 
@@ -63,7 +67,8 @@ and confirm.
 ## 6. Let the gateway call your models, and get a key
 
 On the **Test call** tab, **Grant all** lets the gateway's managed identity call your Foundry
-resources without API keys, and **Create a test key** gets a key that can call only this pool.
+resources without API keys, and **Create a test key** gets a key that can call only this pool
+(on AI Gateway, keys are gateway-wide: the test key can call every pool on the gateway).
 
 ![Test call tab: the endpoint and model names, Before you call, and Get a virtual key with Create a test key](images/onboarding-6-grant-and-key.png)
 

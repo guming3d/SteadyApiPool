@@ -1,5 +1,6 @@
-"""Runs the web UI against the tests' in-memory Azure, APIM service and LiteLLM gateway
-(backend/tests/fake_azure.py, apim/fake_apim.py, litellm/fake_litellm.py), so the UI can be
+"""Runs the web UI against the tests' in-memory Azure, APIM service, AI Gateway and LiteLLM
+gateway (backend/tests/fake_azure.py, apim/fake_apim.py, aigateway/fake_aigateway.py,
+litellm/fake_litellm.py), so the UI can be
 tried, and the README's screenshots retaken, without Azure. Nothing here reaches Azure: every
 ARM, gateway, log and price request goes to the fakes, and the real credential factories in
 deps.py refuse to build.
@@ -8,10 +9,11 @@ deps.py refuse to build.
     backend/.venv/Scripts/python scripts/demo_server.py     # bin/python on macOS and Linux
 
 Open http://127.0.0.1:8010. It starts signed out, like a first run. Sign in, then choose the
-LiteLLM gateway ai-gateway-contoso or the APIM service apim-contoso, or deploy a new gateway
-(the deployment finishes after a few polls), and you are at a gateway with Foundry deployments
-to pool. ``POST /demo/stage/<stage>?product=<apim|litellm>`` jumps to a stage: sign-in, ready,
-or pool (a pool already in use, with an hour of metrics).
+LiteLLM gateway ai-gateway-contoso, the APIM service apim-contoso or the AI Gateway
+aigw-contoso, or deploy a new gateway (the deployment finishes after a few polls), and you are at
+a gateway with Foundry deployments to pool. ``POST /demo/stage/<stage>?product=<apim|litellm|
+aigateway>`` jumps to a stage: sign-in, ready, or pool (a pool already in use, with an hour of
+metrics).
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ import time
 import zipfile
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -43,6 +46,12 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from pool_manager import deps  # noqa: E402
 from pool_manager.access import AccessChecker  # noqa: E402
+from pool_manager.aigateway.access import AiGatewayAccessChecker  # noqa: E402
+from pool_manager.aigateway.api_test import AiGatewayTester  # noqa: E402
+from pool_manager.aigateway.cost import AiGatewayCost  # noqa: E402
+from pool_manager.aigateway.metrics import AiGatewayMonitor  # noqa: E402
+from pool_manager.aigateway.service import AiGatewayService  # noqa: E402
+from pool_manager.aigateway.target import AiGatewayTargets  # noqa: E402
 from pool_manager.apim.access import ApimAccessChecker  # noqa: E402
 from pool_manager.apim.api_test import ApimTester  # noqa: E402
 from pool_manager.apim.cost import ApimCost  # noqa: E402
@@ -52,6 +61,11 @@ from pool_manager.apim.target import MANAGED_TAG, MANAGED_TAG_VALUE, ApimTargets
 from pool_manager.app import (  # noqa: E402
     app,
     get_access,
+    get_aigateway_cost,
+    get_aigateway_monitor,
+    get_aigateway_service,
+    get_aigateway_targets,
+    get_aigateway_tester,
     get_apim_cost,
     get_apim_monitor,
     get_apim_service,
@@ -81,8 +95,9 @@ from pool_manager.litellm.target import LiteLLMTargets  # noqa: E402
 from pool_manager.models import Product  # noqa: E402
 from pool_manager.secret_store import SecretStore  # noqa: E402
 from pool_manager.target import TargetChooser  # noqa: E402
+from tests.aigateway.fake_aigateway import FOUNDRY_USER, FakeAiGateway  # noqa: E402
 from tests.apim.fake_apim import FakeApim  # noqa: E402
-from tests.fake_azure import OPENAI_USER, SUBSCRIPTION, TENANT  # noqa: E402
+from tests.fake_azure import OPENAI_USER, RETAIL_PRICES, SUBSCRIPTION, TENANT  # noqa: E402
 from tests.litellm.fake_litellm import FakeLiteLLM  # noqa: E402
 
 GROUP = "rg-ai-gateway"
@@ -94,9 +109,26 @@ APIM_ID = (
     f"/subscriptions/{SUBSCRIPTION}/resourceGroups/{APIM_GROUP}"
     f"/providers/Microsoft.ApiManagement/service/{APIM_NAME}"
 )
+AIGW_GROUP = "rg-aigw"
+AIGW_NAME = "aigw-contoso"
+AIGW_ID = (
+    f"/subscriptions/{SUBSCRIPTION}/resourceGroups/{AIGW_GROUP}"
+    f"/providers/Microsoft.ApiManagement/aigateways/{AIGW_NAME}"
+)
+AIGW_HOST = f"{AIGW_NAME}.eastus2-01.ai.gateway.azure.com"
+AIGW_INSIGHTS = (
+    f"/subscriptions/{SUBSCRIPTION}/resourceGroups/{AIGW_GROUP}"
+    f"/providers/Microsoft.Insights/components/{AIGW_NAME}-insights"
+)
 POOL = "gpt-5-6-luna"
 WRITE = {"X-Pool-Manager": "1"}
-NO_TARGET = {"subscription_id": "", "resource_group": "", "apim_name": "", "gateway_name": ""}
+NO_TARGET = {
+    "subscription_id": "",
+    "resource_group": "",
+    "apim_name": "",
+    "aigateway_name": "",
+    "gateway_name": "",
+}
 TARGETS: dict[Product, dict[str, str]] = {
     "litellm": {
         "subscription_id": SUBSCRIPTION,
@@ -108,6 +140,12 @@ TARGETS: dict[Product, dict[str, str]] = {
         "subscription_id": SUBSCRIPTION,
         "resource_group": APIM_GROUP,
         "apim_name": APIM_NAME,
+        "tenant_id": TENANT,
+    },
+    "aigateway": {
+        "subscription_id": SUBSCRIPTION,
+        "resource_group": AIGW_GROUP,
+        "aigateway_name": AIGW_NAME,
         "tenant_id": TENANT,
     },
 }
@@ -168,18 +206,41 @@ class DemoCredential:
         self.signed_in = False
 
 
-class DemoAzure(FakeApim):
-    """An APIM service and a LiteLLM gateway's Azure. A LiteLLM deployment started from the
-    wizard finishes after a few status polls; on AKS the install in the cluster follows, and the
-    gateway answers with the key it was given. One whose name starts with "fail" has its
-    database fail instead, after creating a few resources, for the cleanup to delete. West US 3
-    has no Container Apps environment quota left, for the region check to refuse."""
+@dataclass
+class DemoAzure(FakeAiGateway, FakeApim):
+    """An APIM service's, an AI Gateway's and a LiteLLM gateway's Azure. A LiteLLM deployment
+    started from the wizard finishes after a few status polls; on AKS the install in the cluster
+    follows, and the gateway answers with the key it was given. One whose name starts with
+    "fail" has its database fail instead, after creating a few resources, for the cleanup to
+    delete. West US 3 has no Container Apps environment quota left, for the region check to
+    refuse."""
 
-    def __init__(self) -> None:
-        super().__init__(service_id=APIM_ID)
-        self.polls: dict[str, int] = {}
+    polls: dict[str, int] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        self.service_id = APIM_ID
+        self.gateway_id = AIGW_ID
+        self.principal = "aigw-contoso-mi"
+        self.host = AIGW_HOST
         self.aca_locations = [*self.aca_locations, "West US 3"]
         self.environments_free = {"westus3": 0}
+
+    def gateway_resource(
+        self, request: httpx.Request, caller: str, path: str, body: Any
+    ) -> httpx.Response | None:
+        if path.casefold() == AIGW_INSIGHTS.casefold():
+            workspace = AIGW_INSIGHTS.replace(
+                "Microsoft.Insights/components",
+                "Microsoft.OperationalInsights/workspaces",
+            )
+            return httpx.Response(
+                200, json={"id": path, "properties": {"WorkspaceResourceId": workspace}}
+            )
+        answer = FakeAiGateway.gateway_resource(self, request, caller, path, body)
+        if answer is not None:
+            return answer
+        return FakeApim.gateway_resource(self, request, caller, path, body)
 
     def _deployment(
         self, request: httpx.Request, caller: str, path: str, body: Any
@@ -307,6 +368,31 @@ def _seed(azure: DemoAzure) -> list[str]:
     )
     azure.add_service("apim-platform", group="rg-platform", subscription=SUBSCRIPTION)
     azure.add_resource_group(APIM_GROUP)
+    # The AI Gateway this app manages (listed in the wizard too) beside one someone else made.
+    azure.add_resource_group(AIGW_GROUP)
+    azure.add_aigateway(AIGW_NAME, group=AIGW_GROUP)
+    azure.gateways[AIGW_ID.casefold()]["identity"]["principalId"] = azure.principal
+    azure.add_aigateway("aigw-platform", group="rg-platform", managed=False)
+    azure.costs[AIGW_ID.casefold()] = (4.12, "USD")
+    azure.retail_prices = {
+        "eastus2": {
+            **RETAIL_PRICES,
+            "API Management": [
+                *RETAIL_PRICES["API Management"],
+                {
+                    "skuName": "AI Gateway",
+                    "meterName": "10k AI Gateway Requests",
+                    "unitOfMeasure": "10K",
+                    "retailPrice": 0,
+                },
+            ],
+        }
+    }
+    own_foundry = FOUNDRY_USER.replace("/subscriptions/sub/", f"/subscriptions/{SUBSCRIPTION}/")
+    azure.role_definitions[own_foundry.casefold()] = {
+        **azure.role_definitions[FOUNDRY_USER.casefold()],
+        "id": own_foundry,
+    }
     azure.gateway_url = f"https://{APIM_NAME}.azure-api.net"
     azure.costs[APIM_ID.casefold()] = (152.18, "USD")
     accounts = [
@@ -356,8 +442,13 @@ def _pool_in_use(azure: DemoAzure, accounts: list[str], product: Product) -> Non
     """A failover pool over the three gpt-5.6-luna deployments, in use: on LiteLLM with an alias
     and spans, on APIM with an API bound to it and its metrics."""
     client = TestClient(app)
+    principals = {
+        "apim": "apim-mi",
+        "aigateway": "aigw-contoso-mi",
+        "litellm": "gateway-mi",
+    }
     for account in accounts:
-        azure.grant_openai_user(account, "apim-mi" if product == "apim" else "gateway-mi")
+        azure.grant_openai_user(account, principals[product])
     refs = [
         (accounts[1], "gpt-5.6-luna"),
         (accounts[0], "gpt-5.6-luna"),
@@ -404,7 +495,11 @@ def _pool_in_use(azure: DemoAzure, accounts: list[str], product: Product) -> Non
         azure.add_metric(azure.service_id, "Duration", series(2100, 260, 1.0), ApiId=api_id)
         azure.add_metric(azure.service_id, "BackendDuration", series(1950, 240, 1.0), ApiId=api_id)
         return
-    client.post(f"/api/litellm/pools/{POOL}/aliases", json={"name": "gpt-5.6-luna"}, headers=WRITE)
+    if product == "aigateway":
+        azure.add_exporter(AIGW_INSIGHTS)
+    else:
+        alias = {"name": "gpt-5.6-luna"}
+        client.post(f"/api/litellm/pools/{POOL}/aliases", json=alias, headers=WRITE)
 
     azure.log_rows["by time"] = [
         {
@@ -418,6 +513,26 @@ def _pool_in_use(azure: DemoAzure, accounts: list[str], product: Product) -> Non
             "backend_ms": value(i, 1950, 240, 1.0),
         }
         for i in minutes
+    ]
+    # AI Gateway names the backend model that served each attempt.
+    models = (
+        {
+            member["id"]: member["resource_id"]
+            for member in client.get("/api/aigateway/backends").json()
+        }
+        if product == "aigateway"
+        else {}
+    )
+    shares = {
+        "swedencentral": (9310, 212, 205),
+        "eastus2": (207, 0, 0),
+        "westus3": (5, 0, 0),
+    }
+    azure.log_rows["by backend"] = [
+        {"backend": resource, "attempts": a, "failures": f, "throttled": t}
+        for name, resource in models.items()
+        for region, (a, f, t) in shares.items()
+        if region in name
     ]
     azure.log_rows["by host, target"] = [
         {
@@ -447,6 +562,8 @@ def _pool_in_use(azure: DemoAzure, accounts: list[str], product: Product) -> Non
 def _gateway_load(azure: DemoAzure, product: Product, series: Any) -> None:
     """The Gateway metrics tab: traffic of another client beside the pool's, and the load on the
     gateway's resources (a BasicV2 APIM's CPU and memory; the Container App and its database)."""
+    if product == "aigateway":
+        return  # A managed gateway: its traffic is in its logs, and it reports no load.
     if product == "apim":
         azure.add_metric(
             azure.service_id,
@@ -508,8 +625,7 @@ def _member_metrics(azure: DemoAzure, refs: list[tuple[str, str]], series: Any) 
 
 def wire(stage: str, product: Product = "litellm") -> None:
     """Points every dependency at fresh fakes, seeded for ``stage`` on a ``product`` gateway."""
-    azure = DemoAzure()
-    azure.litellm = DemoLiteLLM()
+    azure = DemoAzure(litellm=DemoLiteLLM())
     azure.callers[TOKEN] = "app"
     accounts = _seed(azure)
     credential = DemoCredential(signed_in=stage != "sign-in")
@@ -541,9 +657,15 @@ def _wire(
         sleep=lambda _: None,
     )
     apim = ApimService(settings, arm)
+    aigateway = AiGatewayService(settings, arm)
     litellm = LiteLLMService(settings, arm, gateway)
     product = settings.product if settings.has_target else None
-    members: MemberStore | None = {"apim": apim, "litellm": litellm, None: None}[product]
+    members: MemberStore | None = {
+        "apim": apim,
+        "aigateway": aigateway,
+        "litellm": litellm,
+        None: None,
+    }[product]
     discovery = DeploymentDiscovery(settings, arm, members)
 
     def discovered() -> list[str]:
@@ -552,6 +674,8 @@ def _wire(
     access: AccessChecker
     if product == "apim":
         access = ApimAccessChecker(settings, arm, apim, discovered, credential)  # type: ignore[arg-type]
+    elif product == "aigateway":
+        access = AiGatewayAccessChecker(settings, arm, aigateway, discovered, credential)  # type: ignore[arg-type]
     elif product == "litellm":
         access = LiteLLMAccessChecker(settings, arm, litellm, discovered, credential)  # type: ignore[arg-type]
     else:
@@ -588,6 +712,18 @@ def _wire(
             settings, apim, transport=httpx.MockTransport(_SlowGateway(azure.litellm)._apim)
         ),
         get_apim_monitor: ApimMonitor(settings, arm, apim),
+        get_aigateway_service: aigateway,
+        get_aigateway_targets: AiGatewayTargets(chooser),
+        get_aigateway_cost: AiGatewayCost(settings, aigateway, transport=azure.transport()),
+        # The test call goes to the gateway's host, which answers as in a load test.
+        get_aigateway_tester: AiGatewayTester(
+            settings,
+            aigateway,
+            transport=httpx.MockTransport(_SlowGateway(azure.litellm)._aigw),
+        ),
+        get_aigateway_monitor: AiGatewayMonitor(
+            settings, arm, aigateway, transport=azure.transport()
+        ),
         get_litellm_service: litellm,
         get_litellm_targets: LiteLLMTargets(
             chooser,
@@ -615,8 +751,17 @@ class _SlowGateway(httpx.AsyncBaseTransport):
         self._inner = litellm.transport()
         self._random = random.Random(7)
 
-    def _apim(self, request: httpx.Request) -> httpx.Response:
+    def _aigw(self, request: httpx.Request) -> httpx.Response:
+        """AI Gateway names the model that answered."""
         roll = self._random.random()
+        response = self._apim(request, roll)
+        del response.headers["apim-request-id"]
+        response.headers["x-ms-served-model"] = "gpt-5.6-luna-2026-09-03"
+        response.headers["x-request-id"] = f"demo-{roll:.6f}"
+        return response
+
+    def _apim(self, request: httpx.Request, roll: float | None = None) -> httpx.Response:
+        roll = self._random.random() if roll is None else roll
         if roll < 0.02:
             return httpx.Response(429, json={"error": {"code": "429", "message": "Rate limit"}})
         region = "East US 2" if roll < 0.75 else "Sweden Central" if roll < 0.95 else "West US 3"
@@ -634,6 +779,8 @@ class _SlowGateway(httpx.AsyncBaseTransport):
         await asyncio.sleep(self._random.uniform(0.4, 1.6))
         if request.url.host.endswith(".azure-api.net"):
             return self._apim(request)
+        if request.url.host.endswith(".ai.gateway.azure.com"):
+            return self._aigw(request)
         request.headers["x-demo-load-test"] = "1"
         response = await self._inner.handle_async_request(request)
         group = response.headers.get("x-litellm-model-group")
@@ -672,7 +819,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     parser.add_argument("--port", type=int, default=8010)
     parser.add_argument("--stage", choices=STAGES, default="sign-in")
-    parser.add_argument("--product", choices=("litellm", "apim"), default="litellm")
+    parser.add_argument("--product", choices=("litellm", "apim", "aigateway"), default="litellm")
     args = parser.parse_args()
     deps.ArmClient = _refuse  # type: ignore[assignment,misc]
     deps.LocalCredential = _refuse  # type: ignore[assignment,misc]

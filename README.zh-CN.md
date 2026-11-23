@@ -4,10 +4,11 @@
 
 本Solution是一个可以本地运行的Web应用，用户无需预先了解API网关的技术细节就能为你的Azure OpenAI/Foundry模型部署搭建一个**支持故障转移的 AI 网关**。应用会自动发现你的模型部署，并将同一模型的多个部署组合成一个**后端池**。客户端只需通过单一API Endpoint调用后端池，网关就会按策略（故障转移、轮询或加权）将请求分发给池中API节点；当某个API节点持续失败时，网关会将其暂时隔离，并按照策略把导入a。到其他后端节点。
 
-Solution支持两种网关类型：
+Solution支持三种网关类型：
 
 - **[Azure API Management](https://learn.microsoft.com/azure/api-management/)（APIM）**，微软Azure原生的API管理服务使用它原生的后端池，无需维护API网关本身的infra。
 - **[LiteLLM](https://github.com/BerriAI/litellm) 网关**，一个开源的 AI 网关。Solution根据用户选择部署到 Azure容器应用或AKS(Azure kubernets Service)上，连接你已在运行的网关，并为客户端提供 OpenAI 风格的模型名、别名和虚拟密钥。
+- **[Azure AI 网关](https://learn.microsoft.com/azure/ai-gateway/overview)**，微软专为 AI 流量提供的托管网关（`Microsoft.ApiManagement/aigateways`）。Solution使用你已有的网关或新建一个，并把每个后端池做成一个带失败规则的模型别名。
 
 ![后端池的路由预览选项卡：客户端用一个模型名调用网关，后端池把请求分配到多个区域的 Foundry 部署，并带有冷却和重试](docs/images/pool-routing.png)
 
@@ -30,17 +31,17 @@ Solution支持两种网关类型：
 *同一个后端池在两种网关上：主部署返回 429，网关在下一个API节点上重试，并让主部署暂停 60 秒，之后再把流量交还给它。
 动画中的文字为英文。*
 
-| | Azure API 管理 | LiteLLM |
-| --- | --- | --- |
-| 何时选择 | 你的组织已经在运行 APIM，或想要一个带有策略、产品和门户的 Azure 托管服务 | 你想要一个开源网关，可以自主做定制 |
-| 应用会设置什么 | 一个 APIM 服务（你已有的，或新建的基本 v2 服务），每个后端池一个 `Pool` 后端，以及一个绑定到它的 API | 容器应用上带 PostgreSQL 的 LiteLLM 代理（一步完成）或新的 AKS 群集，或连接你已有的网关；每个后端池一个模型组 |
-| 客户端如何调用 | `https://<apim>.azure-api.net/<api-path>/chat/completions?api-version=…`，带上 `Ocp-Apim-Subscription-Key` | `https://<gateway>/v1/chat/completions`，使用虚拟密钥，并把后端池 ID（或别名）作为模型 |
-| 失败处理 | 每个API节点一个断路器，API 策略中的重试，可选的会话感知 | 每个API节点的冷却，在另一个API节点上重试，Responses API 的后续请求固定发往最初响应的部署 |
-| 费用 | 服务所选的层（建议从基本 v2 开始；开发人员层没有 SLA），按小时计费 | 一个容器应用副本起价约每月 $46；部署前，规模计算器会按你的流量和区域为规模计算价格（标价） |
-| 其他形式 | [公开应用](docs/deploy.zh-CN.md#公开部署到-azure-容器应用)：任何人都可以用自己的 Azure 帐户登录 | — |
+| | Azure API 管理 | LiteLLM | Azure AI 网关 |
+| --- | --- | --- | --- |
+| 何时选择 | 你的组织已经在运行 APIM，或想要一个带有策略、产品和门户的 Azure 托管服务 | 你想要一个开源网关，可以自主做定制 | 你想要一个专为 AI 流量设计的 Azure 托管网关：OpenAI 风格的终结点，自己无需运维任何东西 |
+| 应用会设置什么 | 一个 APIM 服务（你已有的，或新建的基本 v2 服务），每个后端池一个 `Pool` 后端，以及一个绑定到它的 API | 容器应用上带 PostgreSQL 的 LiteLLM 代理（一步完成）或新的 AKS 群集，或连接你已有的网关；每个后端池一个模型组 | 一个 AI 网关（你已有的，或新建的标准网关），每个 Foundry 帐户一个模型提供程序，每个API节点一个模型，每个后端池一个模型别名 |
+| 客户端如何调用 | `https://<apim>.azure-api.net/<api-path>/chat/completions?api-version=…`，带上 `Ocp-Apim-Subscription-Key` | `https://<gateway>/v1/chat/completions`，使用虚拟密钥，并把后端池 ID（或别名）作为模型 | `https://<gateway>.<region>.ai.gateway.azure.com/default/models/openai/v1/chat/completions`，使用网关的 API 密钥，并把后端池 ID 作为模型 |
+| 失败处理 | 每个API节点一个断路器，API 策略中的重试，可选的会话感知 | 每个API节点的冷却，在另一个API节点上重试，Responses API 的后续请求固定发往最初响应的部署 | 别名上的失败规则：API节点返回 408、429 或 5xx，或没有响应时，暂停 60 秒，请求转到下一个API节点 |
+| 费用 | 服务所选的层（建议从基本 v2 开始；开发人员层没有 SLA），按小时计费 | 一个容器应用副本起价约每月 $46；部署前，规模计算器会按你的流量和区域为规模计算价格（标价） | 按请求计费（应用会显示标价；2026 年 11 月 Azure 尚未列出价格） |
+| 其他形式 | [公开应用](docs/deploy.zh-CN.md#公开部署到-azure-容器应用)：任何人都可以用自己的 Azure 帐户登录 | — | — |
 
-两种网关以相同的标识规则管理同样的 Foundry 部署（网关用它的托管标识调用部署，不使用密钥），你也可以在设置页上
-在两者之间切换。
+三种网关以相同的标识规则管理同样的 Foundry 部署（网关用它的托管标识调用部署，不使用密钥），你也可以在设置页上
+在它们之间切换。
 
 ### 能承载多少流量？
 
@@ -56,7 +57,7 @@ Solution支持两种网关类型：
 
 某个部署返回 429 或 500 时，两种网关都在一秒内把它的流量切换到下一个部署；使用真实模型时，超出一个部署配额
 的调用全部由后端池响应，而只用那一个部署时最多有 65% 被拒绝。规模、价格、故障转移的细节和测试方法见
-[性能测试](docs/benchmarks.zh-CN.md)。
+[性能测试](docs/benchmarks.zh-CN.md)。Azure AI 网关尚未做过性能测试。
 
 ## 快速开始
 
@@ -98,8 +99,8 @@ scripts/start-local.sh         # macOS、Linux、WSL
   获取密钥、发送第一个调用并查看指标。
 - [分步指南](docs/getting-started.zh-CN.md)：每一步的所有选项、在容器应用或 AKS 上部署 LiteLLM 网关、客户端代码、
   性能测试、问题排查，以及不用 Azure 的演示。
-- [功能与工作原理](docs/features.zh-CN.md)：应用的全部功能、后端池在 APIM 和 LiteLLM 中的对应关系，以及 LiteLLM
-  网关部署会创建什么、如何维护。
+- [功能与工作原理](docs/features.zh-CN.md)：应用的全部功能、后端池在 APIM、LiteLLM 和 Azure AI 网关中的对应关系，
+  以及 LiteLLM 网关部署会创建什么、如何维护。
 - [估算 LiteLLM 网关的规模](docs/sizing.zh-CN.md)：从客户的 RPM 和 token 数逐步算出容器应用副本、PostgreSQL、
   Redis 或 AKS 节点，附计算示例。
 - [性能测试](docs/benchmarks.zh-CN.md)：每种网关能承载多少流量、增加多少延迟，以及部署故障时客户端看到什么，均在 Azure

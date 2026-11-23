@@ -173,7 +173,19 @@ class FoundryModelCheck:
                 problem=f"no Azure OpenAI / Foundry account in the discovery subscriptions "
                 f"serves {host}; add its subscription to POOL_MANAGER_DISCOVERY_SUBSCRIPTIONS",
             )
-        deployment_id = f"{account_id}/deployments/{segment(deployment)}"
+        return self.resolve_deployment(
+            backend_id, f"{account_id}/deployments/{segment(deployment)}"
+        )
+
+    def resolve_deployment(self, backend_id: str, deployment_id: str) -> MemberModel:
+        """A member whose Foundry deployment is known by its ARM ID (AI Gateway's members
+        name it), wherever the account is."""
+
+        def result(**values: Any) -> MemberModel:
+            fields: dict[str, Any] = {"model_name": None, "model_version": None, "problem": None}
+            return MemberModel(backend_id=backend_id, **{**fields, **values})
+
+        deployment = deployment_id.rpartition("/")[2]
         try:
             body = self._arm.get_arm_json(
                 deployment_id, api_version=self._settings.cognitive_api_version
@@ -201,10 +213,23 @@ class FoundryModelCheck:
             **deployment_quota(body),
         )
 
-    def check(self, members: list[tuple[str, str | None]]) -> ModelCheck:
-        """``members`` are ``(backend_id, url)`` pairs in pool order."""
+    def check(
+        self,
+        members: list[tuple[str, str | None]],
+        deployment_ids: Mapping[str, str] | None = None,
+    ) -> ModelCheck:
+        """``members`` are ``(backend_id, url)`` pairs in pool order; ``deployment_ids`` gives
+        the Foundry deployment (ARM ID) of members that name theirs, by backend ID."""
+        known = dict(deployment_ids or {})
+
+        def resolve(member: tuple[str, str | None]) -> MemberModel:
+            deployment_id = known.get(member[0])
+            if deployment_id:
+                return self.resolve_deployment(member[0], deployment_id)
+            return self.resolve(*member)
+
         with ThreadPoolExecutor(max_workers=_WORKERS) as executor:
-            resolved = list(executor.map(lambda member: self.resolve(*member), members))
+            resolved = list(executor.map(resolve, members))
         # Model names compare case-insensitively; keep each one's first spelling and its members.
         groups: dict[str, tuple[str, list[str]]] = {}
         for member in resolved:

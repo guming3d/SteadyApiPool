@@ -65,8 +65,21 @@ azd env set GATEWAY_RESOURCE_GROUP <gateway-resource-group>   # default: the azd
 # azd env set GATEWAY_APP_INSIGHTS_ID <resource-id>   # optional: where its OpenTelemetry goes
 ```
 
-The kind follows from what you set: `GATEWAY_NAME` (or `GATEWAY_URL`) means LiteLLM, anything
-else APIM. `azd env set GATEWAY_PRODUCT apim` (or `litellm`) says it outright. Then:
+For **Azure AI Gateway**:
+
+```sh
+azd env set GATEWAY_PRODUCT aigateway
+# Use an existing AI Gateway...
+azd env set AIGATEWAY_NAME <gateway-name>
+azd env set AIGATEWAY_RESOURCE_GROUP <gateway-resource-group>   # default: the azd resource group
+# azd env set AIGATEWAY_SUBSCRIPTION_ID <id>                     # only if it is in another subscription
+# ...or set no AIGATEWAY_NAME to create aigw-<suffix> (Standard) in the azd resource group.
+# azd env set AIGATEWAY_LOG_ANALYTICS_WORKSPACE_ID <resource-id>  # optional: for the Metrics tab
+```
+
+The kind follows from what you set: `AIGATEWAY_NAME` means Azure AI Gateway, `GATEWAY_NAME` (or
+`GATEWAY_URL`) LiteLLM, anything else APIM. `azd env set GATEWAY_PRODUCT apim` (or `litellm`,
+`aigateway`) says it outright; a new AI Gateway needs it. Then:
 
 ```sh
 azd provision --preview                    # review the what-if first
@@ -81,7 +94,8 @@ az ad app update --id <appId> --web-redirect-uris "$(azd env get-value AUTH_REDI
 
 Open `WEB_APP_URL` and sign in. Users listed in `POOL_OWNERS` may make changes and see keys. With
 delegated Azure access (below), so may users whose own Azure roles already allow it: on APIM,
-every APIM write the app makes; on LiteLLM, reading the gateway's master key (a Container App
+every APIM write the app makes; on AI Gateway, every read and write the app makes there; on
+LiteLLM, reading the gateway's master key (a Container App
 secret), since they could change the gateway directly anyway. For a LiteLLM gateway outside
 Container Apps, only owners can. Everyone else is read-only. To restrict who can sign in at all,
 set *Assignment required* on the app's enterprise application.
@@ -128,11 +142,13 @@ button for that.
 | App Service Authentication (Easy Auth) | Entra sign-in is required on every path except `/health` |
 | APIM: API Management service `apim-pool-*` (only without `APIM_NAME`) | `BasicV2` by default (`APIM_SKU`), system-assigned identity for members, tagged `managed-by: apim-backend-pool`. It is billed from creation |
 | APIM: custom role *APIM Backend Pool Manager* on the service | `Insights/metrics/read` for the Metrics tab, `backends/*`, `namedValues/*`, `apis/read,write,delete` (it deletes only APIs it created, when their pool is removed), `apis/operations/write` and `apis/policies/read,write`, plus `Authorization/permissions/read` so setup can check the app's own access |
+| AI Gateway: an AI Gateway `aigw-*` (only without `AIGATEWAY_NAME`) | Standard, with a system-assigned identity for members, tagged `managed-by: steadyapipool`. It is billed per request |
+| AI Gateway: custom role *SteadyApiPool AI Gateway Manager* on the gateway | `aigateways/read`, `workspaces/aliases`, `workspaces/modelProviders` and `workspaces/modelProviders/models` read, write and delete (it changes and deletes only what it created), `workspaces/models/read`, `workspaces/telemetryExporters/read`, `apiKeys/delete` (only its test key, by the cleanup), `Insights/components/read` and `Insights/metrics/read`, and `Authorization/permissions/read`. It can't read or create runtime keys (the signed-in user does that with their own rights), change the gateway or call models. With `AIGATEWAY_LOG_ANALYTICS_WORKSPACE_ID`, also *Log Analytics Reader* on that workspace for the Metrics tab |
 | LiteLLM: custom role *AI Gateway Pool Manager* on the gateway's Container App and its Application Insights component (Container Apps gateways only) | `Microsoft.App/containerApps/read` and `listSecrets/action` (the gateway's URL, identity and master key; every pool change then goes through LiteLLM's admin API), `Insights/components/read` and `Insights/logs/*/read` for the Metrics tab, `Insights/metrics/read` for the Gateway metrics tab's replicas, CPU and memory (its database's need *Monitoring Reader* on the PostgreSQL server and *Reader* on the resource group, which this role doesn't give), and `Authorization/permissions/read` so setup can check the app's own access. It can't change the Container App, its database or anything else |
-| Custom role *APIM Backend Pool Deployment Reader* or *AI Gateway Pool Deployment Reader* per discovery subscription | `CognitiveServices/accounts/read` and `accounts/deployments/read`, `Insights/metrics/read` for the members' metrics, plus read-only `Authorization/permissions`, `roleAssignments` and `roleDefinitions` so setup can check the gateway's role on each account. It has no `listKeys` and cannot change roles. Turn it off with the Bicep parameter `enableDeploymentDiscovery=false`, and choose subscriptions with `discoverySubscriptionIds` (the default is the gateway's subscription) |
+| Custom role *APIM Backend Pool Deployment Reader*, *SteadyApiPool AI Gateway Deployment Reader* or *AI Gateway Pool Deployment Reader* per discovery subscription | `CognitiveServices/accounts/read` and `accounts/deployments/read`, `Insights/metrics/read` for the members' metrics, plus read-only `Authorization/permissions`, `roleAssignments` and `roleDefinitions` so setup can check the gateway's role on each account. It has no `listKeys` and cannot change roles. Turn it off with the Bicep parameter `enableDeploymentDiscovery=false`, and choose subscriptions with `discoverySubscriptionIds` (the default is the gateway's subscription) |
 
-The gateway's own identity needs *Cognitive Services OpenAI User* (or any role that allows
-inference) on each member account. The setup wizard checks this and, with delegated Azure access,
+The gateway's own identity needs *Cognitive Services OpenAI User* (on AI Gateway, *Foundry
+User*; or any role that allows inference) on each member account. The setup wizard checks this and, with delegated Azure access,
 grants it. On APIM, if member secrets reference Key Vault, its identity also needs *Key Vault
 Secrets User* on the vault.
 
@@ -141,7 +157,9 @@ Secrets User* on the vault.
 | Setting | Default | Purpose |
 | --- | --- | --- |
 | `POOL_MANAGER_SUBSCRIPTION_ID` / `_RESOURCE_GROUP` | required when deployed | Where the gateway is. Locally, leave the gateway settings out to choose, create or connect one on the setup page |
-| `POOL_MANAGER_APIM_NAME` | empty | An APIM service, with the two above. Don't set it with `_GATEWAY_NAME` |
+| `POOL_MANAGER_APIM_NAME` | empty | An APIM service, with the two above. Don't set it with `_GATEWAY_NAME` or `_AIGATEWAY_NAME` |
+| `POOL_MANAGER_AIGATEWAY_NAME` | empty | An Azure AI Gateway, with the two above |
+| `POOL_MANAGER_AIGATEWAY_API_VERSION` | `2026-11-01` | AI Gateway: the ARM API version for the gateway and its workspace |
 | `POOL_MANAGER_GATEWAY_NAME` | empty | A LiteLLM gateway's Container App, with the two above; or, with `_GATEWAY_URL`, the display name of a gateway elsewhere |
 | `POOL_MANAGER_GATEWAY_URL` | empty | A LiteLLM gateway elsewhere (AKS, any LiteLLM proxy with a database). `_SUBSCRIPTION_ID` is then only where deployments are searched by default |
 | `POOL_MANAGER_GATEWAY_MASTER_KEY` | empty | That gateway's master key. Required when deployed; locally the setup page can keep it encrypted instead |
@@ -150,7 +168,7 @@ Secrets User* on the vault.
 | `POOL_MANAGER_POOL_API_VERSION` | `2025-09-01-preview` | APIM: API version for pool reads and writes. With `2024-05-01`, session affinity is disabled because GA cannot carry `sessionAffinity` |
 | `POOL_MANAGER_TENANT_ID` | from the setup page | Tenant of the subscription, so local tokens are requested there |
 | `POOL_MANAGER_OWNERS` | empty | Who may make changes |
-| `POOL_MANAGER_RBAC_WRITERS` | `true` | Also let users make changes whose own Azure roles allow it (APIM: every write the app makes; LiteLLM: reading the master key). Needs delegated Azure access |
+| `POOL_MANAGER_RBAC_WRITERS` | `true` | Also let users make changes whose own Azure roles allow it (APIM and AI Gateway: every write the app makes; LiteLLM: reading the master key). Needs delegated Azure access |
 | `POOL_MANAGER_DELEGATED_ACCESS` | `false` | Set by `enableDelegatedAzureAccess`: Easy Auth provides the user's ARM token, so setup can fix access |
 | `POOL_MANAGER_DISCOVERY_SUBSCRIPTIONS` | the gateway's subscription | Comma-separated subscriptions scanned for deployments |
 | `POOL_MANAGER_PROTECTED_PREFIXES` | empty | Comma-separated ID prefixes shown read-only, for resources another tool manages (e.g. `finops-`) |

@@ -2,7 +2,7 @@
 // are in apim/types.ts and litellm/types.ts.
 
 /** The gateway product the app manages. */
-export type Product = "apim" | "litellm"
+export type Product = "apim" | "litellm" | "aigateway"
 
 export type PoolMember = { backend_id: string; priority: number; weight: number }
 
@@ -130,8 +130,9 @@ export type SetupStatus = "ok" | "action" | "blocked" | "pending" | "unknown" | 
 /** Fixes the app performs itself; anything else is an admin request. */
 export type SetupFix =
   | "sign_in" | "consent" | "refresh_token" | "select_gateway"
-  // APIM: turn on the service's identity. LiteLLM: an external gateway's master key is unknown.
-  | "enable_apim_identity" | "connect_gateway"
+  // APIM and AI Gateway: turn on the gateway's identity. LiteLLM: an external gateway's master
+  // key is unknown.
+  | "enable_apim_identity" | "enable_aigateway_identity" | "connect_gateway"
   | "grant_foundry_access"
 
 export type SetupKind =

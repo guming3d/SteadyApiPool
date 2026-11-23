@@ -119,23 +119,29 @@ SUBSCRIPTION="${POOL_MANAGER_SUBSCRIPTION_ID:-$(env_value POOL_MANAGER_SUBSCRIPT
 RESOURCE_GROUP="${POOL_MANAGER_RESOURCE_GROUP:-$(env_value POOL_MANAGER_RESOURCE_GROUP)}"
 APIM_NAME="${POOL_MANAGER_APIM_NAME:-$(env_value POOL_MANAGER_APIM_NAME)}"
 GATEWAY_NAME="${POOL_MANAGER_GATEWAY_NAME:-$(env_value POOL_MANAGER_GATEWAY_NAME)}"
+AIGATEWAY_NAME="${POOL_MANAGER_AIGATEWAY_NAME:-$(env_value POOL_MANAGER_AIGATEWAY_NAME)}"
 GATEWAY_URL="${POOL_MANAGER_GATEWAY_URL:-$(env_value POOL_MANAGER_GATEWAY_URL)}"
 AUTH_MODE="${POOL_MANAGER_AUTH_MODE:-$(env_value POOL_MANAGER_AUTH_MODE)}"
-# The gateway is optional here (the setup page chooses one). An APIM service or a LiteLLM
-# Container App needs its subscription, resource group and name; a LiteLLM gateway elsewhere
-# needs its name and URL.
-NAME="$APIM_NAME$GATEWAY_NAME"
-if [ -n "$APIM_NAME" ] && [ -n "$GATEWAY_NAME$GATEWAY_URL" ]; then
-  fail "backend/.env names both an APIM service and a LiteLLM gateway; keep one."
+# The gateway is optional here (the setup page chooses one). An APIM service, an AI Gateway or
+# a LiteLLM Container App needs its subscription, resource group and name; a LiteLLM gateway
+# elsewhere needs its name and URL.
+NAME="$APIM_NAME$AIGATEWAY_NAME$GATEWAY_NAME"
+KINDS=0
+for value in "$APIM_NAME" "$AIGATEWAY_NAME" "$GATEWAY_NAME$GATEWAY_URL"; do
+  [ -n "$value" ] && KINDS=$((KINDS + 1))
+done
+if [ "$KINDS" -gt 1 ]; then
+  fail "backend/.env names more than one gateway (APIM, AI Gateway, LiteLLM); keep one."
 elif [ -n "$GATEWAY_URL" ]; then
   [ -n "$GATEWAY_NAME" ] || fail "POOL_MANAGER_GATEWAY_URL needs POOL_MANAGER_GATEWAY_NAME in backend/.env."
 elif [ -n "$SUBSCRIPTION$RESOURCE_GROUP$NAME" ] \
   && { [ -z "$SUBSCRIPTION" ] || [ -z "$RESOURCE_GROUP" ] || [ -z "$NAME" ]; }; then
-  fail "Set POOL_MANAGER_SUBSCRIPTION_ID, POOL_MANAGER_RESOURCE_GROUP and POOL_MANAGER_APIM_NAME (or POOL_MANAGER_GATEWAY_NAME) in backend/.env, or remove them to choose the gateway in the app."
+  fail "Set POOL_MANAGER_SUBSCRIPTION_ID, POOL_MANAGER_RESOURCE_GROUP and POOL_MANAGER_APIM_NAME (or POOL_MANAGER_AIGATEWAY_NAME, or POOL_MANAGER_GATEWAY_NAME) in backend/.env, or remove them to choose the gateway in the app."
 fi
 if [ "$SUBSCRIPTION" = "00000000-0000-0000-0000-000000000000" ] \
   || [ "$RESOURCE_GROUP" = "my-apim-rg" ] || [ "$APIM_NAME" = "my-apim" ] \
-  || [ "$RESOURCE_GROUP" = "my-gateway-rg" ] || [ "$GATEWAY_NAME" = "my-gateway" ]; then
+  || [ "$RESOURCE_GROUP" = "my-gateway-rg" ] || [ "$GATEWAY_NAME" = "my-gateway" ] \
+  || [ "$RESOURCE_GROUP" = "my-aigateway-rg" ] || [ "$AIGATEWAY_NAME" = "my-aigateway" ]; then
   fail "backend/.env still has the example gateway values; set real ones or remove them to choose the gateway in the app."
 fi
 # Locally there is no App Service Authentication, so easy_auth would answer 401 to everything.

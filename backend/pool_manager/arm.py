@@ -1,5 +1,5 @@
 """Minimal Azure Resource Manager client, scoped to the gateway's resource when it has one: the
-APIM service, or a LiteLLM gateway's Container App."""
+APIM service, the AI Gateway, or a LiteLLM gateway's Container App."""
 
 from __future__ import annotations
 
@@ -52,6 +52,9 @@ def gateway_resource_id(settings: Settings) -> str:
     )
     if settings.product == "apim":
         return f"{group}/providers/Microsoft.ApiManagement/service/{segment(settings.apim_name)}"
+    if settings.product == "aigateway":
+        name = segment(settings.aigateway_name)
+        return f"{group}/providers/Microsoft.ApiManagement/aigateways/{name}"
     if settings.product == "litellm" and not settings.external:
         return f"{group}/providers/Microsoft.App/containerApps/{segment(settings.gateway_name)}"
     return ""

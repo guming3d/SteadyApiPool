@@ -1,5 +1,6 @@
 import { createContext, useContext, useMemo, useState, type ReactNode } from "react"
 
+import { aigatewayEn, aigatewayZh } from "./aigateway/messages"
 import { apimEn, apimZh } from "./apim/messages"
 import { litellmEn, litellmZh } from "./litellm/messages"
 import type { Product } from "./types"
@@ -523,9 +524,11 @@ const zh = {
   productLitellmHint: "开源的 AI 网关：本应用可以把它部署到 Azure 容器应用或 AKS，也可以连接你已有的网关。",
   productApim: "Azure API 管理",
   productApimHint: "使用 API 管理的原生后端池，通过 API 的策略把后端池绑定到 API。",
+  productAigateway: "Azure AI 网关",
+  productAigatewayHint: "Microsoft 托管的 AI 网关：后端池就是模型别名，按请求计费。",
   // Before a gateway is chosen; each product words these its own way once one is.
   chkTarget: "选择或创建网关",
-  chkTargetHint: "选择 Azure API 管理服务或 LiteLLM 网关：从你可访问的订阅中选择已有的，或在这里新建一个。无需事先了解它们。",
+  chkTargetHint: "选择 Azure API 管理服务、Azure AI 网关或 LiteLLM 网关：从你可访问的订阅中选择已有的，或在这里新建一个。无需事先了解它们。",
   // The load test, in each pool's call guide.
   benchPresets: "测试规模",
   benchPresetSmoke: "快速检查",
@@ -1105,9 +1108,11 @@ const en: SharedMessages = {
   productLitellmHint: "An open-source AI gateway. This app deploys it on Azure Container Apps or AKS, or connects one you already run.",
   productApim: "Azure API Management",
   productApimHint: "APIM's native backend pools, bound to an API through its policy.",
+  productAigateway: "Azure AI Gateway",
+  productAigatewayHint: "Microsoft's managed AI gateway: pools are model aliases, billed per request.",
   // Before a gateway is chosen; each product words these its own way once one is.
   chkTarget: "Choose or create a gateway",
-  chkTargetHint: "Pick an Azure API Management service or a LiteLLM gateway: one in a subscription you can access, or a new one created right here. No know-how needed.",
+  chkTargetHint: "Pick an Azure API Management service, an Azure AI Gateway or a LiteLLM gateway: one in a subscription you can access, or a new one created right here. No know-how needed.",
   // The load test, in each pool's call guide.
   benchPresets: "Test size",
   benchPresetSmoke: "Smoke",
@@ -1172,8 +1177,11 @@ const en: SharedMessages = {
 /** What each product's components see: the shared strings with the product's laid over them. */
 export type ApimMessages = SharedMessages & Record<keyof typeof apimZh, string>
 export type LitellmMessages = SharedMessages & Record<keyof typeof litellmZh, string>
-/** What shared components see: the shared strings, and those both products word their own way. */
-export type Messages = SharedMessages & Record<keyof typeof apimZh & keyof typeof litellmZh, string>
+export type AigatewayMessages = SharedMessages & Record<keyof typeof aigatewayZh, string>
+/** The strings every product words its own way (AI Gateway's messages must have them all). */
+export type ProductMessageKey = keyof typeof apimZh & keyof typeof litellmZh
+/** What shared components see: the shared strings, and those every product words its own way. */
+export type Messages = SharedMessages & Record<ProductMessageKey, string>
 export type MessageKey = keyof Messages
 
 /** Fills `{name}` placeholders; list values are joined the way the locale writes lists. */
@@ -1190,6 +1198,8 @@ const SHARED: Record<Locale, SharedMessages> = { zh, en }
 const PRODUCT: Record<Product, Record<Locale, Record<string, string>>> = {
   apim: { zh: apimZh, en: apimEn },
   litellm: { zh: litellmZh, en: litellmEn },
+  // Shared components read these keys from every product, so AI Gateway words them all.
+  aigateway: { zh: aigatewayZh satisfies Record<ProductMessageKey, string>, en: aigatewayEn },
 }
 const STORAGE_KEY = "ai-gateway-pool:locale"
 
@@ -1218,6 +1228,7 @@ export function LocaleProvider({ children }: { children: ReactNode }) {
  *  the chosen product (or nothing, for LiteLLM's wording where a product has none yet). */
 export function useI18n(product: "apim"): { locale: Locale; t: ApimMessages; setLocale: (l: Locale) => void }
 export function useI18n(product: "litellm"): { locale: Locale; t: LitellmMessages; setLocale: (l: Locale) => void }
+export function useI18n(product: "aigateway"): { locale: Locale; t: AigatewayMessages; setLocale: (l: Locale) => void }
 export function useI18n(product?: Product | null): { locale: Locale; t: Messages; setLocale: (l: Locale) => void }
 export function useI18n(product?: Product | null) {
   const { locale, setLocale } = useContext(LocaleContext)

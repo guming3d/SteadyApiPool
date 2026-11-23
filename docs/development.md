@@ -8,10 +8,10 @@
 
 ```
 SteadyApiPool/
-├── backend/    FastAPI app (pool_manager: shared code, apim/ and litellm/) + tests; serves the
-│               built frontend
-├── frontend/   React/Vite UI (src/apim, src/litellm and the shared rest; built into
-│               backend/pool_manager/static)
+├── backend/    FastAPI app (pool_manager: shared code, apim/, litellm/ and aigateway/) + tests;
+│               serves the built frontend
+├── frontend/   React/Vite UI (src/apim, src/litellm, src/aigateway and the shared rest; built
+│               into backend/pool_manager/static)
 ├── infra/      Bicep: the LiteLLM gateway on Container Apps and AKS (infra/gateway), and the App
 │               Service hosting of this app with Easy Auth and least-privilege roles
 ├── deploy/     The public multi-tenant app on Container Apps (APIM only; its own azd project)
@@ -150,8 +150,10 @@ cd ../frontend && npm test && npm run build
 Backend tests run against an in-memory Azure (`tests/fake_azure.py`: ARM, template deployments,
 permissions and roles, Foundry, Azure Monitor, Log Analytics, Cost Management and Retail Prices),
 an in-memory APIM on top of it (`tests/apim/fake_apim.py`, which enforces ETags and `If-Match` /
-`If-None-Match`) and an in-memory LiteLLM proxy (`tests/litellm/fake_litellm.py`, its admin API
-and chat completions, modelled on v1.106). No Azure access is needed.
+`If-None-Match`), an in-memory Azure AI Gateway (`tests/aigateway/fake_aigateway.py`: the gateway,
+its workspace's model providers, models, aliases and exporters, API keys, with ETags and secrets
+that are never returned) and an in-memory LiteLLM proxy (`tests/litellm/fake_litellm.py`, its admin
+API and chat completions, modelled on v1.106). No Azure access is needed.
 
 An opt-in integration test runs the LiteLLM service layer against a **real** LiteLLM proxy with
 PostgreSQL and two fake Azure OpenAI regions in Docker (`tests/litellm/litellm_stack/`). It checks that

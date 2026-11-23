@@ -102,3 +102,11 @@ test("the terminal command for an APIM API", () => {
     '$env:APIM_KEY = "<your-subscription-key>"\nbackend\\.venv\\Scripts\\python scripts\\benchmark.py --gateway apim --url https://apim.azure-api.net/gpt-4o --model gpt-4o --api-version 2024-10-21 --key-header api-key --users 2 --duration 30',
   )
 })
+
+test("the terminal command for an AI Gateway pool", () => {
+  const url = "https://aigw.eastus2-01.ai.gateway.azure.com/default/models/openai/v1"
+  assert.equal(
+    cliCommand({ url, model: "gpt6", spec: DEFAULT_SPEC, windows: true, aigateway: true }),
+    '$env:AIGATEWAY_KEY = "<your-api-key>"\nbackend\\.venv\\Scripts\\python scripts\\benchmark.py --gateway aigateway --url ' + url + " --model gpt6 --users 2 --duration 30",
+  )
+})

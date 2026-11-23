@@ -61,8 +61,21 @@ azd env set GATEWAY_RESOURCE_GROUP <gateway-resource-group>   # 默认为 azd �
 # azd env set GATEWAY_APP_INSIGHTS_ID <resource-id>   # 可选：它的 OpenTelemetry 发送到哪里
 ```
 
-网关类型由你设置的内容决定：设置了 `GATEWAY_NAME`（或 `GATEWAY_URL`）表示 LiteLLM，否则为 APIM。
-`azd env set GATEWAY_PRODUCT apim`（或 `litellm`）可以明确指定。然后：
+对于 **Azure AI 网关**：
+
+```sh
+azd env set GATEWAY_PRODUCT aigateway
+# 使用已有的 AI 网关……
+azd env set AIGATEWAY_NAME <gateway-name>
+azd env set AIGATEWAY_RESOURCE_GROUP <gateway-resource-group>   # 默认：azd 资源组
+# azd env set AIGATEWAY_SUBSCRIPTION_ID <id>                     # 仅当它在另一个订阅中时
+# ……或不设置 AIGATEWAY_NAME，在 azd 资源组中新建 aigw-<suffix>（标准）。
+# azd env set AIGATEWAY_LOG_ANALYTICS_WORKSPACE_ID <resource-id>  # 可选：用于指标监控选项卡
+```
+
+网关类型由你设置的内容决定：设置了 `AIGATEWAY_NAME` 表示 Azure AI 网关，`GATEWAY_NAME`（或 `GATEWAY_URL`）表示
+LiteLLM，否则为 APIM。`azd env set GATEWAY_PRODUCT apim`（或 `litellm`、`aigateway`）可以明确指定；新建 AI 网关时
+必须指定。然后：
 
 ```sh
 azd provision --preview                    # 先查看 what-if 结果
@@ -76,7 +89,7 @@ az ad app update --id <appId> --web-redirect-uris "$(azd env get-value AUTH_REDI
 ```
 
 打开 `WEB_APP_URL` 并登录。`POOL_OWNERS` 中列出的用户可以进行更改并查看密钥。启用委托的 Azure 访问（见下文）后，
-自身 Azure 角色已经允许的用户也可以：在 APIM 上，指应用所做的每项 APIM 写入操作；在 LiteLLM 上，指读取网关的
+自身 Azure 角色已经允许的用户也可以：在 APIM 上，指应用所做的每项 APIM 写入操作；在 AI 网关上，指应用在那里所做的每项读取和写入；在 LiteLLM 上，指读取网关的
 主密钥（容器应用机密），因为他们本来就能直接更改网关。对于不在容器应用上的 LiteLLM 网关，只有所有者可以。其他人
 都是只读的。如果要限制谁能登录，请在应用的企业应用程序上设置*需要分配*。
 
@@ -119,10 +132,12 @@ az ad app federated-credential create --id $APP_ID --parameters "{
 | App Service 身份验证（Easy Auth） | 除 `/health` 外的每个路径都需要 Entra 登录 |
 | APIM：API 管理服务 `apim-pool-*`（仅在未设置 `APIM_NAME` 时） | 默认为 `BasicV2`（`APIM_SKU`），带有供API节点使用的系统分配托管标识，并标记 `managed-by: apim-backend-pool`。从创建起开始计费 |
 | APIM：服务上的自定义角色 *APIM Backend Pool Manager* | 用于指标监控选项卡的 `Insights/metrics/read`、`backends/*`、`namedValues/*`、`apis/read,write,delete`（只在删除后端池时删除它自己创建的 API）、`apis/operations/write` 和 `apis/policies/read,write`，以及让设置检查应用自身访问权限的 `Authorization/permissions/read` |
+| AI 网关：AI 网关 `aigw-*`（仅在未设置 `AIGATEWAY_NAME` 时） | 标准，带用于API节点的系统分配托管标识，带有标记 `managed-by: steadyapipool`。按请求计费 |
+| AI 网关：网关上的自定义角色 *SteadyApiPool AI Gateway Manager* | `aigateways/read`，`workspaces/aliases`、`workspaces/modelProviders` 和 `workspaces/modelProviders/models` 的读取、写入和删除（它只更改和删除自己创建的内容），`workspaces/models/read`、`workspaces/telemetryExporters/read`，`apiKeys/delete`（仅由清理删除它的测试密钥），`Insights/components/read` 和 `Insights/metrics/read`，以及 `Authorization/permissions/read`。它不能读取或创建运行时密钥（由登录的用户用自己的权限完成），不能更改网关，也不能调用模型。设置了 `AIGATEWAY_LOG_ANALYTICS_WORKSPACE_ID` 时，还会在该工作区上获得 *Log Analytics 读者*，供指标监控选项卡使用 |
 | LiteLLM：网关的容器应用及其 Application Insights 组件上的自定义角色 *AI Gateway Pool Manager*（仅容器应用上的网关） | `Microsoft.App/containerApps/read` 和 `listSecrets/action`（网关的 URL、标识和主密钥；之后每次后端池更改都通过 LiteLLM 的管理 API 进行），用于指标监控选项卡的 `Insights/components/read` 和 `Insights/logs/*/read`，用于网关指标选项卡中副本数、CPU 和内存的 `Insights/metrics/read`（数据库的指标需要 PostgreSQL 服务器上的*监视读者*和资源组上的*读者*角色，此角色不提供），以及让设置检查应用自身访问权限的 `Authorization/permissions/read`。它不能更改容器应用、数据库或其他任何内容 |
-| 每个发现订阅上的自定义角色 *APIM Backend Pool Deployment Reader* 或 *AI Gateway Pool Deployment Reader* | `CognitiveServices/accounts/read` 和 `accounts/deployments/read`，用于API节点指标的 `Insights/metrics/read`，以及只读的 `Authorization/permissions`、`roleAssignments` 和 `roleDefinitions`，让设置可以检查网关在每个帐户上的角色。它没有 `listKeys`，也不能更改角色。用 Bicep 参数 `enableDeploymentDiscovery=false` 关闭，用 `discoverySubscriptionIds` 选择订阅（默认为网关所在订阅） |
+| 每个发现订阅上的自定义角色 *APIM Backend Pool Deployment Reader*、*SteadyApiPool AI Gateway Deployment Reader* 或 *AI Gateway Pool Deployment Reader* | `CognitiveServices/accounts/read` 和 `accounts/deployments/read`，用于API节点指标的 `Insights/metrics/read`，以及只读的 `Authorization/permissions`、`roleAssignments` 和 `roleDefinitions`，让设置可以检查网关在每个帐户上的角色。它没有 `listKeys`，也不能更改角色。用 Bicep 参数 `enableDeploymentDiscovery=false` 关闭，用 `discoverySubscriptionIds` 选择订阅（默认为网关所在订阅） |
 
-网关自身的标识需要每个API节点帐户上的 *Cognitive Services OpenAI User*（或任何允许推理的角色）。设置向导会检查这一点，
+网关自身的标识需要每个API节点帐户上的 *Cognitive Services OpenAI User*（在 AI 网关上为 *Foundry User*；或任何允许推理的角色）。设置向导会检查这一点，
 并在启用委托的 Azure 访问时授予。在 APIM 上，如果API节点的机密引用 Key Vault，它的标识还需要该保管库上的
 *Key Vault Secrets User* 角色。
 
@@ -131,7 +146,9 @@ az ad app federated-credential create --id $APP_ID --parameters "{
 | 设置 | 默认值 | 用途 |
 | --- | --- | --- |
 | `POOL_MANAGER_SUBSCRIPTION_ID` / `_RESOURCE_GROUP` | 部署时必填 | 网关所在的位置。在本地可以不设置网关相关的设置，在设置页上选择、新建或连接网关 |
-| `POOL_MANAGER_APIM_NAME` | 空 | APIM 服务，与上面两项一起设置。不要与 `_GATEWAY_NAME` 同时设置 |
+| `POOL_MANAGER_APIM_NAME` | 空 | APIM 服务，与上面两项一起设置。不要与 `_GATEWAY_NAME` 或 `_AIGATEWAY_NAME` 同时设置 |
+| `POOL_MANAGER_AIGATEWAY_NAME` | 空 | Azure AI 网关，与上面两项一起设置 |
+| `POOL_MANAGER_AIGATEWAY_API_VERSION` | `2026-11-01` | AI 网关：网关及其工作区使用的 ARM API 版本 |
 | `POOL_MANAGER_GATEWAY_NAME` | 空 | LiteLLM 网关的容器应用，与上面两项一起设置；或与 `_GATEWAY_URL` 一起设置，作为其他地方的网关的显示名称 |
 | `POOL_MANAGER_GATEWAY_URL` | 空 | 其他地方的 LiteLLM 网关（AKS，任何带数据库的 LiteLLM 代理）。此时 `_SUBSCRIPTION_ID` 只是默认搜索部署的订阅 |
 | `POOL_MANAGER_GATEWAY_MASTER_KEY` | 空 | 该网关的主密钥。部署时必填；在本地也可以改由设置页加密保存 |
@@ -140,7 +157,7 @@ az ad app federated-credential create --id $APP_ID --parameters "{
 | `POOL_MANAGER_POOL_API_VERSION` | `2025-09-01-preview` | APIM：读写后端池使用的 API 版本。使用 `2024-05-01` 时会禁用会话感知，因为 GA 版本无法携带 `sessionAffinity` |
 | `POOL_MANAGER_TENANT_ID` | 来自设置页 | 订阅所在的租户，本地令牌会向该租户请求 |
 | `POOL_MANAGER_OWNERS` | 空 | 谁可以进行更改 |
-| `POOL_MANAGER_RBAC_WRITERS` | `true` | 自身 Azure 角色允许的用户也可以进行更改（APIM：应用所做的每项写入操作；LiteLLM：读取主密钥）。需要委托的 Azure 访问 |
+| `POOL_MANAGER_RBAC_WRITERS` | `true` | 自身 Azure 角色允许的用户也可以进行更改（APIM 和 AI 网关：应用所做的每项写入操作；LiteLLM：读取主密钥）。需要委托的 Azure 访问 |
 | `POOL_MANAGER_DELEGATED_ACCESS` | `false` | 由 `enableDelegatedAzureAccess` 设置：Easy Auth 提供用户的 ARM 令牌，让设置可以修复访问问题 |
 | `POOL_MANAGER_DISCOVERY_SUBSCRIPTIONS` | 网关所在订阅 | 扫描部署的订阅，以逗号分隔 |
 | `POOL_MANAGER_PROTECTED_PREFIXES` | 空 | 以只读方式显示的 ID 前缀，以逗号分隔，用于由其他工具管理的资源（例如 `finops-`） |

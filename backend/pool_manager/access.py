@@ -12,12 +12,12 @@ Three identities matter:
   one in AZURE_CLIENT_ID) calls the Foundry members and needs a data-plane role on each.
 
 Effective permissions come from ``Microsoft.Authorization/permissions`` (what the caller may do
-at a scope), so a check never needs more than read access. Fixes are limited to one role
-(Cognitive Services OpenAI User), granted to the gateway's identity on accounts this app knows
-about.
+at a scope), so a check never needs more than read access. Fixes are limited to one role per
+product (Cognitive Services OpenAI User; Foundry User on AI Gateway), granted to the gateway's
+identity on accounts this app knows about.
 
-``AccessChecker`` runs the report; ``apim/access.py`` and ``litellm/access.py`` check their
-gateway (its target, access, health and identity).
+``AccessChecker`` runs the report; ``apim/access.py``, ``litellm/access.py`` and
+``aigateway/access.py`` check their gateway (its target, access, health and identity).
 """
 
 from __future__ import annotations
@@ -70,6 +70,10 @@ INFERENCE_DATA_ACTION = (
 )
 OPENAI_USER_ROLE = "Cognitive Services OpenAI User"
 OPENAI_USER_ROLE_ID = "5e0bd9bd-7b93-4f28-af87-19fc36ad61bd"
+# What Azure AI Gateway's own tooling grants its identity on a Foundry account: it also covers
+# Foundry's other model providers.
+FOUNDRY_USER_ROLE = "Foundry User"
+FOUNDRY_USER_ROLE_ID = "53ca6127-db72-4b80-b1b0-d745d6d5456d"
 DISCOVERY_FALLBACK_ROLE = "Reader"
 ARM_AUDIENCES = frozenset({"https://management.azure.com", "https://management.core.windows.net"})
 
@@ -230,6 +234,9 @@ class AccessChecker:
     discovery_role = ""
     # Who calls the Foundry members, for the role request.
     identity_label = "gateway managed identity"
+    # The one role the setup fix grants that identity on a Foundry account.
+    foundry_role = OPENAI_USER_ROLE
+    foundry_role_id = OPENAI_USER_ROLE_ID
     # The gateway has its own health to check (LiteLLM: its admin API and database).
     checks_health = False
 
@@ -778,10 +785,10 @@ class AccessChecker:
         return AdminRequest(
             assignee=f"{self._settings.target_name} ({self.identity_label})",
             assignee_id=principal,
-            role=OPENAI_USER_ROLE,
+            role=self.foundry_role,
             scope=account,
             command=f"az role assignment create --assignee-object-id {principal} "
-            f'--assignee-principal-type ServicePrincipal --role "{OPENAI_USER_ROLE}" '
+            f'--assignee-principal-type ServicePrincipal --role "{self.foundry_role}" '
             f'--scope "{account}"',
             portal_url=portal(account, "users"),
         )
@@ -815,7 +822,7 @@ class AccessChecker:
         for account in account_ids:
             subscription = account.split("/")[2]
             name = uuid.uuid5(
-                uuid.NAMESPACE_URL, f"{account.casefold()}|{principal}|{OPENAI_USER_ROLE_ID}"
+                uuid.NAMESPACE_URL, f"{account.casefold()}|{principal}|{self.foundry_role_id}"
             )
             try:
                 user.request(
@@ -827,7 +834,7 @@ class AccessChecker:
                     json_body={
                         "properties": {
                             "roleDefinitionId": f"/subscriptions/{subscription}/providers/"
-                            f"Microsoft.Authorization/roleDefinitions/{OPENAI_USER_ROLE_ID}",
+                            f"Microsoft.Authorization/roleDefinitions/{self.foundry_role_id}",
                             "principalId": principal,
                             "principalType": "ServicePrincipal",
                         }
@@ -848,7 +855,7 @@ class AccessChecker:
             logger.info(
                 "%s granted %s to gateway identity %s on %s",
                 actor,
-                OPENAI_USER_ROLE,
+                self.foundry_role,
                 principal,
                 account,
             )

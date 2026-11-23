@@ -23,9 +23,9 @@
 
 ## 3. 选择网关
 
-选择 **LiteLLM 网关**或 **Azure API 管理**（之后也可以切换），然后在已有的网关上点击**使用此网关**或**使用此服务**。
+选择 **LiteLLM 网关**、**Azure API 管理**或 **Azure AI 网关**（之后也可以切换），然后在已有的网关上点击**使用此网关**或**使用此服务**。
 
-![设置页第 2 步：选择 LiteLLM 网关或 Azure API 管理，以及订阅中的 LiteLLM 网关，每个都有“使用此网关”按钮，另有“部署网关”和“连接已有网关”](images/onboarding-2-choose-gateway.png)
+![设置页第 2 步：选择 LiteLLM 网关、Azure API 管理或 Azure AI 网关，以及订阅中的 LiteLLM 网关，每个都有“使用此网关”按钮，另有“部署网关”和“连接已有网关”](images/onboarding-2-choose-gateway.png)
 
 还没有 APIM 服务？**新建 APIM 服务**会填好所有内容（基本 v2 层），并等到服务就绪，通常需要几分钟。
 
@@ -38,6 +38,9 @@
 LiteLLM 代理，点击**连接已有网关**。
 
 ![按你的流量确定网关规模：峰值 RPM、token、超时和流式传输，推荐容器应用的规模并展开了计算过程，旁边是 AKS 的规模](images/onboarding-2b-deploy-gateway.png)
+
+还没有 AI 网关？**新建 AI 网关**会在你选择的区域中创建一个标准网关，并等到它就绪。要使用指标监控选项卡，需要先把它的
+遥测连接到 Application Insights（见 [Azure AI 网关](getting-started.zh-CN.md#azure-ai-网关)）。
 
 ## 4. 选择要放进后端池的部署
 
@@ -59,7 +62,7 @@ LiteLLM 代理，点击**连接已有网关**。
 ## 6. 允许网关调用你的模型，并获取密钥
 
 在**调用测试**选项卡上，**全部授予**让网关的托管标识无需 API 密钥即可调用你的 Foundry 资源，**创建测试密钥**
-会获取一个只能调用此后端池的密钥。
+会获取一个只能调用此后端池的密钥（在 AI 网关上，密钥作用于整个网关：测试密钥可以调用网关上的所有后端池）。
 
 ![调用测试选项卡：终结点与模型名、调用前检查，以及获取虚拟密钥和“创建测试密钥”](images/onboarding-6-grant-and-key.png)
 

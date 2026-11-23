@@ -21,11 +21,21 @@ GA_API_VERSION = "2024-05-01"
 DEFAULT_POOL_API_VERSION = "2025-09-01-preview"
 # LiteLLM: Container Apps' GA ARM API version.
 CONTAINER_APPS_API_VERSION = "2025-01-01"
+# AI Gateway (Microsoft.ApiManagement/aigateways): its first GA API version.
+AIGATEWAY_API_VERSION = "2026-11-01"
 
 # An APIM service is addressed by these.
 APIM_FIELDS = ("subscription_id", "resource_group", "apim_name")
 # A LiteLLM gateway on Container Apps by these; an external one (e.g. on AKS) by its URL.
 LITELLM_FIELDS = ("subscription_id", "resource_group", "gateway_name")
+# An Azure AI Gateway by these.
+AIGATEWAY_FIELDS = ("subscription_id", "resource_group", "aigateway_name")
+# What addresses each product's gateway (an external LiteLLM gateway is its URL instead).
+PRODUCT_FIELDS: dict[Product, tuple[str, ...]] = {
+    "apim": APIM_FIELDS,
+    "litellm": LITELLM_FIELDS,
+    "aigateway": AIGATEWAY_FIELDS,
+}
 # What the setup wizard saves with the chosen gateway, per product. Never a master key.
 SAVED_FIELDS: dict[Product, tuple[str, ...]] = {
     "apim": (*APIM_FIELDS, "tenant_id"),
@@ -39,6 +49,7 @@ SAVED_FIELDS: dict[Product, tuple[str, ...]] = {
         "gateway_provisioning",
         "gateway_started_at",
     ),
+    "aigateway": (*AIGATEWAY_FIELDS, "tenant_id"),
 }
 # Where the local app remembers the gateway chosen in the setup wizard.
 STATE_FILE = Path(__file__).resolve().parent.parent / ".pool-manager.json"
@@ -47,12 +58,14 @@ STATE_FILE = Path(__file__).resolve().parent.parent / ".pool-manager.json"
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="POOL_MANAGER_", env_file=".env", extra="ignore")
 
-    # The gateway to manage: an APIM service (apim_name) or a LiteLLM gateway (gateway_name),
-    # never both. Set in the environment (or .env) it is fixed; locally it may be left out and
-    # chosen, created or connected in the setup wizard instead.
+    # The gateway to manage: an APIM service (apim_name), a LiteLLM gateway (gateway_name) or an
+    # Azure AI Gateway (aigateway_name), only one of them. Set in the environment (or .env) it is
+    # fixed; locally it may be left out and chosen, created or connected in the setup wizard.
     subscription_id: str = ""
     resource_group: str = ""
     apim_name: str = ""
+    # An Azure AI Gateway (Microsoft.ApiManagement/aigateways), managed entirely through ARM.
+    aigateway_name: str = ""
     # A LiteLLM gateway on Azure Container Apps is its Container App: the app reads the gateway's
     # URL, identity and master key (a Container App secret) through ARM.
     gateway_name: str = ""
@@ -77,6 +90,7 @@ class Settings(BaseSettings):
     api_version: str = GA_API_VERSION
     pool_api_version: str = DEFAULT_POOL_API_VERSION
     container_apps_api_version: str = CONTAINER_APPS_API_VERSION
+    aigateway_api_version: str = AIGATEWAY_API_VERSION
 
     # Prefix for members, named values and keys this app creates.
     id_prefix: str = Field(default="pool-", pattern=r"^[a-z0-9-]{1,20}$")
@@ -138,6 +152,8 @@ class Settings(BaseSettings):
         """The kind of gateway chosen, from which name is set; None until one is."""
         if self.apim_name:
             return "apim"
+        if self.aigateway_name:
+            return "aigateway"
         if self.gateway_name or self.gateway_url:
             return "litellm"
         return None
@@ -151,6 +167,8 @@ class Settings(BaseSettings):
     def has_target(self) -> bool:
         if self.product == "apim":
             return all(getattr(self, name) for name in APIM_FIELDS)
+        if self.product == "aigateway":
+            return all(getattr(self, name) for name in AIGATEWAY_FIELDS)
         if self.external:
             return bool(self.gateway_name)
         return all(getattr(self, name) for name in LITELLM_FIELDS)
@@ -158,7 +176,7 @@ class Settings(BaseSettings):
     @property
     def target_name(self) -> str:
         """The chosen gateway's name, whichever product it is."""
-        return self.apim_name or self.gateway_name
+        return self.apim_name or self.aigateway_name or self.gateway_name
 
     @property
     def local(self) -> bool:
@@ -225,10 +243,17 @@ class Settings(BaseSettings):
         hosted = os.environ.get("WEBSITE_SITE_NAME") or os.environ.get("CONTAINER_APP_NAME")
         if self.local and hosted:
             raise RuntimeError("POOL_MANAGER_AUTH_MODE=disabled is not allowed on Azure hosting")
-        if self.apim_name and (self.gateway_name or self.gateway_url):
-            raise RuntimeError(
-                "Set POOL_MANAGER_APIM_NAME (APIM) or POOL_MANAGER_GATEWAY_NAME (LiteLLM), not both"
+        chosen = [
+            name
+            for name, given in (
+                ("POOL_MANAGER_APIM_NAME (APIM)", self.apim_name),
+                ("POOL_MANAGER_AIGATEWAY_NAME (AI Gateway)", self.aigateway_name),
+                ("POOL_MANAGER_GATEWAY_NAME (LiteLLM)", self.gateway_name or self.gateway_url),
             )
+            if given
+        ]
+        if len(chosen) > 1:
+            raise RuntimeError(f"Set only one of {' or '.join(chosen)}")
         if self.public:
             self._validate_public()
             return
@@ -240,7 +265,7 @@ class Settings(BaseSettings):
                     "POOL_MANAGER_GATEWAY_URL needs POOL_MANAGER_GATEWAY_MASTER_KEY when deployed"
                 )
             return
-        fields = LITELLM_FIELDS if self.product == "litellm" else APIM_FIELDS
+        fields = PRODUCT_FIELDS[self.product or "apim"]
         names = [f"POOL_MANAGER_{name.upper()}" for name in fields]
         given = [bool(getattr(self, name)) for name in fields]
         if any(given) and not all(given):
@@ -249,8 +274,9 @@ class Settings(BaseSettings):
         if self.auth_mode != "disabled" and not all(given):
             raise RuntimeError(
                 "Set POOL_MANAGER_SUBSCRIPTION_ID, POOL_MANAGER_RESOURCE_GROUP and "
-                "POOL_MANAGER_APIM_NAME (APIM) or POOL_MANAGER_GATEWAY_NAME (LiteLLM on Container "
-                "Apps), or POOL_MANAGER_GATEWAY_NAME and POOL_MANAGER_GATEWAY_URL"
+                "POOL_MANAGER_APIM_NAME (APIM), POOL_MANAGER_AIGATEWAY_NAME (AI Gateway) or "
+                "POOL_MANAGER_GATEWAY_NAME (LiteLLM on Container Apps), or "
+                "POOL_MANAGER_GATEWAY_NAME and POOL_MANAGER_GATEWAY_URL"
             )
 
     def _validate_public(self) -> None:
@@ -259,7 +285,7 @@ class Settings(BaseSettings):
         # Each user chooses their own service and subscriptions; nothing is shared.
         shared = [
             f"POOL_MANAGER_{name.upper()}"
-            for name in (*APIM_FIELDS, "gateway_name", "gateway_url")
+            for name in (*APIM_FIELDS, "aigateway_name", "gateway_name", "gateway_url")
             if getattr(self, name)
         ]
         if self.discovery_subscriptions:
@@ -296,7 +322,7 @@ def saved_product(target: Mapping[str, object]) -> Product | None:
     """Which product a saved target is for. Files from before both products were in one app
     have no ``product``; their fields tell."""
     product = target.get("product")
-    if product == "apim" or product == "litellm":
+    if product == "apim" or product == "litellm" or product == "aigateway":
         return product
     if target.get("apim_name"):
         return "apim"
@@ -328,8 +354,7 @@ def read_saved_target(path: Path | None = None) -> dict[str, str] | None:
     values = {name: str(target.get(name) or "") for name in SAVED_FIELDS[product]}
     if product == "litellm" and values["gateway_url"]:
         return values if values["gateway_name"] else None
-    required = APIM_FIELDS if product == "apim" else LITELLM_FIELDS
-    return values if all(values[name] for name in required) else None
+    return values if all(values[name] for name in PRODUCT_FIELDS[product]) else None
 
 
 def save_target(product: Product, target: Mapping[str, str], path: Path | None = None) -> None:

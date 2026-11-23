@@ -6,6 +6,7 @@ test.use({ setupSeen: false })
 const choices: { product: Product; kind: RegExp; gateway: string }[] = [
   { product: "litellm", kind: /^LiteLLM gateway/, gateway: "ai-gateway-contoso" },
   { product: "apim", kind: /^Azure API Management/, gateway: "apim-contoso" },
+  { product: "aigateway", kind: /^Azure AI Gateway/, gateway: "aigw-contoso" },
 ]
 
 for (const { product, kind, gateway } of choices) {

@@ -7,6 +7,8 @@
 //   Azure Container Apps in one step, or on a new AKS cluster), then name it here. The gateway is
 //   never changed here: its secrets are generated once when it is deployed, and a re-provision
 //   must not rotate them.
+// - an Azure AI Gateway (product 'aigateway'): give an existing one with aigatewayName, or leave it
+//   empty to create a new one in this resource group. An existing gateway is never changed here.
 targetScope = 'resourceGroup'
 
 @minLength(1)
@@ -16,8 +18,8 @@ param environmentName string
 
 param location string = resourceGroup().location
 
-@allowed([ '', 'apim', 'litellm' ])
-@description('The kind of gateway: apim or litellm. Empty decides from the names given: a LiteLLM gateway has gatewayName (or gatewayUrl), anything else is APIM.')
+@allowed([ '', 'apim', 'litellm', 'aigateway' ])
+@description('The kind of gateway: apim, litellm or aigateway. Empty decides from the names given: an AI Gateway has aigatewayName, a LiteLLM gateway gatewayName (or gatewayUrl), anything else is APIM.')
 param product string = ''
 
 // -- APIM ----------------------------------------------------------------------------------
@@ -68,7 +70,21 @@ param gatewayPrincipalId string = ''
 @description('LiteLLM, with gatewayUrl: resource ID of the Application Insights component its OpenTelemetry goes to, for the Monitor tab.')
 param gatewayAppInsightsId string = ''
 
-// -- both ----------------------------------------------------------------------------------
+// -- AI Gateway ----------------------------------------------------------------------------
+
+@description('AI Gateway: the gateway to manage. Empty (with product aigateway) creates a new one in this resource group.')
+param aigatewayName string = ''
+
+@description('AI Gateway: resource group of an existing gateway. Defaults to this resource group.')
+param aigatewayResourceGroup string = resourceGroup().name
+
+@description('AI Gateway: subscription of an existing gateway. Defaults to this subscription.')
+param aigatewaySubscriptionId string = subscription().subscriptionId
+
+@description('AI Gateway: resource ID of the Log Analytics workspace behind its Application Insights, for the Monitor tab (the app gets Log Analytics Reader there). Empty = none.')
+param aigatewayLogAnalyticsWorkspaceId string = ''
+
+// -- every product -------------------------------------------------------------------------
 
 @description('Client ID of the Entra app registration used for App Service Authentication (see README).')
 param entraClientId string
@@ -90,17 +106,26 @@ param appServiceSkuName string = 'B1'
 
 var suffix = uniqueString(subscription().id, resourceGroup().id, environmentName)
 var tags = { 'azd-env-name': environmentName }
-var isApim = product == 'apim' || (empty(product) && empty(gatewayName) && empty(gatewayUrl))
+var isAigateway = product == 'aigateway' || (empty(product) && !empty(aigatewayName))
+var isApim = !isAigateway && (product == 'apim' || (empty(product) && empty(gatewayName) && empty(gatewayUrl)))
+var isLitellm = !isApim && !isAigateway
 var createApim = isApim && empty(apimName)
-var external = !isApim && !empty(gatewayUrl)
-var targetSubscription = isApim ? (createApim ? subscription().subscriptionId : apimSubscriptionId) : gatewaySubscriptionId
-var targetGroup = isApim ? (createApim ? resourceGroup().name : apimResourceGroup) : gatewayResourceGroup
+var createAigateway = isAigateway && empty(aigatewayName)
+var external = isLitellm && !empty(gatewayUrl)
+var targetSubscription = isApim
+  ? (createApim ? subscription().subscriptionId : apimSubscriptionId)
+  : isAigateway ? (createAigateway ? subscription().subscriptionId : aigatewaySubscriptionId) : gatewaySubscriptionId
+var targetGroup = isApim
+  ? (createApim ? resourceGroup().name : apimResourceGroup)
+  : isAigateway ? (createAigateway ? resourceGroup().name : aigatewayResourceGroup) : gatewayResourceGroup
 var discoverySubscriptions = empty(discoverySubscriptionIds) ? [ targetSubscription ] : discoverySubscriptionIds
 // Each product keeps the role names and assignment seeds its deployments have always used, so a
 // re-provision updates them in place.
 var discoveryRole = isApim
   ? { name: 'APIM Backend Pool Deployment Reader', seed: 'apim-backend-pool-discovery' }
-  : { name: 'AI Gateway Pool Deployment Reader', seed: 'ai-gateway-pool-discovery' }
+  : isAigateway
+      ? { name: 'SteadyApiPool AI Gateway Deployment Reader', seed: 'steadyapipool-aigateway-discovery' }
+      : { name: 'AI Gateway Pool Deployment Reader', seed: 'ai-gateway-pool-discovery' }
 // Easy Auth uses this identity as a federated credential of the app registration instead of a
 // client secret. The system-assigned identity stays the one that calls ARM.
 var authCredentialSetting = 'OVERRIDE_USE_MI_FIC_ASSERTION_CLIENTID'
@@ -126,6 +151,17 @@ module newApim 'modules/apim.bicep' = if (createApim) {
 
 // Read from the module so the app and its role wait until a new service exists.
 var managedApimName = createApim ? newApim!.outputs.name : apimName
+
+module newAigateway 'modules/aigateway.bicep' = if (createAigateway) {
+  name: 'steadyapipool-aigateway-${suffix}'
+  params: {
+    name: 'aigw-${suffix}'
+    location: location
+    tags: tags
+  }
+}
+
+var managedAigatewayName = createAigateway ? newAigateway!.outputs.name : aigatewayName
 
 resource plan 'Microsoft.Web/serverfarms@2024-11-01' = {
   name: 'plan-pool-${suffix}'
@@ -167,6 +203,8 @@ resource site 'Microsoft.Web/sites@2024-11-01' = {
       ], isApim ? [
         { name: 'POOL_MANAGER_APIM_NAME', value: managedApimName }
         { name: 'POOL_MANAGER_POOL_API_VERSION', value: poolApiVersion }
+      ] : isAigateway ? [
+        { name: 'POOL_MANAGER_AIGATEWAY_NAME', value: managedAigatewayName }
       ] : [
         { name: 'POOL_MANAGER_GATEWAY_NAME', value: gatewayName }
       ], external ? [
@@ -237,11 +275,29 @@ module apimAccess 'modules/apim-rbac.bicep' = if (isApim) {
 }
 
 // A LiteLLM gateway elsewhere is reached with its master key; on Container Apps the app reads it.
-module gatewayAccess 'modules/litellm-rbac.bicep' = if (!isApim && !external) {
+module gatewayAccess 'modules/litellm-rbac.bicep' = if (isLitellm && !external) {
   name: 'ai-gateway-pool-rbac-${suffix}'
   scope: resourceGroup(targetSubscription, targetGroup)
   params: {
     gatewayName: gatewayName
+    principalId: site.identity.principalId
+  }
+}
+
+module aigatewayAccess 'modules/aigateway-rbac.bicep' = if (isAigateway) {
+  name: 'steadyapipool-aigateway-rbac-${suffix}'
+  scope: resourceGroup(targetSubscription, targetGroup)
+  params: {
+    gatewayName: managedAigatewayName
+    principalId: site.identity.principalId
+  }
+}
+
+module aigatewayLogs 'modules/log-reader.bicep' = if (isAigateway && !empty(aigatewayLogAnalyticsWorkspaceId)) {
+  name: 'steadyapipool-aigateway-logs-${suffix}'
+  scope: resourceGroup(split(aigatewayLogAnalyticsWorkspaceId, '/')[2], split(aigatewayLogAnalyticsWorkspaceId, '/')[4])
+  params: {
+    workspaceName: last(split(aigatewayLogAnalyticsWorkspaceId, '/'))
     principalId: site.identity.principalId
   }
 }
@@ -260,9 +316,10 @@ output AZURE_LOCATION string = location
 output WEB_APP_NAME string = site.name
 output WEB_APP_URL string = 'https://${site.properties.defaultHostName}'
 output WEB_APP_PRINCIPAL_ID string = site.identity.principalId
-output GATEWAY_PRODUCT string = isApim ? 'apim' : 'litellm'
+output GATEWAY_PRODUCT string = isApim ? 'apim' : isAigateway ? 'aigateway' : 'litellm'
 output APIM_SERVICE_NAME string = isApim ? managedApimName : ''
-output GATEWAY_NAME string = isApim ? '' : gatewayName
+output GATEWAY_NAME string = isLitellm ? gatewayName : ''
+output AIGATEWAY_NAME string = isAigateway ? managedAigatewayName : ''
 output AUTH_REDIRECT_URI string = 'https://${site.properties.defaultHostName}/.auth/login/aad/callback'
 // For the app registration's federated credential (README "Delegated Azure access").
 output AUTH_FIC_ISSUER string = '${environment().authentication.loginEndpoint}${tenant().tenantId}/v2.0'

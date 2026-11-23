@@ -1,6 +1,6 @@
 """FastAPI entry point: JSON API under ``/api`` and the built frontend at ``/``.
 
-The routes are in routes.py (shared), apim/routes.py and litellm/routes.py.
+The routes are in routes.py (shared), apim/routes.py, litellm/routes.py and aigateway/routes.py.
 """
 
 from __future__ import annotations
@@ -18,10 +18,16 @@ from fastapi import APIRouter, FastAPI, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 
 from . import routes
+from .aigateway import routes as aigateway_routes
 from .apim import routes as apim_routes
 from .config import Settings, get_settings
 from .deps import (
     get_access,
+    get_aigateway_cost,
+    get_aigateway_monitor,
+    get_aigateway_service,
+    get_aigateway_targets,
+    get_aigateway_tester,
     get_apim_cost,
     get_apim_monitor,
     get_apim_service,
@@ -54,6 +60,11 @@ STATIC_DIR = Path(__file__).parent / "static"
 __all__ = [
     "app",
     "get_access",
+    "get_aigateway_cost",
+    "get_aigateway_monitor",
+    "get_aigateway_service",
+    "get_aigateway_targets",
+    "get_aigateway_tester",
     "get_apim_cost",
     "get_apim_monitor",
     "get_apim_service",
@@ -79,6 +90,7 @@ api = APIRouter(prefix="/api")
 api.include_router(routes.router)
 api.include_router(apim_routes.router)
 api.include_router(litellm_routes.router)
+api.include_router(aigateway_routes.router)
 
 
 @asynccontextmanager

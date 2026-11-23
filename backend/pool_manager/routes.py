@@ -75,7 +75,11 @@ GUID = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F
 TenantQuery = Annotated[str | None, Query(pattern=GUID)]
 SubscriptionQuery = Annotated[str, Query(pattern=GUID)]
 
-PRODUCT_NAMES: dict[Product, str] = {"apim": "an APIM service", "litellm": "a LiteLLM gateway"}
+PRODUCT_NAMES: dict[Product, str] = {
+    "apim": "an APIM service",
+    "litellm": "a LiteLLM gateway",
+    "aigateway": "an AI Gateway",
+}
 
 
 def require_target(settings: SettingsDep) -> None:

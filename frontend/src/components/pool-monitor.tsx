@@ -330,7 +330,7 @@ export function PoolMonitor({ product, poolId, active, portalUrl, external = fal
         </>}
         {data.members.length > 0 && <section className="monitor-section">
           <header><b>{t.monMembers}</b><span className="muted">{t.monMembersHint}</span></header>
-          <MemberTable members={data.members} withAttempts={product === "litellm"} t={t} />
+          <MemberTable members={data.members} withAttempts={product !== "apim"} t={t} />
         </section>}
         <p className="muted monitor-note">{t.monDelayNote}</p>
       </>}

@@ -15,6 +15,12 @@ from typing import Annotated
 from fastapi import Depends, Request
 
 from .access import AccessChecker
+from .aigateway.access import AiGatewayAccessChecker
+from .aigateway.api_test import AiGatewayTester
+from .aigateway.cost import AiGatewayCost
+from .aigateway.metrics import AiGatewayMonitor
+from .aigateway.service import AiGatewayService
+from .aigateway.target import AiGatewayTargets
 from .apim.access import ApimAccessChecker
 from .apim.api_test import ApimTester
 from .apim.cost import ApimCost
@@ -102,6 +108,34 @@ def _apim_targets() -> ApimTargets:
     return ApimTargets(_targets())
 
 
+# -- AI Gateway ------------------------------------------------------------------------------
+
+
+@lru_cache
+def _aigateway_service() -> AiGatewayService:
+    return AiGatewayService(get_settings(), _arm())
+
+
+@lru_cache
+def _aigateway_monitor() -> AiGatewayMonitor:
+    return AiGatewayMonitor(get_settings(), _arm(), _aigateway_service())
+
+
+@lru_cache
+def _aigateway_tester() -> AiGatewayTester:
+    return AiGatewayTester(get_settings(), _aigateway_service())
+
+
+@lru_cache
+def _aigateway_cost() -> AiGatewayCost:
+    return AiGatewayCost(get_settings(), _aigateway_service())
+
+
+@lru_cache
+def _aigateway_targets() -> AiGatewayTargets:
+    return AiGatewayTargets(_targets())
+
+
 # -- LiteLLM ---------------------------------------------------------------------------------
 
 
@@ -156,6 +190,8 @@ def _members() -> MemberStore | None:
         return _apim_service()
     if product == "litellm":
         return _litellm_service()
+    if product == "aigateway":
+        return _aigateway_service()
     return None
 
 
@@ -190,6 +226,10 @@ def _access() -> AccessChecker:
         return LiteLLMAccessChecker(
             settings, _arm(), _litellm_service(), discovered_accounts, credential
         )
+    if product == "aigateway":
+        return AiGatewayAccessChecker(
+            settings, _arm(), _aigateway_service(), discovered_accounts, credential
+        )
     # No gateway yet: the report asks for one.
     return AccessChecker(settings, _arm(), None, discovered_accounts, credential)
 
@@ -214,6 +254,11 @@ def reset_target() -> None:
         _litellm_cost,
         _litellm_service,
         _gateway,
+        _aigateway_targets,
+        _aigateway_monitor,
+        _aigateway_tester,
+        _aigateway_cost,
+        _aigateway_service,
         _arm,
     )
     for factory in (*factories, get_settings):
@@ -356,6 +401,29 @@ def get_apim_cost(session: Session) -> ApimCost:
 
 def get_apim_targets(session: Session) -> ApimTargets:
     return session.apim_targets if session else _apim_targets()
+
+
+# AI Gateway (never in the public app, which manages APIM services only).
+
+
+def get_aigateway_service() -> AiGatewayService:
+    return _aigateway_service()
+
+
+def get_aigateway_monitor() -> AiGatewayMonitor:
+    return _aigateway_monitor()
+
+
+def get_aigateway_tester() -> AiGatewayTester:
+    return _aigateway_tester()
+
+
+def get_aigateway_cost() -> AiGatewayCost:
+    return _aigateway_cost()
+
+
+def get_aigateway_targets() -> AiGatewayTargets:
+    return _aigateway_targets()
 
 
 # LiteLLM (never in the public app, which manages APIM services only).

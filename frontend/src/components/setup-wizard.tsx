@@ -1,11 +1,12 @@
-// First-run setup: picks or creates the gateway (an APIM service or a LiteLLM gateway), checks
-// the Azure access the user, the app and the gateway's identity need, fixes what the user's own
-// rights allow, and turns the rest into a ready-to-send admin request.
-import { Check, CheckCircle2, CircleAlert, CircleDashed, Clock, ExternalLink, KeyRound, LoaderCircle, Network, RefreshCw, Server, ShieldAlert, ShieldCheck } from "lucide-react"
+// First-run setup: picks or creates the gateway (an APIM service, a LiteLLM gateway or an Azure AI
+// Gateway), checks the Azure access the user, the app and the gateway's identity need, fixes what
+// the user's own rights allow, and turns the rest into a ready-to-send admin request.
+import { Check, CheckCircle2, CircleAlert, CircleDashed, Clock, ExternalLink, KeyRound, LoaderCircle, Network, RefreshCw, Server, ShieldAlert, ShieldCheck, Sparkles } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 
 import { api, keys, queries } from "../api"
+import { api as aigatewayApi } from "../aigateway/api"
 import { api as apimApi } from "../apim/api"
 import { fill, useI18n, type Messages } from "../i18n"
 import { PRODUCTS } from "../products"
@@ -87,9 +88,9 @@ function StatusIcon({ status, size = 16 }: { status: SetupCheck["status"] | Step
 function FixButton({ check, actions }: { check: SetupCheck; actions: ReturnType<typeof useSetupActions> }) {
   const { t } = useSetupI18n()
   const queryClient = useQueryClient()
-  // APIM only: turns on the service's system-assigned identity with the user's own rights.
+  // APIM and AI Gateway: turn on the gateway's system-assigned identity with the user's own rights.
   const enableIdentity = useMutation({
-    mutationFn: apimApi.enableApimIdentity,
+    mutationFn: check.fix === "enable_aigateway_identity" ? aigatewayApi.enableIdentity : apimApi.enableApimIdentity,
     onSuccess: async () => queryClient.setQueryData(keys.setup, await api.setup(true)),
   })
   const spinner = <LoaderCircle className="spin" size={13} />
@@ -117,6 +118,7 @@ function FixButton({ check, actions }: { check: SetupCheck; actions: ReturnType<
         {actions.renew.isPending ? spinner : <RefreshCw size={13} />}{t.setupRenew}
       </Button>
     case "enable_apim_identity":
+    case "enable_aigateway_identity":
       return <span className="setup-fix-group">
         <Button variant="primary" disabled={enableIdentity.isPending} onClick={() => enableIdentity.mutate()}>
           {enableIdentity.isPending ? spinner : <ShieldCheck size={13} />}{t.setupEnableIdentity}
@@ -355,12 +357,13 @@ function TargetPanel({ target, report, initiallyOpen = false }: { target: Target
   </div>
 }
 
-/** APIM or LiteLLM: which kind of gateway the picker below lists and creates. */
+/** APIM, LiteLLM or AI Gateway: which kind of gateway the picker below lists and creates. */
 function ProductChoice({ product, onChange }: { product: Product | null; onChange: (product: Product) => void }) {
   const { t } = useI18n()
   const options: Array<{ id: Product; icon: typeof Server; title: string; hint: string }> = [
     { id: "litellm", icon: Network, title: t.productLitellm, hint: t.productLitellmHint },
     { id: "apim", icon: Server, title: t.productApim, hint: t.productApimHint },
+    { id: "aigateway", icon: Sparkles, title: t.productAigateway, hint: t.productAigatewayHint },
   ]
   return <div className="pool-choices" role="radiogroup" aria-label={t.productChoice}>
     {options.map(({ id, icon: Icon, title, hint }) => <label key={id} className="pool-choice" data-selected={product === id}>

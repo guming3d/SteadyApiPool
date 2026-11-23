@@ -256,7 +256,7 @@ function Result({ run, product, name, baseUrl, memberLabel = (member) => member,
     <details className="call-notes">
       <summary>{t.benchCli}</summary>
       <p className="muted">{t.benchCliHint}</p>
-      <CodeBlock code={cliCommand({ url: baseUrl, model: run.model, spec: run.spec, windows, apim: apimCli })} label={t.benchCli} />
+      <CodeBlock code={cliCommand({ url: baseUrl, model: run.model, spec: run.spec, windows, apim: apimCli, aigateway: product === "aigateway" })} label={t.benchCli} />
     </details>
   </div>
 }

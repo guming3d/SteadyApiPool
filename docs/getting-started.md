@@ -47,11 +47,11 @@ OS's encrypted store, so you do this once.
 
 ## 3. Choose the kind of gateway, then the gateway
 
-Pick **LiteLLM gateway** or **Azure API Management** (see
+Pick **LiteLLM gateway**, **Azure API Management** or **Azure AI Gateway** (see
 [Which gateway?](../README.md#which-gateway)); you can switch later. The app then lists the gateways of that kind in each
 subscription you can access and says whether you may manage them.
 
-![Setup page, step 2: LiteLLM gateway or Azure API Management, with the LiteLLM gateways in a subscription, each with Use this gateway, plus Deploy a gateway and Connect a gateway](images/onboarding-2-choose-gateway.png)
+![Setup page, step 2: LiteLLM gateway, Azure API Management or Azure AI Gateway, with the LiteLLM gateways in a subscription, each with Use this gateway, plus Deploy a gateway and Connect a gateway](images/onboarding-2-choose-gateway.png)
 
 ### Azure API Management
 
@@ -65,6 +65,31 @@ email and click **Create and use**. The app waits until the service is ready, us
 minutes (the Developer tier takes 30–40). Azure bills the service from the moment it's created.
 
 ![Create an APIM service form, pre-filled with Basic v2](images/onboarding-2b-create-apim.png)
+
+### Azure AI Gateway
+
+Click **Use this gateway** on the AI Gateway you want. The list shows every
+`Microsoft.ApiManagement/aigateways` resource in the subscription, whether this app created it,
+and whether your Azure rights cover every read and write the app makes (and which are missing).
+
+![Setup page, step 2 with Azure AI Gateway chosen: the AI Gateways in a subscription, each with Use this gateway, the one this app created with Delete gateway, plus Create an AI Gateway](images/onboarding-2-choose-aigateway.png)
+
+No AI Gateway yet? Click **Create an AI Gateway**: choose a resource group (an existing one, or a
+new one the app creates) and a region where AI Gateway is offered, keep or change the name (3–24
+lower-case letters, digits and hyphens; it becomes the gateway's host name), and click
+**Create and use**. The app registers `Microsoft.ApiManagement` in the subscription if needed,
+creates the gateway (the Standard SKU, with a system-assigned identity) and waits until it is
+ready. AI Gateway is billed per request.
+
+Two things the app doesn't set up for you on AI Gateway:
+
+- **Telemetry.** The **Monitor** tab reads the gateway's request logs in Log Analytics. Connect a
+  telemetry exporter to Application Insights once, in the
+  [AI Gateway portal](https://ai.gateway.azure.com) (**Monitoring** › **Configure**) or with
+  `az aigateway telemetry-exporter create`. Until then the tab says it has no telemetry; the
+  members' own Azure OpenAI metrics show either way.
+- **Networking.** A gateway that reaches private Foundry accounts needs its backend subnet;
+  configure it in the portal or with `az aigateway network update`.
 
 ### LiteLLM gateway
 
@@ -196,14 +221,19 @@ write. Click it again to confirm. Changes take effect on the gateway immediately
 
 The pool opens on its **Test call** tab, which walks you through the rest:
 
-1. **Grant all** gives the gateway's managed identity (APIM's, or the LiteLLM gateway's) the
-   *Cognitive Services OpenAI User* role on each Foundry resource, so it calls your models
+1. **Grant all** gives the gateway's managed identity (APIM's, the LiteLLM gateway's or the AI
+   Gateway's) the *Cognitive Services OpenAI User* role (on AI Gateway, *Foundry User*) on each
+   Foundry resource, so it calls your models
    without API keys. That takes a role allowed to assign roles on those resources (*Owner*, *User
    Access Administrator* or *Role Based Access Control Administrator*). Without one,
    **Permission check** in the top bar shows a ready-to-send request for your Azure admin. On
-   APIM, setup first turns on the service's managed identity if it is off.
+   APIM and AI Gateway, setup first turns on the gateway's managed identity if it is off.
 2. **Create a test key** gets a key that can call only this pool:
    - **APIM:** a subscription key that opens only the pool's API.
+   - **AI Gateway:** the gateway's one test key, `pool-test` (with the default ID prefix). AI
+     Gateway keys are gateway-wide: this key opens every pool on the gateway, not only this one.
+     The app creates and reads it with your own Azure rights and shows it when you ask; the
+     gateway cleanup deletes it.
    - **LiteLLM:** a virtual key that can call only the pool's model names. LiteLLM keeps only a
      hash of it, so copy it now if you want to keep it: it's shown this once. **Add an alias**,
      above it, lets clients that already send another model name, such as `gpt-5.6-luna`, reach
@@ -215,7 +245,7 @@ The pool opens on its **Test call** tab, which walks you through the rest:
 
 Click **Send request**. The request goes through the gateway and the pool, and you get the
 model's answer with the member that served it (on LiteLLM, also how many times it tried other
-members first). If you only just granted access, Azure can take up to 10 minutes to apply the
+members first; on AI Gateway, the model that answered, in `x-ms-served-model`). If you only just granted access, Azure can take up to 10 minutes to apply the
 role; until then the page explains the error, so try again shortly.
 
 ![Try it here: 200, the call succeeded, answered by the pool's primary member pool-aoai-westus3-gpt-5-6-luna-dz](images/onboarding-7-test-call.png)
@@ -253,6 +283,22 @@ response = client.chat.completions.create(
 print(response.choices[0].message.content)
 ```
 
+Through Azure AI Gateway (base URL `<gateway>/default/models/openai/v1`, the gateway's API key,
+the pool ID as the model, and no `api-version`):
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="https://<your-gateway>.<region>.ai.gateway.azure.com/default/models/openai/v1",
+    api_key="<your-api-key>",
+)
+response = client.chat.completions.create(
+    model="pool-gpt-5-6-luna", messages=[{"role": "user", "content": "Hello"}]
+)
+print(response.choices[0].message.content)
+```
+
 ## Load-test the pool (optional)
 
 **Load test**, under Try it here, simulates several users calling the pool at once: each sends a
@@ -272,7 +318,9 @@ APIM it calls the API chosen above with its subscription key and `api-version`, 
 `max_completion_tokens`, because APIM forwards the body as it is and newer models refuse
 `max_tokens`. APIM doesn't say which member answered, so the table shows the regions that answered
 (Azure OpenAI's `x-ms-region`: members in one region count together), and its retries after a 429
-don't show as failovers.
+don't show as failovers. On AI Gateway it uses the gateway's test key and sends
+`max_completion_tokens`; the members are the models AI Gateway names in `x-ms-served-model` (members
+serving the same model and version count together), and it doesn't say how often it failed over.
 
 From a terminal, against this or any OpenAI-compatible endpoint (the key stays in an environment
 variable, out of the shell history):
@@ -287,6 +335,10 @@ backend\.venv\Scripts\python scripts\benchmark.py --url https://<your-gateway>/v
 $env:APIM_KEY = "<your-subscription-key>"
 backend\.venv\Scripts\python scripts\benchmark.py --gateway apim --url https://<your-apim>.azure-api.net/<api path> --model gpt-5.6-luna
 #   --api-version <version> --key-header <header>   (when the API uses others)
+
+# AI Gateway: the gateway's host, its API key in AIGATEWAY_KEY (sent as a Bearer token)
+$env:AIGATEWAY_KEY = "<your-api-key>"
+backend\.venv\Scripts\python scripts\benchmark.py --gateway aigateway --url https://<your-gateway>.<region>.ai.gateway.azure.com --model pool-gpt-5-6-luna
 ```
 
 It prints a status line every second and the report at the end; Ctrl+C stops it (requests already
@@ -299,7 +351,10 @@ how many a failover saved) and latency, plus each member's share of the traffic 
 **Routing** simulates a member failing, so you can see the failover before it happens for real.
 The **Gateway metrics** tab beside **Pools** and **Deployments** shows the whole gateway: all its
 traffic, and the load on what it runs on (APIM's capacity, or CPU and memory on the v2 tiers;
-LiteLLM's replicas, their CPU and memory, or the AKS nodes, and its database).
+LiteLLM's replicas, their CPU and memory, or the AKS nodes, and its database). On AI Gateway the
+pool's numbers come from the gateway's request logs once a telemetry exporter sends them to
+Application Insights, with failovers and each member's attempts; Azure manages its capacity, so the
+Gateway metrics tab shows only its traffic.
 
 ![Metrics tab: requests, availability, 429s, latency and each member's traffic share](images/onboarding-8-metrics.png)
 
@@ -324,7 +379,7 @@ all.
 ## Try it without Azure
 
 From a clone, `scripts/demo_server.py` runs the same UI against an
-in-memory Azure, APIM and LiteLLM gateway with sample deployments, which is how the screenshots
+in-memory Azure, APIM, Azure AI Gateway and LiteLLM gateway with sample deployments, which is how the screenshots
 in this guide were made. Nothing reaches Azure. It needs the backend's virtual environment (the start
 script creates it) and the built UI (Node.js 22+):
 
@@ -334,5 +389,5 @@ backend/.venv/Scripts/python scripts/demo_server.py    # bin/python on macOS and
 ```
 
 It starts signed out, like a first run. `POST /demo/stage/{sign-in,ready,pool}?product=apim` (or
-`litellm`) jumps to a point in onboarding (`pool` is a pool already in use, with an hour of
+`litellm`, `aigateway`) jumps to a point in onboarding (`pool` is a pool already in use, with an hour of
 metrics); `--product` and `--stage` choose where it starts.

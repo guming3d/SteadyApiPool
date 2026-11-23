@@ -45,10 +45,10 @@ scripts/start-local.sh         # macOS、Linux、WSL
 
 ## 3. 选择网关类型，然后选择网关
 
-选择 **LiteLLM 网关**或 **Azure API 管理**（见[选择哪种网关？](../README.zh-CN.md#选择哪种网关)），之后也可以切换。应用随后会列出
+选择 **LiteLLM 网关**、**Azure API 管理**或 **Azure AI 网关**（见[选择哪种网关？](../README.zh-CN.md#选择哪种网关)），之后也可以切换。应用随后会列出
 你能访问的每个订阅中该类型的网关，并说明你是否有权管理它们。
 
-![设置页第 2 步：选择 LiteLLM 网关或 Azure API 管理，以及订阅中的 LiteLLM 网关，每个都有“使用此网关”按钮，另有“部署网关”和“连接已有网关”](images/onboarding-2-choose-gateway.png)
+![设置页第 2 步：选择 LiteLLM 网关、Azure API 管理或 Azure AI 网关，以及订阅中的 LiteLLM 网关，每个都有“使用此网关”按钮，另有“部署网关”和“连接已有网关”](images/onboarding-2-choose-gateway.png)
 
 ### Azure API 管理
 
@@ -61,6 +61,25 @@ scripts/start-local.sh         # macOS、Linux、WSL
 （开发人员层需要 30–40 分钟）。服务从创建起就开始计费。
 
 ![新建 APIM 服务表单，已预填基本 v2 层](images/onboarding-2b-create-apim.png)
+
+### Azure AI 网关
+
+在你想要的 AI 网关上点击**使用此网关**。列表显示订阅中所有 `Microsoft.ApiManagement/aigateways` 资源、它是否由此
+应用创建，以及你的 Azure 权限是否涵盖应用要做的每项读取和写入（缺少哪些）。
+
+![设置页第 2 步，选择了 Azure AI 网关：订阅中的 AI 网关，每个都有“使用此网关”按钮，由此应用创建的那个还有“删除网关”，另有“新建 AI 网关”。截图中的界面为英文](images/onboarding-2-choose-aigateway.png)
+
+还没有 AI 网关？点击**新建 AI 网关**：选择资源组（已有的，或由应用新建）和提供 AI 网关的区域，保留或修改名称
+（3–24 个小写字母、数字和连字符，它会成为网关的主机名），然后点击**创建并使用**。应用会在需要时在订阅中注册
+`Microsoft.ApiManagement`，创建网关（标准 SKU，带系统分配的托管标识），并等到它就绪。AI 网关按请求计费。
+
+在 AI 网关上，有两件事应用不会替你设置：
+
+- **遥测。** **指标监控**选项卡读取网关在 Log Analytics 中的请求日志。需要先在
+  [AI 网关门户](https://ai.gateway.azure.com)（**Monitoring** › **Configure**）中或用
+  `az aigateway telemetry-exporter create` 把遥测导出器连接到 Application Insights。在此之前，选项卡会说明没有遥测；
+  API节点自己的 Azure OpenAI 指标无论如何都会显示。
+- **网络。** 要访问专用的 Foundry 帐户，网关需要它的后端子网；请在门户中或用 `az aigateway network update` 配置。
 
 ### LiteLLM 网关
 
@@ -166,12 +185,15 @@ token 的流式响应约为完整返回的 15 倍。Azure 的 CPU 可能略有�
 
 后端池会打开到**调用测试**选项卡，它会带你完成剩下的步骤：
 
-1. **全部授予**为网关的托管标识（APIM 的，或 LiteLLM 网关的）在每个 Foundry 资源上分配
-   *Cognitive Services OpenAI User* 角色，这样网关无需 API 密钥即可调用你的模型。这需要一个能在这些资源上分配
+1. **全部授予**为网关的托管标识（APIM 的、LiteLLM 网关的或 AI 网关的）在每个 Foundry 资源上分配
+   *Cognitive Services OpenAI User* 角色（在 AI 网关上为 *Foundry User*），这样网关无需 API 密钥即可调用你的模型。这需要一个能在这些资源上分配
    角色的角色（*所有者*、*用户访问管理员*或*基于角色的访问控制管理员*）。如果没有，顶栏的**权限检查**会给出一份
-   可以直接发给 Azure 管理员的申请。在 APIM 上，如果服务的托管标识未启用，设置会先启用它。
+   可以直接发给 Azure 管理员的申请。在 APIM 和 AI 网关上，如果网关的托管标识未启用，设置会先启用它。
 2. **创建测试密钥**会获取一个只能调用此后端池的密钥：
    - **APIM：** 一个只能访问此后端池 API 的订阅密钥。
+   - **AI 网关：** 网关唯一的测试密钥 `pool-test`（使用默认 ID 前缀时）。AI 网关的密钥作用于整个网关：这个密钥
+     可以调用网关上的所有后端池，而不只是这一个。应用用你自己的 Azure 权限创建和读取它，在你需要时显示；清理网关时
+     会删除它。
    - **LiteLLM：** 一个只能调用此后端池模型名的虚拟密钥。LiteLLM 只保存它的哈希，所以如果想保留，请现在复制：
      它只显示这一次。上方的**添加别名**可以让已经发送其他模型名（例如 `gpt-5.6-luna`）的客户端也调用到此后端池。
 
@@ -180,7 +202,7 @@ token 的流式响应约为完整返回的 15 倍。Azure 的 CPU 可能略有�
 ## 7. 发送测试请求
 
 点击**发送请求**。请求会经过网关和后端池，你会得到模型的回答以及处理请求的API节点（在 LiteLLM 上，还有它之前在
-其他API节点上尝试了几次）。如果刚刚授予访问权限，Azure 最多可能需要 10 分钟才能使角色生效；在此之前页面会解释错误
+其他API节点上尝试了几次；在 AI 网关上，还有响应的模型，见 `x-ms-served-model`）。如果刚刚授予访问权限，Azure 最多可能需要 10 分钟才能使角色生效；在此之前页面会解释错误
 原因，请稍后重试。
 
 ![在这里测试：200，调用成功，由后端池的主API节点 pool-aoai-westus3-gpt-5-6-luna-dz 响应](images/onboarding-7-test-call.png)
@@ -218,6 +240,22 @@ response = client.chat.completions.create(
 print(response.choices[0].message.content)
 ```
 
+通过 Azure AI 网关（基础 URL 为 `<gateway>/default/models/openai/v1`，网关的 API 密钥，后端池 ID 作为模型名，
+不需要 `api-version`）：
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="https://<your-gateway>.<region>.ai.gateway.azure.com/default/models/openai/v1",
+    api_key="<your-api-key>",
+)
+response = client.chat.completions.create(
+    model="pool-gpt-5-6-luna", messages=[{"role": "user", "content": "Hello"}]
+)
+print(response.choices[0].message.content)
+```
+
 ## 对后端池进行性能测试（可选）
 
 **在这里测试**下方的**性能测试**模拟多个用户同时调用后端池：每个用户发送请求、等待响应后再发下一个。可以选择
@@ -232,7 +270,9 @@ p50/p95/p99 延迟、首令牌时间、429 和故障转移、每秒图表以及�
 `x-litellm-model-id`，故障转移来自 `x-litellm-attempted-fallbacks`。在 APIM 上，它用订阅密钥和
 `api-version` 调用上面选择的 API，并发送 `max_completion_tokens`：APIM 按原样转发请求正文，较新的模型不接受
 `max_tokens`。APIM 不报告由哪个API节点响应，所以表格显示响应的区域（Azure OpenAI 的 `x-ms-region`，同一区域的
-API节点合并统计），APIM 在 429 后的重试也不会显示为故障转移。
+API节点合并统计），APIM 在 429 后的重试也不会显示为故障转移。在 AI 网关上，它使用网关的测试密钥并发送
+`max_completion_tokens`；API节点是 AI 网关在 `x-ms-served-model` 中报告的模型（提供同一模型和版本的API节点合并
+统计），它不报告故障转移的次数。
 
 在终端中运行（可用于此网关或任何兼容 OpenAI 的终结点；密钥放在环境变量中，不会留在命令历史里）：
 
@@ -246,6 +286,10 @@ backend\.venv\Scripts\python scripts\benchmark.py --url https://<your-gateway>/v
 $env:APIM_KEY = "<your-subscription-key>"
 backend\.venv\Scripts\python scripts\benchmark.py --gateway apim --url https://<your-apim>.azure-api.net/<api path> --model gpt-5.6-luna
 #   --api-version <version> --key-header <header>   （API 使用其他值时）
+
+# AI 网关：网关的主机名，API 密钥放在 AIGATEWAY_KEY 中（作为 Bearer 令牌发送）
+$env:AIGATEWAY_KEY = "<your-api-key>"
+backend\.venv\Scripts\python scripts\benchmark.py --gateway aigateway --url https://<your-gateway>.<region>.ai.gateway.azure.com --model pool-gpt-5-6-luna
 ```
 
 它每秒打印一行状态，结束时打印报告；按 Ctrl+C 会停止测试（已发送的请求会完成），并仍然打印报告。`--i-know`
@@ -256,7 +300,9 @@ backend\.venv\Scripts\python scripts\benchmark.py --gateway apim --url https://<
 **指标监控**选项卡显示请求数、可用性、返回给客户端的 429（在 LiteLLM 上，还有故障转移挽回了多少）和延迟，以及
 每个API节点承担的流量份额和令牌数。**路由预览**可以模拟API节点故障，让你在真正发生之前看到故障转移的过程。
 **后端池**和**模型部署**旁边的**网关指标**选项卡显示整个网关：它的全部流量，以及它所运行资源的负载（APIM 的容量，
-或 v2 层级的 CPU 和内存；LiteLLM 的副本数及其 CPU 和内存，或 AKS 节点，以及它的数据库）。
+或 v2 层级的 CPU 和内存；LiteLLM 的副本数及其 CPU 和内存，或 AKS 节点，以及它的数据库）。在 AI 网关上，
+遥测导出器把请求日志发往 Application Insights 后，后端池的数据就来自这些日志，包括故障转移和每个API节点的尝试次数；
+它的容量由 Azure 管理，所以网关指标选项卡只显示流量。
 
 ![指标监控选项卡：请求数、可用性、429、延迟和每个API节点的流量份额](images/onboarding-8-metrics.png)
 
@@ -277,7 +323,7 @@ backend\.venv\Scripts\python scripts\benchmark.py --gateway apim --url https://<
 
 ## 不用 Azure 试用
 
-在克隆的仓库中，`scripts/demo_server.py` 会让同一个界面连接一个内存中的 Azure、APIM 和
+在克隆的仓库中，`scripts/demo_server.py` 会让同一个界面连接一个内存中的 Azure、APIM、Azure AI 网关和
 LiteLLM 网关，带有示例部署，本指南中的截图就是这样制作的。它不会访问 Azure。它需要后端的虚拟环境（启动脚本会创建）
 和构建好的界面（Node.js 22+）：
 
@@ -286,5 +332,5 @@ cd frontend && npm ci && npm run build && cd ..
 backend/.venv/Scripts/python scripts/demo_server.py    # macOS 和 Linux 上为 bin/python；http://127.0.0.1:8010
 ```
 
-它像首次运行一样从未登录状态开始。`POST /demo/stage/{sign-in,ready,pool}?product=apim`（或 `litellm`）可以跳到
+它像首次运行一样从未登录状态开始。`POST /demo/stage/{sign-in,ready,pool}?product=apim`（或 `litellm`、`aigateway`）可以跳到
 引导流程中的某个阶段（`pool` 是一个已在使用、带有一小时指标的后端池）；`--product` 和 `--stage` 决定它从哪里开始。

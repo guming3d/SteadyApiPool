@@ -32,6 +32,7 @@ def _settings(**values: Any) -> Settings:
         ({"subscription_id": "s", "resource_group": "g", "apim_name": "a"}, "apim"),
         ({"subscription_id": "s", "resource_group": "g", "gateway_name": "gw"}, "litellm"),
         ({"gateway_name": "gw", "gateway_url": URL}, "litellm"),
+        ({"subscription_id": "s", "resource_group": "g", "aigateway_name": "aigw"}, "aigateway"),
     ],
 )
 def test_the_name_that_is_set_chooses_the_product(values: dict[str, str], product: str) -> None:
@@ -49,8 +50,11 @@ def test_an_apim_and_a_litellm_name_together_are_refused() -> None:
         apim_name="a",
         gateway_name="gw",
     )
-    with pytest.raises(RuntimeError, match="not both"):
+    with pytest.raises(RuntimeError, match="only one of"):
         settings.validate_runtime()
+    both = _settings(auth_mode="disabled", apim_name="a", aigateway_name="aigw")
+    with pytest.raises(RuntimeError, match="AI Gateway"):
+        both.validate_runtime()
 
 
 @pytest.mark.parametrize(
@@ -58,6 +62,8 @@ def test_an_apim_and_a_litellm_name_together_are_refused() -> None:
     [
         ({"auth_mode": "easy_auth"}, "POOL_MANAGER_APIM_NAME"),
         ({"subscription_id": "s", "apim_name": "a"}, "Set all of"),
+        ({"subscription_id": "s", "aigateway_name": "aigw"}, "POOL_MANAGER_AIGATEWAY_NAME"),
+        ({"auth_mode": "entra", "entra_client_id": "x", "aigateway_name": "aigw"}, "can't use"),
         ({"auth_mode": "entra", "entra_client_id": "x", "gateway_url": URL}, "can't use"),
     ],
 )
